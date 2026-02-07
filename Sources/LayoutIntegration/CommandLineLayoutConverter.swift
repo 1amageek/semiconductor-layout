@@ -6,16 +6,29 @@ import LayoutIO
 public struct CommandLineLayoutConverter: LayoutFormatConverter {
     private let configuration: ExternalToolConfiguration
     private let serializer: LayoutDocumentSerializer
+    private let nativeConverter: MaskDataFormatConverter?
 
-    public init(configuration: ExternalToolConfiguration, serializer: LayoutDocumentSerializer = LayoutDocumentSerializer()) {
+    /// Formats supported natively via swift-mask-data without external tools.
+    private static let nativeFormats: Set<LayoutFileFormat> = [.gds, .oasis, .cif, .dxf]
+
+    public init(
+        configuration: ExternalToolConfiguration,
+        serializer: LayoutDocumentSerializer = LayoutDocumentSerializer(),
+        tech: LayoutTechDatabase? = nil
+    ) {
         self.configuration = configuration
         self.serializer = serializer
+        self.nativeConverter = tech.map { MaskDataFormatConverter(tech: $0) }
     }
 
     public func importDocument(from url: URL, format: LayoutFileFormat) throws -> LayoutDocument {
         if format == .json {
             let data = try Data(contentsOf: url)
             return try serializer.decodeDocument(data)
+        }
+        // Prefer native conversion for mask data formats
+        if let native = nativeConverter, Self.nativeFormats.contains(format) {
+            return try native.importDocument(from: url, format: format)
         }
         guard let command = configuration.documentImport[format] else {
             throw LayoutIOError.unsupportedFormat(format)
@@ -30,6 +43,11 @@ public struct CommandLineLayoutConverter: LayoutFormatConverter {
         if format == .json {
             let data = try serializer.encodeDocument(document)
             try data.write(to: url, options: .atomic)
+            return
+        }
+        // Prefer native conversion for mask data formats
+        if let native = nativeConverter, Self.nativeFormats.contains(format) {
+            try native.exportDocument(document, to: url, format: format)
             return
         }
         guard let command = configuration.documentExport[format] else {

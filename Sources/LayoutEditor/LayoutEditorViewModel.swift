@@ -2,6 +2,7 @@ import SwiftUI
 import LayoutCore
 import LayoutTech
 import LayoutVerify
+import LayoutIO
 
 @Observable
 @MainActor
@@ -38,6 +39,15 @@ public final class LayoutEditorViewModel {
     public init(tech: LayoutTechDatabase = .standard()) {
         let cell = LayoutCell(name: "TOP")
         let document = LayoutDocument(name: "Layout", cells: [cell], topCellID: cell.id)
+        self.editor = LayoutDocumentEditor(document: document)
+        self.tech = tech
+        self.gridSize = tech.grid
+        self.activeLayer = tech.layers.first?.id ?? LayoutLayerID(name: "M1", purpose: "drawing")
+        self.activeViaID = tech.vias.first?.id ?? "VIA1"
+        self.pathWidth = defaultPathWidth(for: tech)
+    }
+
+    public init(document: LayoutDocument, tech: LayoutTechDatabase) {
         self.editor = LayoutDocumentEditor(document: document)
         self.tech = tech
         self.gridSize = tech.grid
@@ -353,6 +363,38 @@ public final class LayoutEditorViewModel {
             }
         }
         selectedShapeIDs.removeAll()
+    }
+
+    // MARK: - File Import
+
+    public func loadMaskData(from url: URL) throws {
+        let resolvedTech: LayoutTechDatabase
+        let sidecarResolver = LayoutTechSidecarResolver()
+        if let sidecarTech = try sidecarResolver.resolve(for: url) {
+            resolvedTech = sidecarTech
+        } else {
+            resolvedTech = tech
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw error
+        }
+        let converter = MaskDataFormatConverter(tech: resolvedTech)
+        let document = try converter.importFromData(data)
+
+        self.tech = resolvedTech
+        self.gridSize = resolvedTech.grid
+        self.activeLayer = resolvedTech.layers.first?.id ?? LayoutLayerID(name: "M1", purpose: "drawing")
+        self.activeViaID = resolvedTech.vias.first?.id ?? "VIA1"
+        self.pathWidth = defaultPathWidth(for: resolvedTech)
+        self.editor = LayoutDocumentEditor(document: document)
+        self.selectedShapeIDs.removeAll()
+        self.selectedInstanceID = nil
+        self.hiddenLayers.removeAll()
+        self.violations.removeAll()
     }
 
     public func centerOn(_ point: LayoutPoint) {

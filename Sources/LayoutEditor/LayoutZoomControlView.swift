@@ -1,28 +1,18 @@
 import SwiftUI
 
-/// Compact zoom control strip with scale bar indicator.
-///
-/// Provides step-through zoom buttons, a level menu with presets,
-/// fit-all, and a dynamic scale bar — all in a single bottom-leading overlay.
+/// Compact zoom control with step buttons, level menu, and fit-all.
 struct LayoutZoomControlView: View {
     @Bindable var viewModel: LayoutEditorViewModel
 
+    private let columns: [GridItem] = [
+        GridItem(.fixed(22), spacing: 0),
+        GridItem(.flexible(), spacing: 0),
+        GridItem(.fixed(22), spacing: 0),
+        GridItem(.fixed(22), spacing: 0),
+    ]
+
     var body: some View {
-        HStack(spacing: 0) {
-            zoomControls
-            Divider().frame(height: 16).padding(.horizontal, 6)
-            scaleBar
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
-        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
-    }
-
-    // MARK: - Zoom Controls
-
-    private var zoomControls: some View {
-        HStack(spacing: 2) {
+        LazyVGrid(columns: columns, spacing: 0) {
             stepButton(systemImage: "minus.magnifyingglass") {
                 viewModel.zoomOutStep()
             }
@@ -30,11 +20,15 @@ struct LayoutZoomControlView: View {
             stepButton(systemImage: "plus.magnifyingglass") {
                 viewModel.zoomInStep()
             }
-            Divider().frame(height: 14).padding(.horizontal, 4)
             stepButton(systemImage: "arrow.up.left.and.arrow.down.right") {
                 viewModel.fitAll()
             }
         }
+        .frame(width: 180)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
     }
 
     private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
@@ -56,23 +50,44 @@ struct LayoutZoomControlView: View {
         } label: {
             Text(formatZoom(viewModel.zoom))
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .frame(minWidth: 48)
-                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
     }
 
-    // MARK: - Scale Bar
+    private func formatZoom(_ z: CGFloat) -> String {
+        if z >= 10000 {
+            return String(format: "%.0fK×", z / 1000)
+        } else if z >= 1000 {
+            let k = z / 1000
+            return k == floor(k)
+                ? String(format: "%.0fK×", k)
+                : String(format: "%.1fK×", k)
+        } else if z >= 1 {
+            return z == floor(z)
+                ? String(format: "%.0f×", z)
+                : String(format: "%.1f×", z)
+        } else {
+            return String(format: "%.2f×", z)
+        }
+    }
+}
 
-    private var scaleBar: some View {
+// MARK: - Scale Bar
+
+/// Dynamic scale bar that shows a reference length at the current zoom level.
+struct LayoutScaleBarView: View {
+    @Bindable var viewModel: LayoutEditorViewModel
+
+    var body: some View {
         let (barWidth, label) = computeScaleBar()
-        return VStack(spacing: 1) {
+        VStack(spacing: 1) {
             Text(label)
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
             HStack(spacing: 0) {
                 Rectangle().frame(width: 1, height: 5)
                 Rectangle().frame(width: barWidth, height: 1.5)
@@ -112,24 +127,5 @@ struct LayoutZoomControlView: View {
         }
 
         return (barPx, label)
-    }
-
-    // MARK: - Formatting
-
-    private func formatZoom(_ z: CGFloat) -> String {
-        if z >= 10000 {
-            return String(format: "%.0fK×", z / 1000)
-        } else if z >= 1000 {
-            let k = z / 1000
-            return k == floor(k)
-                ? String(format: "%.0fK×", k)
-                : String(format: "%.1fK×", k)
-        } else if z >= 1 {
-            return z == floor(z)
-                ? String(format: "%.0f×", z)
-                : String(format: "%.1f×", z)
-        } else {
-            return String(format: "%.2f×", z)
-        }
     }
 }

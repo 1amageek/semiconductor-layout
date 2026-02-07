@@ -6,5 +6,7 @@ public enum LayoutFileFormat: String, Sendable, Codable {
     case oasis
     case lef
     case def
+    case cif
+    case dxf
     case odb
 }

@@ -13,6 +13,9 @@ let package = Package(
         .library(name: "LayoutEditor", targets: ["LayoutEditor"]),
         .library(name: "LayoutAutoGen", targets: ["LayoutAutoGen"]),
     ],
+    dependencies: [
+        .package(path: "../swift-mask-data"),
+    ],
     targets: [
         .target(
             name: "LayoutCore",
@@ -24,11 +27,27 @@ let package = Package(
         ),
         .target(
             name: "LayoutVerify",
-            dependencies: ["LayoutCore", "LayoutTech"]
+            dependencies: [
+                "LayoutCore",
+                "LayoutTech",
+                .product(name: "LayoutIR", package: "swift-mask-data"),
+                .product(name: "GeometryOps", package: "swift-mask-data"),
+            ]
         ),
         .target(
             name: "LayoutIO",
-            dependencies: ["LayoutCore", "LayoutTech"]
+            dependencies: [
+                "LayoutCore",
+                "LayoutTech",
+                .product(name: "LayoutIR", package: "swift-mask-data"),
+                .product(name: "GDSII", package: "swift-mask-data"),
+                .product(name: "OASIS", package: "swift-mask-data"),
+                .product(name: "CIF", package: "swift-mask-data"),
+                .product(name: "DXF", package: "swift-mask-data"),
+                .product(name: "FormatDetector", package: "swift-mask-data"),
+                .product(name: "TechIR", package: "swift-mask-data"),
+                .product(name: "LEF", package: "swift-mask-data"),
+            ]
         ),
         .target(
             name: "LayoutIntegration",
@@ -36,11 +55,28 @@ let package = Package(
         ),
         .target(
             name: "LayoutEditor",
-            dependencies: ["LayoutCore", "LayoutTech", "LayoutVerify", "LayoutIO", "LayoutIntegration"]
+            dependencies: [
+                "LayoutCore",
+                "LayoutTech",
+                "LayoutVerify",
+                "LayoutIO",
+                "LayoutIntegration",
+                .product(name: "LayoutIR", package: "swift-mask-data"),
+            ]
         ),
         .target(
             name: "LayoutAutoGen",
             dependencies: ["LayoutCore", "LayoutTech"]
+        ),
+        .testTarget(
+            name: "LayoutIOTests",
+            dependencies: [
+                "LayoutIO",
+                "LayoutCore",
+                "LayoutTech",
+                .product(name: "TechIR", package: "swift-mask-data"),
+                .product(name: "LEF", package: "swift-mask-data"),
+            ]
         ),
     ]
 )
