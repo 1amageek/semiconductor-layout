@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "LayoutIO", targets: ["LayoutIO"]),
         .library(name: "LayoutIntegration", targets: ["LayoutIntegration"]),
         .library(name: "LayoutEditor", targets: ["LayoutEditor"]),
+        .library(name: "LayoutAutoGen", targets: ["LayoutAutoGen"]),
     ],
     targets: [
         .target(
@@ -36,6 +37,10 @@ let package = Package(
         .target(
             name: "LayoutEditor",
             dependencies: ["LayoutCore", "LayoutTech", "LayoutVerify", "LayoutIO", "LayoutIntegration"]
+        ),
+        .target(
+            name: "LayoutAutoGen",
+            dependencies: ["LayoutCore", "LayoutTech"]
         ),
     ]
 )

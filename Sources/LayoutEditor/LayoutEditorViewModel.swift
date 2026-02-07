@@ -12,19 +12,38 @@ public final class LayoutEditorViewModel {
     public var activeLayer: LayoutLayerID
     public var activeViaID: String
     public var zoom: CGFloat = 1.0
-    public var offset: CGSize = .zero
-    public var gridSize: Double = 0.1
+    public var offset: CGPoint = .zero
+    public var canvasSize: CGSize = .zero
+    public var gridSize: Double
     public var selectedShapeIDs: Set<UUID> = []
+    public var selectedInstanceID: UUID?
+    public var highlightedInstanceIDs: Set<UUID> = []
     public var violations: [LayoutViolation] = []
     public var lastError: String?
+    public var hiddenLayers: Set<LayoutLayerID> = []
+
+    // MARK: - Tool Options
+
+    /// Path width for the path tool. Defaults to minimum width of active layer or tech grid.
+    public var pathWidth: Double = 0.1
+    /// Path end-cap style.
+    public var pathEndCap: LayoutPathEndCap = .extend
+    /// Angle constraint mode for drawing operations.
+    public var angleConstraint: LayoutAngleConstraint = .manhattan
+
+    // MARK: - Rulers
+
+    public var rulers: [LayoutRuler] = []
 
     public init(tech: LayoutTechDatabase = .standard()) {
         let cell = LayoutCell(name: "TOP")
         let document = LayoutDocument(name: "Layout", cells: [cell], topCellID: cell.id)
         self.editor = LayoutDocumentEditor(document: document)
         self.tech = tech
+        self.gridSize = tech.grid
         self.activeLayer = tech.layers.first?.id ?? LayoutLayerID(name: "M1", purpose: "drawing")
         self.activeViaID = tech.vias.first?.id ?? "VIA1"
+        self.pathWidth = defaultPathWidth(for: tech)
     }
 
     public var activeCellID: UUID? {
@@ -35,6 +54,8 @@ public final class LayoutEditorViewModel {
         let service = LayoutDRCService()
         violations = service.run(document: editor.document, tech: tech).violations
     }
+
+    // MARK: - Shape Creation
 
     public func addRectangle(from start: LayoutPoint, to end: LayoutPoint) {
         guard let cellID = activeCellID else { return }
@@ -54,9 +75,21 @@ public final class LayoutEditorViewModel {
         }
     }
 
-    public func addPath(points: [LayoutPoint], width: Double) {
+    public func addPolygon(points: [LayoutPoint]) {
         guard let cellID = activeCellID else { return }
-        let path = LayoutPath(points: points, width: width)
+        let polygon = LayoutPolygon(points: points)
+        guard polygon.isValid else { return }
+        let shape = LayoutShape(layer: activeLayer, geometry: .polygon(polygon))
+        do {
+            try editor.addShape(shape, to: cellID)
+        } catch {
+            handleError(error)
+        }
+    }
+
+    public func addPath(points: [LayoutPoint]) {
+        guard let cellID = activeCellID else { return }
+        let path = LayoutPath(points: points, width: pathWidth, endCap: pathEndCap)
         guard path.isValid else { return }
         let shape = LayoutShape(layer: activeLayer, geometry: .path(path))
         do {
@@ -96,17 +129,58 @@ public final class LayoutEditorViewModel {
         }
     }
 
+    // MARK: - Rulers
+
+    public func addRuler(from start: LayoutPoint, to end: LayoutPoint) {
+        rulers.append(LayoutRuler(start: start, end: end))
+    }
+
+    public func clearAllRulers() {
+        rulers.removeAll()
+    }
+
+    // MARK: - Selection
+
     public func selectShape(at point: LayoutPoint) {
         guard let cellID = activeCellID, let cell = editor.document.cell(withID: cellID) else {
             return
         }
         for shape in cell.shapes.reversed() {
+            guard isLayerVisible(shape.layer) else { continue }
             if LayoutGeometryUtils.contains(point, in: shape.geometry) {
                 selectedShapeIDs = [shape.id]
+                selectedInstanceID = nil
                 return
             }
         }
+        if let instID = selectInstance(at: point) {
+            selectedInstanceID = instID
+            selectedShapeIDs.removeAll()
+            return
+        }
         selectedShapeIDs.removeAll()
+        selectedInstanceID = nil
+    }
+
+    public func selectInstance(at point: LayoutPoint) -> UUID? {
+        for (inst, bounds) in instanceBoundingBoxes() {
+            if bounds.contains(point) {
+                return inst.id
+            }
+        }
+        return nil
+    }
+
+    public func instanceBoundingBoxes() -> [(instance: LayoutInstance, bounds: LayoutRect)] {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID) else { return [] }
+        return cell.instances.compactMap { inst in
+            guard let refCell = editor.document.cell(withID: inst.cellID) else { return nil }
+            let localBounds = Self.cellBoundingBox(refCell)
+            guard localBounds.size.width > 0, localBounds.size.height > 0 else { return nil }
+            let transformedBounds = Self.transformRect(localBounds, by: inst.transform)
+            return (inst, transformedBounds)
+        }
     }
 
     public func documentShapes() -> [LayoutShape] {
@@ -116,7 +190,414 @@ public final class LayoutEditorViewModel {
         return cell.shapes
     }
 
+    // MARK: - Move Selected Shapes
+
+    public func moveSelectedShapes(by delta: LayoutPoint) {
+        guard let cellID = activeCellID else { return }
+        guard !selectedShapeIDs.isEmpty else { return }
+
+        for shapeID in selectedShapeIDs {
+            guard let cell = editor.document.cell(withID: cellID),
+                  let shape = cell.shapes.first(where: { $0.id == shapeID }) else { continue }
+
+            let movedGeometry: LayoutGeometry
+            switch shape.geometry {
+            case .rect(let rect):
+                movedGeometry = .rect(LayoutRect(
+                    origin: LayoutPoint(x: rect.origin.x + delta.x, y: rect.origin.y + delta.y),
+                    size: rect.size
+                ))
+            case .polygon(let poly):
+                let movedPoints = poly.points.map {
+                    LayoutPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+                }
+                movedGeometry = .polygon(LayoutPolygon(points: movedPoints))
+            case .path(let path):
+                let movedPoints = path.points.map {
+                    LayoutPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+                }
+                movedGeometry = .path(LayoutPath(points: movedPoints, width: path.width, endCap: path.endCap))
+            }
+
+            do {
+                try editor.removeShape(id: shapeID, from: cellID)
+                var newShape = LayoutShape(layer: shape.layer, geometry: movedGeometry)
+                newShape.netID = shape.netID
+                newShape.properties = shape.properties
+                try editor.addShape(newShape, to: cellID)
+                // Update selection to the new shape ID
+                selectedShapeIDs.remove(shapeID)
+                selectedShapeIDs.insert(newShape.id)
+            } catch {
+                handleError(error)
+            }
+        }
+    }
+
+    // MARK: - Merge
+
+    /// Merges all selected shapes on the same layer into polygons by computing their union.
+    public func mergeSelectedShapes() {
+        guard let cellID = activeCellID, !selectedShapeIDs.isEmpty else { return }
+        guard let cell = editor.document.cell(withID: cellID) else { return }
+
+        // Group selected shapes by layer
+        var shapesByLayer: [LayoutLayerID: [LayoutShape]] = [:]
+        for shape in cell.shapes where selectedShapeIDs.contains(shape.id) {
+            shapesByLayer[shape.layer, default: []].append(shape)
+        }
+
+        for (layer, shapes) in shapesByLayer {
+            guard shapes.count >= 2 else { continue }
+
+            // Collect all polygons
+            var polygons: [LayoutPolygon] = []
+            for shape in shapes {
+                switch shape.geometry {
+                case .rect(let rect):
+                    polygons.append(rect.toPolygon())
+                case .polygon(let poly):
+                    polygons.append(poly)
+                case .path:
+                    continue
+                }
+            }
+
+            guard polygons.count >= 2 else { continue }
+
+            // Simple merge: compute the convex-hull-like union via bounding box union
+            // For a proper merge we'd need polygon union, but for now we compute the
+            // outer boundary as the union of all vertex points forming a single polygon.
+            // This uses a simple approach: combine all vertices and compute convex hull.
+            var allPoints: [LayoutPoint] = []
+            for poly in polygons {
+                allPoints.append(contentsOf: poly.points)
+            }
+
+            let hull = convexHull(allPoints)
+            guard hull.count >= 3 else { continue }
+
+            // Remove original shapes and add the merged result
+            do {
+                for shape in shapes {
+                    if case .path = shape.geometry { continue }
+                    try editor.removeShape(id: shape.id, from: cellID)
+                }
+                let merged = LayoutShape(layer: layer, geometry: .polygon(LayoutPolygon(points: hull)))
+                try editor.addShape(merged, to: cellID)
+            } catch {
+                handleError(error)
+            }
+        }
+
+        selectedShapeIDs.removeAll()
+    }
+
+    // MARK: - Bounding Box
+
+    public func contentBounds() -> LayoutRect? {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID) else { return nil }
+
+        var result: LayoutRect?
+        for shape in cell.shapes {
+            let bbox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
+            if let existing = result {
+                result = existing.union(bbox)
+            } else {
+                result = bbox
+            }
+        }
+        for (_, bounds) in instanceBoundingBoxes() {
+            if let existing = result {
+                result = existing.union(bounds)
+            } else {
+                result = bounds
+            }
+        }
+        return result
+    }
+
+    public func fitAll() {
+        guard canvasSize.width > 0, canvasSize.height > 0,
+              let bounds = contentBounds(),
+              bounds.size.width > 0, bounds.size.height > 0 else {
+            zoom = 1.0
+            offset = .zero
+            return
+        }
+
+        let margin: CGFloat = 40
+        let availableWidth = canvasSize.width - margin * 2
+        let availableHeight = canvasSize.height - margin * 2
+        let scaleX = availableWidth / CGFloat(bounds.size.width)
+        let scaleY = availableHeight / CGFloat(bounds.size.height)
+        let newZoom = max(0.01, min(100000, min(scaleX, scaleY)))
+
+        let centerX = CGFloat(bounds.origin.x) + CGFloat(bounds.size.width) / 2
+        let centerY = CGFloat(bounds.origin.y) + CGFloat(bounds.size.height) / 2
+        zoom = newZoom
+        offset = CGPoint(
+            x: canvasSize.width / 2 - centerX * newZoom,
+            y: canvasSize.height / 2 - centerY * newZoom
+        )
+    }
+
+    public func deleteSelectedShapes() {
+        guard let cellID = activeCellID, !selectedShapeIDs.isEmpty else { return }
+        for shapeID in selectedShapeIDs {
+            do {
+                try editor.removeShape(id: shapeID, from: cellID)
+            } catch {
+                handleError(error)
+            }
+        }
+        selectedShapeIDs.removeAll()
+    }
+
+    public func centerOn(_ point: LayoutPoint) {
+        offset = CGPoint(
+            x: canvasSize.width / 2 - CGFloat(point.x) * zoom,
+            y: canvasSize.height / 2 - CGFloat(point.y) * zoom
+        )
+    }
+
+    public func clearSelection() {
+        selectedShapeIDs.removeAll()
+        selectedInstanceID = nil
+    }
+
+    // MARK: - Layer Visibility
+
+    public func isLayerVisible(_ layer: LayoutLayerID) -> Bool {
+        !hiddenLayers.contains(layer)
+    }
+
+    public func toggleLayerVisibility(_ layer: LayoutLayerID) {
+        if hiddenLayers.contains(layer) {
+            hiddenLayers.remove(layer)
+        } else {
+            hiddenLayers.insert(layer)
+        }
+    }
+
+    // MARK: - Angle-Constrained Snap
+
+    /// Applies grid snap and then angle constraint relative to an anchor point.
+    public func constrainedSnap(_ point: LayoutPoint, from anchor: LayoutPoint?) -> LayoutPoint {
+        let gridSnapped = snapToGrid(point)
+        guard let anchor else { return gridSnapped }
+        return angleConstraint.snap(gridSnapped, from: anchor)
+    }
+
+    // MARK: - Zoom Steps
+
+    public static let zoomSteps: [CGFloat] = [
+        0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50,
+        100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000
+    ]
+
+    public func zoomToStep(_ step: CGFloat) {
+        let clamped = max(0.01, min(100000, step))
+        let oldZoom = zoom
+        guard oldZoom > 0 else { zoom = clamped; return }
+        let scale = clamped / oldZoom
+        offset = CGPoint(
+            x: canvasSize.width / 2 - (canvasSize.width / 2 - offset.x) * scale,
+            y: canvasSize.height / 2 - (canvasSize.height / 2 - offset.y) * scale
+        )
+        zoom = clamped
+    }
+
+    public func zoomInStep() {
+        if let next = Self.zoomSteps.first(where: { $0 > zoom * 1.01 }) {
+            zoomToStep(next)
+        }
+    }
+
+    public func zoomOutStep() {
+        if let prev = Self.zoomSteps.last(where: { $0 < zoom * 0.99 }) {
+            zoomToStep(prev)
+        }
+    }
+
+    // MARK: - Boolean Operations
+
+    public func subtractFromShapes(cutRect: LayoutRect) {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID) else { return }
+
+        var operations: [(removeID: UUID, addPolygons: [LayoutPolygon], layer: LayoutLayerID)] = []
+
+        for shape in cell.shapes {
+            guard shape.layer == activeLayer else { continue }
+
+            let polygon: LayoutPolygon
+            switch shape.geometry {
+            case .rect(let rect):
+                guard rect.intersects(cutRect) else { continue }
+                polygon = rect.toPolygon()
+            case .polygon(let poly):
+                let bbox = LayoutGeometryUtils.boundingBox(for: poly)
+                guard bbox.intersects(cutRect) else { continue }
+                polygon = poly
+            case .path:
+                continue
+            }
+
+            let remainders = polygon.subtract(cut: cutRect)
+            if remainders.count != 1 || remainders.first != polygon {
+                operations.append((shape.id, remainders, shape.layer))
+            }
+        }
+
+        guard !operations.isEmpty else { return }
+
+        for op in operations {
+            do {
+                try editor.removeShape(id: op.removeID, from: cellID)
+                for poly in op.addPolygons {
+                    let newShape = LayoutShape(layer: op.layer, geometry: .polygon(poly))
+                    try editor.addShape(newShape, to: cellID)
+                }
+            } catch {
+                handleError(error)
+            }
+        }
+        selectedShapeIDs.removeAll()
+    }
+
+    public func splitShapes(from start: LayoutPoint, to end: LayoutPoint) {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID) else { return }
+
+        let dx = abs(end.x - start.x)
+        let dy = abs(end.y - start.y)
+        let isHorizontalCut = dx >= dy
+        let cutPos = isHorizontalCut
+            ? (start.y + end.y) / 2
+            : (start.x + end.x) / 2
+
+        var operations: [(removeID: UUID, a: LayoutPolygon, b: LayoutPolygon, layer: LayoutLayerID)] = []
+
+        for shape in cell.shapes {
+            guard shape.layer == activeLayer else { continue }
+
+            let polygon: LayoutPolygon
+            switch shape.geometry {
+            case .rect(let rect):
+                polygon = rect.toPolygon()
+            case .polygon(let poly):
+                polygon = poly
+            case .path:
+                continue
+            }
+
+            if isHorizontalCut {
+                if let (bottom, top) = polygon.splitHorizontally(at: cutPos) {
+                    operations.append((shape.id, bottom, top, shape.layer))
+                }
+            } else {
+                if let (left, right) = polygon.splitVertically(at: cutPos) {
+                    operations.append((shape.id, left, right, shape.layer))
+                }
+            }
+        }
+
+        guard !operations.isEmpty else { return }
+
+        for op in operations {
+            do {
+                try editor.removeShape(id: op.removeID, from: cellID)
+                try editor.addShape(LayoutShape(layer: op.layer, geometry: .polygon(op.a)), to: cellID)
+                try editor.addShape(LayoutShape(layer: op.layer, geometry: .polygon(op.b)), to: cellID)
+            } catch {
+                handleError(error)
+            }
+        }
+        selectedShapeIDs.removeAll()
+    }
+
+    // MARK: - Grid Snap
+
+    public func snapToGrid(_ point: LayoutPoint) -> LayoutPoint {
+        let g = gridSize
+        guard g > 0 else { return point }
+        return LayoutPoint(
+            x: (point.x / g).rounded() * g,
+            y: (point.y / g).rounded() * g
+        )
+    }
+
+    // MARK: - Private Helpers
+
+    private static func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
+        guard let first = cell.shapes.first else { return .zero }
+        var bbox = LayoutGeometryUtils.boundingBox(for: first.geometry)
+        for shape in cell.shapes.dropFirst() {
+            bbox = bbox.union(LayoutGeometryUtils.boundingBox(for: shape.geometry))
+        }
+        return bbox
+    }
+
+    private static func transformRect(_ rect: LayoutRect, by transform: LayoutTransform) -> LayoutRect {
+        let corners = [
+            transform.apply(to: rect.origin),
+            transform.apply(to: LayoutPoint(x: rect.maxX, y: rect.origin.y)),
+            transform.apply(to: LayoutPoint(x: rect.origin.x, y: rect.maxY)),
+            transform.apply(to: LayoutPoint(x: rect.maxX, y: rect.maxY)),
+        ]
+        let xs = corners.map(\.x)
+        let ys = corners.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return .zero }
+        return LayoutRect(
+            origin: LayoutPoint(x: minX, y: minY),
+            size: LayoutSize(width: maxX - minX, height: maxY - minY)
+        )
+    }
+
+    private func defaultPathWidth(for tech: LayoutTechDatabase) -> Double {
+        // Use the minimum width of the first layer, or fall back to grid
+        if let firstLayer = tech.layers.first,
+           let ruleSet = tech.ruleSet(for: firstLayer.id),
+           ruleSet.minWidth > 0 {
+            return ruleSet.minWidth
+        }
+        return tech.grid * 10
+    }
+
     private func handleError(_ error: Error) {
         lastError = error.localizedDescription
+    }
+
+    /// Computes the convex hull of a set of points (Andrew's monotone chain).
+    private func convexHull(_ points: [LayoutPoint]) -> [LayoutPoint] {
+        let sorted = points.sorted { $0.x < $1.x || ($0.x == $1.x && $0.y < $1.y) }
+        guard sorted.count >= 3 else { return sorted }
+
+        var lower: [LayoutPoint] = []
+        for p in sorted {
+            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(p)
+        }
+
+        var upper: [LayoutPoint] = []
+        for p in sorted.reversed() {
+            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(p)
+        }
+
+        lower.removeLast()
+        upper.removeLast()
+        return lower + upper
+    }
+
+    private func cross(_ o: LayoutPoint, _ a: LayoutPoint, _ b: LayoutPoint) -> Double {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
     }
 }

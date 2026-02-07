@@ -7,6 +7,7 @@ public struct LayoutLayerDefinition: Hashable, Sendable, Codable {
     public var gdsLayer: Int
     public var gdsDatatype: Int
     public var color: LayoutColor
+    public var fillPattern: LayoutFillPattern
     public var preferredDirection: LayoutPreferredDirection
     public var visibleByDefault: Bool
 
@@ -16,6 +17,7 @@ public struct LayoutLayerDefinition: Hashable, Sendable, Codable {
         gdsLayer: Int,
         gdsDatatype: Int,
         color: LayoutColor,
+        fillPattern: LayoutFillPattern = .solid,
         preferredDirection: LayoutPreferredDirection = .none,
         visibleByDefault: Bool = true
     ) {
@@ -24,6 +26,7 @@ public struct LayoutLayerDefinition: Hashable, Sendable, Codable {
         self.gdsLayer = gdsLayer
         self.gdsDatatype = gdsDatatype
         self.color = color
+        self.fillPattern = fillPattern
         self.preferredDirection = preferredDirection
         self.visibleByDefault = visibleByDefault
     }

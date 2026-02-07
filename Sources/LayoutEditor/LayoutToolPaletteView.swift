@@ -34,13 +34,6 @@ public struct LayoutToolPaletteView: View {
     }
 
     private func toolLabel(_ tool: LayoutTool) -> String {
-        switch tool {
-        case .select: return "Select"
-        case .rectangle: return "Rectangle"
-        case .path: return "Path"
-        case .via: return "Via"
-        case .label: return "Label"
-        case .pin: return "Pin"
-        }
+        tool.displayLabel
     }
 }

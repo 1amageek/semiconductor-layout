@@ -8,24 +8,33 @@ public struct LayoutEditorView: View {
     }
 
     public var body: some View {
-        HSplitView {
-            VStack(spacing: 12) {
-                LayoutToolPaletteView(viewModel: viewModel)
-                if let error = viewModel.lastError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal)
-                }
-                LayoutLayerListView(viewModel: viewModel)
-            }
-            .frame(minWidth: 180, idealWidth: 220, maxWidth: 280)
-
+        VStack(spacing: 0) {
             LayoutCanvasView(viewModel: viewModel)
-                .frame(minWidth: 600)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    HStack(alignment: .top, spacing: 8) {
+                        LayoutToolPaletteOverlay(viewModel: viewModel)
+                        LayoutLayerPaletteOverlay(viewModel: viewModel)
+                    }
+                    .padding(12)
+                }
+                .overlay(alignment: .top) {
+                    LayoutToolOptionsOverlay(viewModel: viewModel)
+                        .padding(.top, 12)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    LayoutZoomControlView(viewModel: viewModel)
+                        .padding(12)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    LayoutMiniMapView(viewModel: viewModel)
+                        .padding(12)
+                }
+                .layoutPriority(1)
 
-            LayoutViolationListView(viewModel: viewModel)
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
+            if !viewModel.violations.isEmpty {
+                LayoutDiagnosticsBar(violations: viewModel.violations)
+            }
         }
     }
 }
