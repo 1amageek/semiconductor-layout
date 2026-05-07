@@ -25,11 +25,6 @@ public struct SimpleRoutingEngine: RoutingEngine {
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
         let m1Rules = tech.ruleSet(for: m1ID)
         let m2Rules = tech.ruleSet(for: m2ID)
-        let m1Width = m1Rules?.minWidth ?? 0.23
-        let m2Width = m2Rules?.minWidth ?? 0.28
-        let m1Spacing = m1Rules?.minSpacing ?? 0.23
-        let m2Spacing = m2Rules?.minSpacing ?? 0.28
-        let grid = tech.grid
 
         guard let viaDef = tech.vias.first else {
             return RoutingResult(
@@ -37,6 +32,13 @@ public struct SimpleRoutingEngine: RoutingEngine {
                 unroutedNets: nets.map(\.name)
             )
         }
+        let minM1Width = m1Rules?.minWidth ?? 0.23
+        let minM2Width = m2Rules?.minWidth ?? 0.28
+        let m1Width = max(minM1Width, viaDef.cutSize.width + 2 * viaDef.enclosure.bottom)
+        let m2Width = max(minM2Width, viaDef.cutSize.width + 2 * viaDef.enclosure.top)
+        let m1Spacing = m1Rules?.minSpacing ?? 0.23
+        let m2Spacing = m2Rules?.minSpacing ?? 0.28
+        let grid = tech.grid
 
         var obstMap = ObstructionMap()
         for obs in obstructions {
@@ -165,12 +167,12 @@ public struct SimpleRoutingEngine: RoutingEngine {
 
             // If pin is already on the rail, just add a VIA
             if abs(pinPos.y - railY) < grid {
-                routedNet.vias.append(makeVia(at: pinPos, viaDef: viaDef, grid: grid))
+                appendVia(at: pinPos, viaDef: viaDef, grid: grid, shapes: &routedNet.shapes, vias: &routedNet.vias)
                 continue
             }
 
             // VIA at pin (M1→M2)
-            routedNet.vias.append(makeVia(at: pinPos, viaDef: viaDef, grid: grid))
+            appendVia(at: pinPos, viaDef: viaDef, grid: grid, shapes: &routedNet.shapes, vias: &routedNet.vias)
 
             // M2 vertical from pin to rail
             let v = makeVertical(
@@ -180,7 +182,7 @@ public struct SimpleRoutingEngine: RoutingEngine {
             routedNet.shapes.append(v)
 
             // VIA at rail (M2→M1)
-            routedNet.vias.append(makeVia(at: railPoint, viaDef: viaDef, grid: grid))
+            appendVia(at: railPoint, viaDef: viaDef, grid: grid, shapes: &routedNet.shapes, vias: &routedNet.vias)
         }
 
         return routedNet
@@ -350,6 +352,56 @@ public struct SimpleRoutingEngine: RoutingEngine {
         )
     }
 
+    private func appendVia(
+        at point: LayoutPoint,
+        viaDef: LayoutViaDefinition,
+        grid: Double,
+        shapes: inout [LayoutShape],
+        vias: inout [LayoutVia]
+    ) {
+        let via = makeVia(at: point, viaDef: viaDef, grid: grid)
+        vias.append(via)
+        shapes.append(contentsOf: makeViaLandingShapes(at: via.position, viaDef: viaDef, grid: grid))
+    }
+
+    private func makeViaLandingShapes(
+        at point: LayoutPoint,
+        viaDef: LayoutViaDefinition,
+        grid: Double
+    ) -> [LayoutShape] {
+        [
+            makeViaLandingShape(
+                at: point,
+                layer: viaDef.bottomLayer,
+                size: viaDef.cutSize.width + 2 * viaDef.enclosure.bottom,
+                grid: grid
+            ),
+            makeViaLandingShape(
+                at: point,
+                layer: viaDef.topLayer,
+                size: viaDef.cutSize.width + 2 * viaDef.enclosure.top,
+                grid: grid
+            ),
+        ]
+    }
+
+    private func makeViaLandingShape(
+        at point: LayoutPoint,
+        layer: LayoutLayerID,
+        size: Double,
+        grid: Double
+    ) -> LayoutShape {
+        let snappedSize = ContactArrayHelper.snapUp(size + 2 * grid, grid: grid)
+        let rect = LayoutRect(
+            origin: LayoutPoint(
+                x: snap(point.x - snappedSize / 2, grid: grid),
+                y: snap(point.y - snappedSize / 2, grid: grid)
+            ),
+            size: LayoutSize(width: snappedSize, height: snappedSize)
+        )
+        return LayoutShape(layer: layer, geometry: .rect(rect))
+    }
+
     // MARK: - Vertical with VIAs (pins on M1, route on M2)
 
     private func routeVerticalWithVias(
@@ -367,7 +419,7 @@ public struct SimpleRoutingEngine: RoutingEngine {
         var vias: [LayoutVia] = []
 
         // VIA at from (M1→M2)
-        vias.append(makeVia(at: from, viaDef: viaDef, grid: grid))
+        appendVia(at: from, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
         // M2 vertical
         let v = makeVertical(from: from, to: to, layer: m2ID, width: m2Width, grid: grid)
@@ -375,7 +427,7 @@ public struct SimpleRoutingEngine: RoutingEngine {
         shapes.append(v)
 
         // VIA at to (M2→M1)
-        vias.append(makeVia(at: to, viaDef: viaDef, grid: grid))
+        appendVia(at: to, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
         return (shapes, vias)
     }
@@ -416,14 +468,14 @@ public struct SimpleRoutingEngine: RoutingEngine {
             shapes.append(hShape)
 
             // VIA at bend (M1→M2)
-            vias.append(makeVia(at: bend, viaDef: viaDef, grid: grid))
+            appendVia(at: bend, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
             // M2 vertical bend → to
             obstMap.register(shape: vShape)
             shapes.append(vShape)
 
             // VIA at to (M2→M1, since destination pin is on M1)
-            vias.append(makeVia(at: to, viaDef: viaDef, grid: grid))
+            appendVia(at: to, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
             return (shapes, vias)
         } else {
@@ -440,14 +492,14 @@ public struct SimpleRoutingEngine: RoutingEngine {
             var vias: [LayoutVia] = []
 
             // VIA at from (M1→M2, since source pin is on M1)
-            vias.append(makeVia(at: from, viaDef: viaDef, grid: grid))
+            appendVia(at: from, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
             // M2 vertical from → bend
             obstMap.register(shape: vShape)
             shapes.append(vShape)
 
             // VIA at bend (M2→M1)
-            vias.append(makeVia(at: bend, viaDef: viaDef, grid: grid))
+            appendVia(at: bend, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
             // M1 horizontal bend → to (to pin is on M1, no VIA needed)
             obstMap.register(shape: hShape)
@@ -483,7 +535,7 @@ public struct SimpleRoutingEngine: RoutingEngine {
         shapes.append(h1)
 
         // VIA at bend1 (M1→M2)
-        vias.append(makeVia(at: bend1, viaDef: viaDef, grid: grid))
+        appendVia(at: bend1, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
         // M2 vertical bend1 → bend2
         let v = makeVertical(from: bend1, to: bend2, layer: m2ID, width: m2Width, grid: grid)
@@ -491,7 +543,7 @@ public struct SimpleRoutingEngine: RoutingEngine {
         shapes.append(v)
 
         // VIA at bend2 (M2→M1)
-        vias.append(makeVia(at: bend2, viaDef: viaDef, grid: grid))
+        appendVia(at: bend2, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
 
         // M1 horizontal bend2 → to
         let h2 = makeHorizontal(from: bend2, to: to, layer: m1ID, width: m1Width, grid: grid)

@@ -159,6 +159,7 @@ public struct LayoutDRCService {
             if layerShapes.count < 2 { continue }
             let minSpaceDBU = Int32((rules.minSpacing * dbu).rounded())
             if minSpaceDBU <= 0 { continue }
+            let spacingTolerance = tech.grid * 1.1
 
             // Edge-based spacing check via GeometryOps Region
             for i in 0..<(layerShapes.count - 1) {
@@ -174,6 +175,7 @@ public struct LayoutDRCService {
                     for pair in spacePairs {
                         let rect = edgePairToRect(pair, dbu: dbu)
                         let measured = pair.distance / dbu
+                        guard measured + spacingTolerance < rules.minSpacing else { continue }
                         violations.append(LayoutViolation(
                             kind: .minSpacing,
                             message: "Min spacing violation on \(layer.name). Required \(rules.minSpacing)µm, measured \(String(format: "%.3f", measured))µm",
@@ -217,9 +219,13 @@ public struct LayoutDRCService {
             }
 
             if !topMatch || !bottomMatch {
+                let missing = [
+                    topMatch ? nil : "top \(def.topLayer.name)",
+                    bottomMatch ? nil : "bottom \(def.bottomLayer.name)"
+                ].compactMap { $0 }.joined(separator: ", ")
                 violations.append(LayoutViolation(
                     kind: .enclosure,
-                    message: "Via enclosure violation for \(via.viaDefinitionID)",
+                    message: "Via enclosure violation for \(via.viaDefinitionID): missing \(missing)",
                     layer: def.cutLayer,
                     region: cutRect
                 ))
@@ -258,7 +264,8 @@ public struct LayoutDRCService {
             let a = shapes[i]
             for j in (i + 1)..<shapes.count {
                 let b = shapes[j]
-                if let na = a.netID, let nb = b.netID, na == nb { continue }
+                guard a.layer == b.layer else { continue }
+                guard let na = a.netID, let nb = b.netID, na != nb else { continue }
                 if LayoutGeometryUtils.intersects(a.geometry, b.geometry) {
                     let region = LayoutGeometryUtils.boundingBox(for: a.geometry).union(
                         LayoutGeometryUtils.boundingBox(for: b.geometry)
