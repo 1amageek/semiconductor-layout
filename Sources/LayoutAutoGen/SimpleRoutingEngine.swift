@@ -64,6 +64,10 @@ public struct SimpleRoutingEngine: RoutingEngine {
             guard net.pins.count >= 1 else { continue }
 
             if net.isPower {
+                guard net.pins.count >= 2 else {
+                    routes.append(RoutedNet(netID: net.id))
+                    continue
+                }
                 // Power net: connect each pin to the nearest power rail via M2 vertical drop.
                 let targetRailY = powerRailTarget(
                     netName: net.name, vddRailY: vddRailY, vssRailY: vssRailY
@@ -254,11 +258,17 @@ public struct SimpleRoutingEngine: RoutingEngine {
             return ([], [])
         }
 
-        // Horizontal only (same Y) — pure M1, no VIA needed since pins are on M1
+        // Horizontal only (same Y). Use an M2 trunk so the route does not
+        // short across unrelated M1 device pads between the endpoints.
         if abs(from.y - to.y) < grid {
-            let h = makeHorizontal(from: from, to: to, layer: m1ID, width: m1Width, grid: grid)
+            var shapes: [LayoutShape] = []
+            var vias: [LayoutVia] = []
+            appendVia(at: from, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
+            let h = makeHorizontal(from: from, to: to, layer: m2ID, width: m2Width, grid: grid)
             obstMap.register(shape: h)
-            return ([h], [])
+            shapes.append(h)
+            appendVia(at: to, viaDef: viaDef, grid: grid, shapes: &shapes, vias: &vias)
+            return (shapes, vias)
         }
 
         // Vertical only (same X) — need VIA at both ends since pins are on M1
