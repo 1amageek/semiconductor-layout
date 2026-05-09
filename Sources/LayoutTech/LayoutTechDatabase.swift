@@ -132,6 +132,7 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
         let m1ID     = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID     = LayoutLayerID(name: "M2", purpose: "drawing")
         let via1ID   = LayoutLayerID(name: "VIA1", purpose: "cut")
+        let resiID   = LayoutLayerID(name: "RESI", purpose: "drawing")
 
         // Layer definitions
         let layers: [LayoutLayerDefinition] = [
@@ -182,6 +183,11 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
                 color: LayoutColor(red: 0.8, green: 0.8, blue: 0.2),
                 fillPattern: .crosshatch
             ),
+            LayoutLayerDefinition(
+                id: resiID, displayName: "Resistor ID", gdsLayer: 60, gdsDatatype: 0,
+                color: LayoutColor(red: 0.6, green: 0.4, blue: 0.2, alpha: 0.4),
+                fillPattern: .horizontal
+            ),
         ]
 
         // Layer design rules (dimensions in µm)
@@ -218,6 +224,10 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
                 layerID: m2ID, minWidth: 0.28, minSpacing: 0.28,
                 minArea: 0.01, minDensity: 0.0, maxDensity: 1.0
             ),
+            LayoutLayerRuleSet(
+                layerID: resiID, minWidth: 0.44, minSpacing: 0.44,
+                minArea: 0.0, minDensity: 0.0, maxDensity: 1.0
+            ),
         ]
 
         // Via definitions
@@ -236,6 +246,7 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             LayoutEnclosureRule(outerLayer: nwellID, innerLayer: activeID, minEnclosure: 0.18),
             LayoutEnclosureRule(outerLayer: nimpID, innerLayer: activeID, minEnclosure: 0.14),
             LayoutEnclosureRule(outerLayer: pimpID, innerLayer: activeID, minEnclosure: 0.14),
+            LayoutEnclosureRule(outerLayer: resiID, innerLayer: polyID, minEnclosure: 0.10),
         ]
 
         // Contact definitions

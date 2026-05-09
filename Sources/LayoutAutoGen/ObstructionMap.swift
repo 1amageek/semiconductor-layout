@@ -4,31 +4,61 @@ import LayoutCore
 /// Tracks occupied regions per layer for routing obstruction detection.
 ///
 /// Uses simple bounding-box overlap checking. Each registered shape is stored
-/// as a LayoutRect on its layer. Collision checks inflate query rects by the
-/// required minimum spacing.
+/// as an indexed rect on its layer. Supports removal by shape ID for rip-up/reroute.
 public struct ObstructionMap: Sendable {
-    private var obstructions: [String: [LayoutRect]]  // layerKey → rects
+
+    private struct IndexedRect: Sendable {
+        let shapeID: UUID
+        let rect: LayoutRect
+    }
+
+    private var obstructions: [String: [IndexedRect]]  // layerKey → indexed rects
+    private var shapeLayerIndex: [UUID: String]         // shapeID → layerKey (for removal)
 
     public init() {
         obstructions = [:]
+        shapeLayerIndex = [:]
     }
 
-    public mutating func register(shape: LayoutShape) {
+    /// Registers a shape and returns its assigned shape ID for later removal.
+    @discardableResult
+    public mutating func register(shape: LayoutShape) -> UUID {
         let key = layerKey(shape.layer)
         let bounds = geometryBounds(shape.geometry)
-        obstructions[key, default: []].append(bounds)
+        let shapeID = UUID()
+        obstructions[key, default: []].append(IndexedRect(shapeID: shapeID, rect: bounds))
+        shapeLayerIndex[shapeID] = key
+        return shapeID
     }
 
-    public mutating func register(rect: LayoutRect, layer: LayoutLayerID) {
+    /// Registers a rect on a layer and returns its assigned shape ID.
+    @discardableResult
+    public mutating func register(rect: LayoutRect, layer: LayoutLayerID) -> UUID {
         let key = layerKey(layer)
-        obstructions[key, default: []].append(rect)
+        let shapeID = UUID()
+        obstructions[key, default: []].append(IndexedRect(shapeID: shapeID, rect: rect))
+        shapeLayerIndex[shapeID] = key
+        return shapeID
+    }
+
+    /// Removes a previously registered shape by its ID.
+    public mutating func remove(shapeID: UUID) {
+        guard let key = shapeLayerIndex.removeValue(forKey: shapeID) else { return }
+        obstructions[key]?.removeAll { $0.shapeID == shapeID }
+    }
+
+    /// Removes all shapes associated with a collection of shape IDs.
+    public mutating func remove(shapeIDs: [UUID]) {
+        for id in shapeIDs {
+            remove(shapeID: id)
+        }
     }
 
     public func hasCollision(rect: LayoutRect, layer: LayoutLayerID, spacing: Double) -> Bool {
         let key = layerKey(layer)
         guard let rects = obstructions[key] else { return false }
         let expanded = rect.expanded(by: spacing, spacing)
-        return rects.contains { $0.intersects(expanded) }
+        return rects.contains { $0.rect.intersects(expanded) }
     }
 
     private func layerKey(_ layer: LayoutLayerID) -> String {

@@ -78,5 +78,14 @@ let package = Package(
                 .product(name: "LEF", package: "swift-mask-data"),
             ]
         ),
+        .testTarget(
+            name: "LayoutAutoGenTests",
+            dependencies: [
+                "LayoutAutoGen",
+                "LayoutCore",
+                "LayoutTech",
+                "LayoutVerify",
+            ]
+        ),
     ]
 )

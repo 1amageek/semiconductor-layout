@@ -364,6 +364,9 @@ public struct LayoutCanvasView: View {
             },
             onZoom: { magnification, cursorLocation in
                 zoomToward(cursorLocation, factor: 1 + magnification)
+            },
+            onBackSwipe: {
+                viewModel.navigateBack()
             }
         )
     }
@@ -457,7 +460,7 @@ public struct LayoutCanvasView: View {
     // MARK: - Drawing: Shapes
 
     private func drawShapes(context: inout GraphicsContext) {
-        let shapes = viewModel.documentShapes()
+        let shapes = viewModel.flattenedDocumentShapes()
 
         // Group shapes by layer so overlapping shapes on the same layer
         // are filled/patterned once, producing uniform color.
@@ -470,32 +473,51 @@ public struct LayoutCanvasView: View {
             shapesByLayer[shape.layer, default: []].append(shape)
         }
 
+        let strokeWidth = 1.0 / viewModel.zoom
+
         for layer in layerOrder {
             guard viewModel.isLayerVisible(layer) else { continue }
             guard let layerShapes = shapesByLayer[layer] else { continue }
             let color = colorForLayer(layer)
             let pattern = patternForLayer(layer)
 
-            // Combine all non-path shapes into a single path for pattern fill
+            // Combine ALL shapes into a single fill path.
+            // Path geometries are converted to filled outlines via strokedPath().
             var combinedFillPath = Path()
             for shape in layerShapes {
-                if case .path = shape.geometry { continue }
-                combinedFillPath.addPath(pathForShape(shape))
+                if case .path = shape.geometry {
+                    let centerline = pathForShape(shape)
+                    let width = pathLineWidth(for: shape)
+                    let outline = centerline.strokedPath(StrokeStyle(
+                        lineWidth: width, lineCap: .butt, lineJoin: .miter
+                    ))
+                    combinedFillPath.addPath(outline)
+                } else {
+                    combinedFillPath.addPath(pathForShape(shape))
+                }
             }
 
-            // Pattern only — no solid fill so layers remain transparent
-            if !combinedFillPath.isEmpty && pattern != .solid {
-                drawPatternOverlay(context: &context, path: combinedFillPath, color: color, pattern: pattern)
+            // Pattern fill for all layers — solid uses semi-transparent fill
+            if !combinedFillPath.isEmpty {
+                if pattern == .solid {
+                    context.fill(combinedFillPath, with: .color(color.opacity(0.15)))
+                } else {
+                    drawPatternOverlay(context: &context, path: combinedFillPath, color: color, pattern: pattern)
+                }
             }
 
-            // Strokes per shape
-            let strokeWidth = 1.0 / viewModel.zoom
+            // Outline strokes per shape
             for shape in layerShapes {
-                let path = pathForShape(shape)
                 switch shape.geometry {
                 case .path:
-                    context.stroke(path, with: .color(color), lineWidth: pathLineWidth(for: shape))
+                    let centerline = pathForShape(shape)
+                    let width = pathLineWidth(for: shape)
+                    let outline = centerline.strokedPath(StrokeStyle(
+                        lineWidth: width, lineCap: .butt, lineJoin: .miter
+                    ))
+                    context.stroke(outline, with: .color(color), lineWidth: strokeWidth)
                 default:
+                    let path = pathForShape(shape)
                     context.stroke(path, with: .color(color), lineWidth: strokeWidth)
                 }
             }

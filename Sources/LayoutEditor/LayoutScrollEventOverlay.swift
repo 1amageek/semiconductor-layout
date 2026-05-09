@@ -9,6 +9,7 @@ import SwiftUI
 struct LayoutScrollEventOverlay: NSViewRepresentable {
     var onScroll: (_ deltaX: CGFloat, _ deltaY: CGFloat) -> Void
     var onZoom: (_ magnification: CGFloat, _ cursorLocation: CGPoint) -> Void
+    var onBackSwipe: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -17,6 +18,7 @@ struct LayoutScrollEventOverlay: NSViewRepresentable {
         context.coordinator.view = view
         context.coordinator.onScroll = onScroll
         context.coordinator.onZoom = onZoom
+        context.coordinator.onBackSwipe = onBackSwipe
         context.coordinator.startMonitoring()
         return view
     }
@@ -24,6 +26,7 @@ struct LayoutScrollEventOverlay: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.onScroll = onScroll
         context.coordinator.onZoom = onZoom
+        context.coordinator.onBackSwipe = onBackSwipe
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -34,14 +37,19 @@ struct LayoutScrollEventOverlay: NSViewRepresentable {
         weak var view: NSView?
         var onScroll: ((_ deltaX: CGFloat, _ deltaY: CGFloat) -> Void)?
         var onZoom: ((_ magnification: CGFloat, _ cursorLocation: CGPoint) -> Void)?
+        var onBackSwipe: (() -> Void)?
         private var scrollMonitor: Any?
         private var magnifyMonitor: Any?
+        private var backSwipeAccumulatedX: CGFloat = 0
+        private var isTrackingBackSwipe = false
 
         func startMonitoring() {
             scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
                 guard let self, let view = self.view else { return event }
-                let location = view.convert(event.locationInWindow, from: nil)
-                guard view.bounds.contains(location) else { return event }
+                let windowLocation = event.locationInWindow
+                let location = MainActor.assumeIsolated { view.convert(windowLocation, from: nil) }
+                let bounds = MainActor.assumeIsolated { view.bounds }
+                guard bounds.contains(location) else { return event }
 
                 if event.modifierFlags.contains(.command) {
                     let factor: CGFloat
@@ -61,6 +69,11 @@ struct LayoutScrollEventOverlay: NSViewRepresentable {
                         dx = event.scrollingDeltaX * 10
                         dy = event.scrollingDeltaY * 10
                     }
+
+                    if self.handleBackSwipeGesture(event: event, location: location, dx: dx, dy: dy) {
+                        return nil
+                    }
+
                     self.onScroll?(dx, dy)
                 }
                 return nil
@@ -68,8 +81,10 @@ struct LayoutScrollEventOverlay: NSViewRepresentable {
 
             magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
                 guard let self, let view = self.view else { return event }
-                let location = view.convert(event.locationInWindow, from: nil)
-                guard view.bounds.contains(location) else { return event }
+                let windowLocation = event.locationInWindow
+                let location = MainActor.assumeIsolated { view.convert(windowLocation, from: nil) }
+                let bounds = MainActor.assumeIsolated { view.bounds }
+                guard bounds.contains(location) else { return event }
 
                 self.onZoom?(event.magnification, location)
                 return nil
@@ -79,9 +94,44 @@ struct LayoutScrollEventOverlay: NSViewRepresentable {
         func stopMonitoring() {
             if let m = scrollMonitor { NSEvent.removeMonitor(m); scrollMonitor = nil }
             if let m = magnifyMonitor { NSEvent.removeMonitor(m); magnifyMonitor = nil }
+            isTrackingBackSwipe = false
+            backSwipeAccumulatedX = 0
         }
 
         deinit { stopMonitoring() }
+
+        private func handleBackSwipeGesture(event: NSEvent, location: CGPoint, dx: CGFloat, dy: CGFloat) -> Bool {
+            guard onBackSwipe != nil else { return false }
+            if event.modifierFlags.contains(.command) { return false }
+
+            let mostlyHorizontal = abs(dx) > abs(dy) * 1.8
+            let fromLeftEdge = location.x < 72
+
+            if !isTrackingBackSwipe {
+                guard mostlyHorizontal, dx > 0, fromLeftEdge else { return false }
+                isTrackingBackSwipe = true
+                backSwipeAccumulatedX = dx
+                return true
+            }
+
+            backSwipeAccumulatedX += dx
+
+            if backSwipeAccumulatedX > 160 {
+                onBackSwipe?()
+                isTrackingBackSwipe = false
+                backSwipeAccumulatedX = 0
+                return true
+            }
+
+            let ended = event.phase == .ended || event.phase == .cancelled ||
+                event.momentumPhase == .ended || event.momentumPhase == .cancelled
+            if ended || backSwipeAccumulatedX < -20 || abs(dy) > abs(dx) {
+                isTrackingBackSwipe = false
+                backSwipeAccumulatedX = 0
+            }
+
+            return true
+        }
     }
 }
 

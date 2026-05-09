@@ -19,9 +19,12 @@ public struct LayoutEditorView: View {
             LayoutCanvasView(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: 8) {
-                        LayoutToolPaletteOverlay(viewModel: viewModel)
-                        LayoutLayerPaletteOverlay(viewModel: viewModel)
+                    VStack(alignment: .leading, spacing: 8) {
+                        LayoutCellBreadcrumbBar(viewModel: viewModel)
+                        HStack(alignment: .top, spacing: 8) {
+                            LayoutToolPaletteOverlay(viewModel: viewModel)
+                            LayoutLayerPaletteOverlay(viewModel: viewModel)
+                        }
                     }
                     .padding(12)
                 }
@@ -84,6 +87,19 @@ public struct LayoutEditorView: View {
         } message: {
             Text(fileImportError ?? "")
         }
+        .simultaneousGesture(backSwipeGesture)
+    }
+
+    private var backSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 30)
+            .onEnded { value in
+                let deltaX = value.translation.width
+                let deltaY = abs(value.translation.height)
+                guard deltaX > 140 else { return }
+                guard deltaY < 100 else { return }
+                guard value.startLocation.x < 80 || deltaX > 220 else { return }
+                viewModel.navigateBack()
+            }
     }
 
     private static let maskDataContentTypes: [UTType] = {
@@ -105,6 +121,15 @@ public struct LayoutEditorView: View {
 #Preview("NAND Flash GDS (Artifacts)") {
     LayoutEditorView(viewModel: LayoutEditorView.makeNAND2ViewModel())
         .frame(width: 1200, height: 700)
+}
+
+#Preview("Folded Cascode OTA") {
+    let (document, tech) = PreviewSampleData.buildFCOTALayout()
+    let viewModel = LayoutEditorViewModel(document: document, tech: tech)
+    viewModel.canvasSize = CGSize(width: 1200, height: 800)
+    viewModel.fitAll()
+    return LayoutEditorView(viewModel: viewModel)
+        .frame(width: 1200, height: 800)
 }
 
 extension LayoutEditorView {
