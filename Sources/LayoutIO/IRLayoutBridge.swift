@@ -147,10 +147,10 @@ public struct IRLayoutBridge: Sendable {
     private func convertCellRef(_ r: IRCellRef, dbu: Double, cellNameToID: [String: UUID]) -> LayoutInstance? {
         guard let cellID = cellNameToID[r.cellName] else { return nil }
         let origin = dbuToMicron(r.origin, dbu: dbu)
-        let rotation = angleToRotation(r.transform.angle)
         let transform = LayoutTransform(
             translation: origin,
-            rotation: rotation,
+            rotationDegrees: r.transform.angle,
+            magnification: r.transform.magnification,
             mirrorX: r.transform.mirrorX
         )
         return LayoutInstance(cellID: cellID, name: r.cellName, transform: transform)
@@ -173,7 +173,6 @@ public struct IRLayoutBridge: Sendable {
         let rowDX = Double(rowEnd.x - origin.x) / Double(rows)
         let rowDY = Double(rowEnd.y - origin.y) / Double(rows)
 
-        let rotation = angleToRotation(a.transform.angle)
         var instances: [LayoutInstance] = []
 
         for r in 0..<rows {
@@ -183,7 +182,8 @@ public struct IRLayoutBridge: Sendable {
                 let pos = LayoutPoint(x: px / dbu, y: py / dbu)
                 let transform = LayoutTransform(
                     translation: pos,
-                    rotation: rotation,
+                    rotationDegrees: a.transform.angle,
+                    magnification: a.transform.magnification,
                     mirrorX: a.transform.mirrorX
                 )
                 instances.append(LayoutInstance(
@@ -263,13 +263,13 @@ public struct IRLayoutBridge: Sendable {
                 instance.transform.translation,
                 dbu: dbu
             )
-            let angle = rotationToAngle(instance.transform.rotation)
             elements.append(.cellRef(IRCellRef(
                 cellName: cellName,
                 origin: origin,
                 transform: IRTransform(
                     mirrorX: instance.transform.mirrorX,
-                    angle: angle
+                    magnification: instance.transform.magnification,
+                    angle: instance.transform.rotationDegrees
                 ),
                 properties: []
             )))
@@ -319,22 +319,4 @@ public struct IRLayoutBridge: Sendable {
         return LayoutLayerID(name: "L\(gdsLayer)", purpose: "D\(gdsDatatype)")
     }
 
-    // MARK: - Rotation conversion
-
-    private func angleToRotation(_ angle: Double) -> LayoutRotation {
-        let normalized = ((angle.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360)
-        if normalized < 45 || normalized >= 315 { return .deg0 }
-        if normalized >= 45 && normalized < 135 { return .deg90 }
-        if normalized >= 135 && normalized < 225 { return .deg180 }
-        return .deg270
-    }
-
-    private func rotationToAngle(_ rotation: LayoutRotation) -> Double {
-        switch rotation {
-        case .deg0: return 0.0
-        case .deg90: return 90.0
-        case .deg180: return 180.0
-        case .deg270: return 270.0
-        }
-    }
 }

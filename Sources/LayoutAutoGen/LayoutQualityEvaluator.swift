@@ -357,7 +357,7 @@ public struct LayoutQualityEvaluator: Sendable {
         guard let firstTransform = placements[match.members[0]] else { return false }
         for id in match.members.dropFirst() {
             guard let t = placements[id] else { return false }
-            if t.rotation != firstTransform.rotation || t.mirrorX != firstTransform.mirrorX {
+            if !rotationDegreesEqual(t.rotationDegrees, firstTransform.rotationDegrees) || t.mirrorX != firstTransform.mirrorX {
                 return false
             }
         }
@@ -429,6 +429,12 @@ public struct LayoutQualityEvaluator: Sendable {
 
         // Pattern should alternate (e.g. [0,1,0,1] or match the specified pattern)
         return actualPattern == idg.pattern
+    }
+
+    private func rotationDegreesEqual(_ lhs: Double, _ rhs: Double) -> Bool {
+        let delta = abs(((lhs - rhs + 180).truncatingRemainder(dividingBy: 360) + 360)
+            .truncatingRemainder(dividingBy: 360) - 180)
+        return delta < 1e-9
     }
 
     // MARK: - White Space Utilization

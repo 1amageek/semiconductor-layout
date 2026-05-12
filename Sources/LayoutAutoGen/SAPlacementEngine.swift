@@ -7,19 +7,22 @@ import LayoutTech
 /// Captures positions of all instances affected by a move for exact revert.
 struct SavedMoveState: Sendable {
     var positions: [UUID: LayoutPoint]            // translation
-    var rotations: [UUID: LayoutRotation]
+    var rotationDegrees: [UUID: Double]
+    var magnifications: [UUID: Double]
     var mirrors: [UUID: Bool]                     // mirrorX
 
     init() {
         positions = [:]
-        rotations = [:]
+        rotationDegrees = [:]
+        magnifications = [:]
         mirrors = [:]
     }
 
     mutating func save(instanceID: UUID, from state: SAPlacementState) {
         guard let slot = state.slots[instanceID] else { return }
         positions[instanceID] = slot.transform.translation
-        rotations[instanceID] = slot.transform.rotation
+        rotationDegrees[instanceID] = slot.transform.rotationDegrees
+        magnifications[instanceID] = slot.transform.magnification
         mirrors[instanceID] = slot.transform.mirrorX
     }
 }
@@ -49,7 +52,8 @@ struct SAPlacementState: Sendable {
                     x: slotB.transform.translation.x,
                     y: slotA.transform.translation.y
                 ),
-                rotation: slotA.transform.rotation,
+                rotationDegrees: slotA.transform.rotationDegrees,
+                magnification: slotA.transform.magnification,
                 mirrorX: slotA.transform.mirrorX,
                 mirrorY: slotA.transform.mirrorY
             )
@@ -58,7 +62,8 @@ struct SAPlacementState: Sendable {
                     x: tempTransform.translation.x,
                     y: slotB.transform.translation.y
                 ),
-                rotation: slotB.transform.rotation,
+                rotationDegrees: slotB.transform.rotationDegrees,
+                magnification: slotB.transform.magnification,
                 mirrorX: slotB.transform.mirrorX,
                 mirrorY: slotB.transform.mirrorY
             )
@@ -79,7 +84,8 @@ struct SAPlacementState: Sendable {
             let newX = snap(slot.transform.translation.x + dx, grid: grid)
             slot.transform = LayoutTransform(
                 translation: LayoutPoint(x: newX, y: slot.transform.translation.y),
-                rotation: slot.transform.rotation,
+                rotationDegrees: slot.transform.rotationDegrees,
+                magnification: slot.transform.magnification,
                 mirrorX: slot.transform.mirrorX,
                 mirrorY: slot.transform.mirrorY
             )
@@ -90,7 +96,8 @@ struct SAPlacementState: Sendable {
             let newY = snap(slot.transform.translation.y + dy, grid: grid)
             slot.transform = LayoutTransform(
                 translation: LayoutPoint(x: slot.transform.translation.x, y: newY),
-                rotation: slot.transform.rotation,
+                rotationDegrees: slot.transform.rotationDegrees,
+                magnification: slot.transform.magnification,
                 mirrorX: slot.transform.mirrorX,
                 mirrorY: slot.transform.mirrorY
             )
@@ -108,6 +115,7 @@ struct SAPlacementState: Sendable {
             slot.transform = LayoutTransform(
                 translation: slot.transform.translation,
                 rotation: nextRotation,
+                magnification: slot.transform.magnification,
                 mirrorX: slot.transform.mirrorX,
                 mirrorY: slot.transform.mirrorY
             )
@@ -117,7 +125,8 @@ struct SAPlacementState: Sendable {
             guard var slot = slots[inst] else { return }
             slot.transform = LayoutTransform(
                 translation: slot.transform.translation,
-                rotation: slot.transform.rotation,
+                rotationDegrees: slot.transform.rotationDegrees,
+                magnification: slot.transform.magnification,
                 mirrorX: !slot.transform.mirrorX,
                 mirrorY: slot.transform.mirrorY
             )
@@ -145,7 +154,8 @@ struct SAPlacementState: Sendable {
         let newX = snap(slot.transform.translation.x + dx, grid: grid)
         slot.transform = LayoutTransform(
             translation: LayoutPoint(x: newX, y: slot.transform.translation.y),
-            rotation: slot.transform.rotation,
+            rotationDegrees: slot.transform.rotationDegrees,
+            magnification: slot.transform.magnification,
             mirrorX: slot.transform.mirrorX,
             mirrorY: slot.transform.mirrorY
         )
@@ -157,7 +167,8 @@ struct SAPlacementState: Sendable {
         let newY = snap(slot.transform.translation.y + dy, grid: grid)
         slot.transform = LayoutTransform(
             translation: LayoutPoint(x: slot.transform.translation.x, y: newY),
-            rotation: slot.transform.rotation,
+            rotationDegrees: slot.transform.rotationDegrees,
+            magnification: slot.transform.magnification,
             mirrorX: slot.transform.mirrorX,
             mirrorY: slot.transform.mirrorY
         )
@@ -179,7 +190,8 @@ struct SAPlacementState: Sendable {
             guard var slot = slots[instID] else { continue }
             slot.transform = LayoutTransform(
                 translation: pos,
-                rotation: savedState.rotations[instID] ?? slot.transform.rotation,
+                rotationDegrees: savedState.rotationDegrees[instID] ?? slot.transform.rotationDegrees,
+                magnification: savedState.magnifications[instID] ?? slot.transform.magnification,
                 mirrorX: savedState.mirrors[instID] ?? slot.transform.mirrorX,
                 mirrorY: slot.transform.mirrorY
             )
@@ -197,7 +209,8 @@ struct SAPlacementState: Sendable {
                 guard var slot = slots[inst] else { return }
                 slot.transform = LayoutTransform(
                     translation: LayoutPoint(x: origX, y: slot.transform.translation.y),
-                    rotation: slot.transform.rotation,
+                    rotationDegrees: slot.transform.rotationDegrees,
+                    magnification: slot.transform.magnification,
                     mirrorX: slot.transform.mirrorX,
                     mirrorY: slot.transform.mirrorY
                 )

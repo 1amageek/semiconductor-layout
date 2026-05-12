@@ -284,7 +284,7 @@ struct SACostFunction: Sendable {
                 let transforms = match.members.compactMap { state.slots[$0]?.transform }
                 guard transforms.count == match.members.count, let ref = transforms.first else { continue }
                 for t in transforms.dropFirst() {
-                    if t.rotation != ref.rotation || t.mirrorX != ref.mirrorX {
+                    if !rotationDegreesEqual(t.rotationDegrees, ref.rotationDegrees) || t.mirrorX != ref.mirrorX {
                         return false
                     }
                 }
@@ -604,10 +604,10 @@ struct SACostFunction: Sendable {
         var penalty = 0.0
 
         // Penalize rotation/mirror mismatches within the group
-        let refRotation = members[0].1.transform.rotation
+        let refRotationDegrees = members[0].1.transform.rotationDegrees
         let refMirror = members[0].1.transform.mirrorX
         for i in 1..<members.count {
-            if members[i].1.transform.rotation != refRotation {
+            if !rotationDegreesEqual(members[i].1.transform.rotationDegrees, refRotationDegrees) {
                 penalty += 1.0
             }
             if members[i].1.transform.mirrorX != refMirror {
@@ -855,5 +855,11 @@ struct SACostFunction: Sendable {
         state.slots.values.map { slot in
             cellBoundingBox(slot.cell).size.width
         }.max() ?? 1.0
+    }
+
+    private func rotationDegreesEqual(_ lhs: Double, _ rhs: Double) -> Bool {
+        let delta = abs(((lhs - rhs + 180).truncatingRemainder(dividingBy: 360) + 360)
+            .truncatingRemainder(dividingBy: 360) - 180)
+        return delta < 1e-9
     }
 }

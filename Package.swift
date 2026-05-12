@@ -75,6 +75,7 @@ let package = Package(
                 "LayoutIO",
                 "LayoutCore",
                 "LayoutTech",
+                .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
             ]
