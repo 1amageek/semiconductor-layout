@@ -215,7 +215,7 @@ struct SAPlacementState: Sendable {
     }
 
     /// Converts to PlacementResult with power rail generation.
-    func toPlacementResult(tech: LayoutTechDatabase) -> PlacementResult {
+    func toPlacementResult(tech: LayoutTechDatabase) throws -> PlacementResult {
         var placements: [UUID: LayoutTransform] = [:]
         for (id, slot) in slots {
             placements[id] = slot.transform
@@ -230,8 +230,7 @@ struct SAPlacementState: Sendable {
         let totalBBox = bbox ?? .zero
 
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
-        let m1Rules = tech.ruleSet(for: m1ID)
-        let m1Width = m1Rules?.minWidth ?? 0.23
+        let m1Width = try tech.requiredRuleSet(for: m1ID).minWidth
         let railHeight = snap(max(m1Width * 3, 0.46), grid: tech.grid)
 
         let totalWidth = snap(max(totalBBox.size.width + 1.0, 2.0), grid: tech.grid)
@@ -367,17 +366,17 @@ public struct SAPlacementEngine: PlacementEngine {
         instances: [PlacementInstance],
         nets: [PlacementNet],
         tech: LayoutTechDatabase
-    ) -> PlacementResult {
+    ) throws -> PlacementResult {
         guard !instances.isEmpty else {
             return PlacementResult(placements: [:], powerRails: [], totalBoundingBox: .zero)
         }
 
         // 1. Warm start from greedy placement
-        let initial = RowBasedPlacementEngine().place(instances: instances, nets: nets, tech: tech)
+        let initial = try RowBasedPlacementEngine().place(instances: instances, nets: nets, tech: tech)
         var state = buildInitialState(from: initial, instances: instances)
 
         // 2. Setup cost function and move generator
-        var costFn = SACostFunction(
+        var costFn = try SACostFunction(
             nets: nets,
             tech: tech,
             constraints: constraints,
@@ -499,7 +498,7 @@ public struct SAPlacementEngine: PlacementEngine {
         }
 
         // 5. Convert best state to result
-        return bestState.toPlacementResult(tech: tech)
+        return try bestState.toPlacementResult(tech: tech)
     }
 
     // MARK: - Temperature Calibration

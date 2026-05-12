@@ -49,8 +49,8 @@ public struct CapacitorCellGenerator: DeviceCellGenerator {
         }
 
         let grid = tech.grid
-        let impEnclosure = tech.enclosureRule(outer: nimpID, inner: activeID)?.minEnclosure ?? 0.14
-        let nwellEnclosure = tech.enclosureRule(outer: nwellID, inner: activeID)?.minEnclosure ?? 0.18
+        let impEnclosure = try tech.requiredEnclosureRule(outer: nimpID, inner: activeID).minEnclosure
+        let nwellEnclosure = try tech.requiredEnclosureRule(outer: nwellID, inner: activeID).minEnclosure
 
         // Calculate overlap area: C = Cox × A → A = C / Cox
         let areaUm2 = c / oxideCapDensity

@@ -15,7 +15,7 @@ struct LayoutTechSidecarResolverTests {
     @Test func noSidecarReturnsNil() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { removeTemporaryItem(dir) }
 
         let layoutURL = dir.appendingPathComponent("design.gds")
         try Data().write(to: layoutURL)
@@ -29,7 +29,7 @@ struct LayoutTechSidecarResolverTests {
     @Test func findsBasenameLyp() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { removeTemporaryItem(dir) }
 
         let lypXML = """
         <?xml version="1.0" encoding="utf-8"?>
@@ -58,7 +58,7 @@ struct LayoutTechSidecarResolverTests {
     @Test func findsLayersLyp() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { removeTemporaryItem(dir) }
 
         let lypXML = """
         <?xml version="1.0" encoding="utf-8"?>
@@ -86,7 +86,7 @@ struct LayoutTechSidecarResolverTests {
     @Test func findsTechJson() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { removeTemporaryItem(dir) }
 
         let lib = IRTechLibrary(
             dbuPerMicron: 1000,
@@ -110,7 +110,7 @@ struct LayoutTechSidecarResolverTests {
     @Test func basenameLypHasPriority() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { removeTemporaryItem(dir) }
 
         let basenameLyp = """
         <?xml version="1.0" encoding="utf-8"?>
@@ -141,7 +141,7 @@ struct LayoutTechSidecarResolverTests {
         // Verify candidates include all expected formats
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { removeTemporaryItem(dir) }
 
         let layoutURL = dir.appendingPathComponent("mydesign.gds")
         try Data().write(to: layoutURL)
@@ -149,5 +149,13 @@ struct LayoutTechSidecarResolverTests {
         // None exist → nil
         let result = try resolver.resolve(for: layoutURL)
         #expect(result == nil)
+    }
+
+    private func removeTemporaryItem(_ url: URL) {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            Issue.record("Failed to remove temporary item at \(url.path(percentEncoded: false)): \(error)")
+        }
     }
 }

@@ -61,5 +61,5 @@ public protocol PlacementEngine: Sendable {
         instances: [PlacementInstance],
         nets: [PlacementNet],
         tech: LayoutTechDatabase
-    ) -> PlacementResult
+    ) throws -> PlacementResult
 }

@@ -45,7 +45,7 @@ struct TechFormatConverterTests {
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_tech.lyp")
         try lypXML.data(using: .utf8)!.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { removeTemporaryItem(tempURL) }
 
         let tech = try converter.loadTech(from: tempURL)
 
@@ -75,7 +75,7 @@ struct TechFormatConverterTests {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
         try encoder.encode(lib).write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { removeTemporaryItem(tempURL) }
 
         let tech = try converter.loadTech(from: tempURL)
 
@@ -114,7 +114,7 @@ struct TechFormatConverterTests {
         )
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("save_test.json")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { removeTemporaryItem(tempURL) }
 
         try converter.saveTechAsJSON(lib, to: tempURL)
 
@@ -124,10 +124,10 @@ struct TechFormatConverterTests {
 
     // MARK: - Unsupported format
 
-    @Test func unsupportedFormat() {
+    @Test func unsupportedFormat() throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test.xyz")
-        try! "data".data(using: .utf8)!.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try "data".data(using: .utf8)!.write(to: tempURL)
+        defer { removeTemporaryItem(tempURL) }
 
         #expect(throws: LayoutIOError.self) {
             try converter.loadTech(from: tempURL)
@@ -161,7 +161,7 @@ struct TechFormatConverterTests {
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("ir_test.lyp")
         try lypXML.data(using: .utf8)!.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { removeTemporaryItem(tempURL) }
 
         let irLib = try converter.loadIRTech(from: tempURL)
 
@@ -170,5 +170,13 @@ struct TechFormatConverterTests {
         #expect(irLib.layers[0].type == .routing)
         #expect(irLib.layers[0].gdsLayer == 10)
         #expect(irLib.metadata["source.format"] == "lyp")
+    }
+
+    private func removeTemporaryItem(_ url: URL) {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            Issue.record("Failed to remove temporary item at \(url.path(percentEncoded: false)): \(error)")
+        }
     }
 }

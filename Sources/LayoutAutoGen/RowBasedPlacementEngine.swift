@@ -17,21 +17,21 @@ public struct RowBasedPlacementEngine: PlacementEngine {
         instances: [PlacementInstance],
         nets: [PlacementNet],
         tech: LayoutTechDatabase
-    ) -> PlacementResult {
+    ) throws -> PlacementResult {
         guard !instances.isEmpty else {
             return PlacementResult(placements: [:], powerRails: [], totalBoundingBox: .zero)
         }
 
         let grid = tech.grid
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
-        let m1Rules = tech.ruleSet(for: m1ID)
-        let m1Width = m1Rules?.minWidth ?? 0.23
+        let m1Rules = try tech.requiredRuleSet(for: m1ID)
+        let m1Width = m1Rules.minWidth
 
         // Spacing between cells
         let activeID = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
         let polyID = LayoutLayerID(name: "POLY", purpose: "drawing")
-        let activeSpacing = tech.ruleSet(for: activeID)?.minSpacing ?? 0.28
-        let polySpacing = tech.ruleSet(for: polyID)?.minSpacing ?? 0.28
+        let activeSpacing = try tech.requiredRuleSet(for: activeID).minSpacing
+        let polySpacing = try tech.requiredRuleSet(for: polyID).minSpacing
         let cellSpacing = max(activeSpacing, polySpacing) + grid * 10 // extra margin
 
         // Build adjacency graph (shared nets between instances)

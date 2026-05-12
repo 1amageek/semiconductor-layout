@@ -158,13 +158,13 @@ struct SACostFunction: Sendable {
         tech: LayoutTechDatabase,
         constraints: [LayoutConstraint],
         weights: CostWeights
-    ) {
+    ) throws {
         self.nets = nets
         self.tech = tech
         self.constraints = constraints
         self.weights = weights
         self.normalization = CostNormalization()
-        self.minSpacing = tech.ruleSet(for: LayoutLayerID(name: "ACTIVE", purpose: "drawing"))?.minSpacing ?? 0.28
+        self.minSpacing = try tech.requiredRuleSet(for: LayoutLayerID(name: "ACTIVE", purpose: "drawing")).minSpacing
     }
 
     /// Calibrates normalization baselines from the initial placement state.

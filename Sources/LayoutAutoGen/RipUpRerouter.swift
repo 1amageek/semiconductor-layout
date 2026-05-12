@@ -37,7 +37,7 @@ struct RipUpRerouter: Sendable {
         shapeIDMap: inout [UUID: [UUID]],
         tech: LayoutTechDatabase,
         grid: Double
-    ) -> [String] {
+    ) throws -> [String] {
         let channelRouter = ChannelRouter()
         var ripUpCounts: [UUID: Int] = [:]
         var unrouted: [String] = []
@@ -93,7 +93,7 @@ struct RipUpRerouter: Sendable {
             }
 
             // Reroute with congestion-aware cost using the shared obstruction map
-            let newResult = channelRouter.routeCongestionAware(
+            let newResult = try channelRouter.routeCongestionAware(
                 tree: victim.tree,
                 tech: tech,
                 congestion: &congestion,

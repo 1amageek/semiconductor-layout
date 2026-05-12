@@ -36,11 +36,11 @@ public struct SteinerRoutingEngine: RoutingEngine {
         cells: [UUID: LayoutCell],
         obstructions: [LayoutShape],
         tech: LayoutTechDatabase
-    ) -> RoutingResult {
+    ) throws -> RoutingResult {
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
-        let m1Width = tech.ruleSet(for: m1ID)?.minWidth ?? 0.23
-        let m2Width = tech.ruleSet(for: m2ID)?.minWidth ?? 0.28
+        let m1Width = try tech.requiredRuleSet(for: m1ID).minWidth
+        let m2Width = try tech.requiredRuleSet(for: m2ID).minWidth
         let grid = tech.grid
 
         guard let viaDef = tech.vias.first else {
@@ -57,7 +57,7 @@ public struct SteinerRoutingEngine: RoutingEngine {
         let bbox = computeBoundingBox(
             placements: placements, cells: cells, obstructions: obstructions
         )
-        var congestion = CongestionGrid(boundingBox: bbox, tech: tech)
+        var congestion = try CongestionGrid(boundingBox: bbox, tech: tech)
 
         // 3. Identify power rails
         let railYPositions = obstructions.compactMap { shape -> Double? in
@@ -116,7 +116,7 @@ public struct SteinerRoutingEngine: RoutingEngine {
             let tree = SteinerTree.construct(pins: pins)
             trees[net.id] = tree
 
-            let result = channelRouter.routeCongestionAware(
+            let result = try channelRouter.routeCongestionAware(
                 tree: tree,
                 tech: tech,
                 congestion: &congestion,
@@ -149,7 +149,7 @@ public struct SteinerRoutingEngine: RoutingEngine {
             let rerouter = RipUpRerouter(configuration: .init(
                 maxIterations: configuration.maxRerouteIterations
             ))
-            let stillUnrouted = rerouter.resolve(
+            let stillUnrouted = try rerouter.resolve(
                 routedNets: &routes,
                 netInfos: netInfos,
                 segments: &segmentMap,

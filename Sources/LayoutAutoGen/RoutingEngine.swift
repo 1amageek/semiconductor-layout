@@ -70,5 +70,5 @@ public protocol RoutingEngine: Sendable {
         cells: [UUID: LayoutCell],
         obstructions: [LayoutShape],
         tech: LayoutTechDatabase
-    ) -> RoutingResult
+    ) throws -> RoutingResult
 }

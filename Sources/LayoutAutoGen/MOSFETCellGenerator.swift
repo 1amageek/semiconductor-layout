@@ -58,13 +58,13 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         )
 
         if nf == 1 {
-            return generateSingleFinger(
+            return try generateSingleFinger(
                 context: context,
                 deviceKindID: deviceKindID,
                 instanceName: instanceName
             )
         } else {
-            return generateMultiFinger(
+            return try generateMultiFinger(
                 context: context,
                 deviceKindID: deviceKindID,
                 instanceName: instanceName
@@ -151,7 +151,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             m1Rules = mr
 
             polyContDef = tech.contactDefinition(for: "CONT_POLY")
-            impEnclosure = tech.enclosureRule(outer: impID, inner: activeID)?.minEnclosure ?? 0.14
+            impEnclosure = try tech.requiredEnclosureRule(outer: impID, inner: activeID).minEnclosure
 
             contSize = cd.cutSize.width
             contEnc = cd.enclosure.bottom
@@ -176,7 +176,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         context c: MOSFETContext,
         deviceKindID: String,
         instanceName: String
-    ) -> LayoutCell {
+    ) throws -> LayoutCell {
         let activeLength = c.contactRegionLength + c.sdSpacing + c.l + c.sdSpacing + c.contactRegionLength
         let activeL = snap(activeLength, grid: c.grid)
         let activeW = snap(c.w, grid: c.grid)
@@ -317,7 +317,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         // 9. NWELL (PMOS only)
         if c.isPMOS {
             let nwellID = LayoutLayerID(name: "NWELL", purpose: "drawing")
-            let nwellEnc = c.tech.enclosureRule(outer: nwellID, inner: c.activeID)?.minEnclosure ?? 0.18
+            let nwellEnc = try c.tech.requiredEnclosureRule(outer: nwellID, inner: c.activeID).minEnclosure
             let combinedRect = activeRect.union(tapActiveRect)
             let nwellRect = combinedRect.expanded(by: nwellEnc, nwellEnc)
             shapes.append(LayoutShape(layer: nwellID, geometry: .rect(nwellRect)))
@@ -389,7 +389,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         context c: MOSFETContext,
         deviceKindID: String,
         instanceName: String
-    ) -> LayoutCell {
+    ) throws -> LayoutCell {
         let nf = c.nf
         let snappedL = snap(c.l, grid: c.grid)
         let activeW = snap(c.w, grid: c.grid)
@@ -626,7 +626,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         // 9. NWELL (PMOS only)
         if c.isPMOS {
             let nwellID = LayoutLayerID(name: "NWELL", purpose: "drawing")
-            let nwellEnc = c.tech.enclosureRule(outer: nwellID, inner: c.activeID)?.minEnclosure ?? 0.18
+            let nwellEnc = try c.tech.requiredEnclosureRule(outer: nwellID, inner: c.activeID).minEnclosure
             let combinedRect = activeRect.union(tapActiveRect)
             let nwellRect = combinedRect.expanded(by: nwellEnc, nwellEnc)
             shapes.append(LayoutShape(layer: nwellID, geometry: .rect(nwellRect)))

@@ -38,7 +38,7 @@ struct TechFormatConverterEdgeCaseTests {
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_tech.lef")
         try lefText.data(using: .utf8)!.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { removeTemporaryItem(tempURL) }
 
         let tech = try converter.loadTech(from: tempURL)
 
@@ -69,7 +69,7 @@ struct TechFormatConverterEdgeCaseTests {
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("ir_test.lef")
         try lefText.data(using: .utf8)!.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        defer { removeTemporaryItem(tempURL) }
 
         let irLib = try converter.loadIRTech(from: tempURL)
 
@@ -82,10 +82,10 @@ struct TechFormatConverterEdgeCaseTests {
 
     // MARK: - Invalid JSON content
 
-    @Test func invalidJsonContent() {
+    @Test func invalidJsonContent() throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("bad.json")
-        try! "{ invalid json }".data(using: .utf8)!.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try "{ invalid json }".data(using: .utf8)!.write(to: tempURL)
+        defer { removeTemporaryItem(tempURL) }
 
         #expect(throws: LayoutIOError.self) {
             try converter.loadTech(from: tempURL)
@@ -117,7 +117,7 @@ struct TechFormatConverterEdgeCaseTests {
 
         let lypURL = FileManager.default.temporaryDirectory.appendingPathComponent("e2e_test.lyp")
         try lypXML.data(using: .utf8)!.write(to: lypURL)
-        defer { try? FileManager.default.removeItem(at: lypURL) }
+        defer { removeTemporaryItem(lypURL) }
 
         // Step 1: Load .lyp → IRTechLibrary
         let irLib = try converter.loadIRTech(from: lypURL)
@@ -125,7 +125,7 @@ struct TechFormatConverterEdgeCaseTests {
 
         // Step 2: Save as JSON
         let jsonURL = FileManager.default.temporaryDirectory.appendingPathComponent("e2e_test.json")
-        defer { try? FileManager.default.removeItem(at: jsonURL) }
+        defer { removeTemporaryItem(jsonURL) }
         try converter.saveTechAsJSON(irLib, to: jsonURL)
 
         // Step 3: Reload from JSON
@@ -178,7 +178,7 @@ struct TechFormatConverterEdgeCaseTests {
 
         let lefURL = FileManager.default.temporaryDirectory.appendingPathComponent("e2e_process.lef")
         try lefText.data(using: .utf8)!.write(to: lefURL)
-        defer { try? FileManager.default.removeItem(at: lefURL) }
+        defer { removeTemporaryItem(lefURL) }
 
         // Full pipeline: LEF → IRTech → LayoutTechDatabase
         let tech = try converter.loadTech(from: lefURL)
@@ -199,5 +199,13 @@ struct TechFormatConverterEdgeCaseTests {
         #expect(m1Rule?.minArea == 0.058)
 
         #expect(tech.units.dbuPerMicron == 1000)
+    }
+
+    private func removeTemporaryItem(_ url: URL) {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            Issue.record("Failed to remove temporary item at \(url.path(percentEncoded: false)): \(error)")
+        }
     }
 }

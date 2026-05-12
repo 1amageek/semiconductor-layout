@@ -77,7 +77,7 @@ public struct ResistorCellGenerator: DeviceCellGenerator {
         shapes.append(LayoutShape(layer: polyID, geometry: .rect(polyRect)))
 
         // 2. RESI (salicide block) — covers resistor body only, not contact regions
-        let resiEnclosure = tech.enclosureRule(outer: resiID, inner: polyID)?.minEnclosure ?? 0.10
+        let resiEnclosure = try tech.requiredEnclosureRule(outer: resiID, inner: polyID).minEnclosure
         let resiStartX = snap(contactRegion, grid: grid)
         let resiEndX = snap(cellLength - contactRegion, grid: grid)
         let resiRect = LayoutRect(

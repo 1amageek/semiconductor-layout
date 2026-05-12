@@ -34,13 +34,13 @@ struct CongestionGrid: Sendable {
     let rows: Int
     let cols: Int
 
-    init(boundingBox: LayoutRect, tech: LayoutTechDatabase) {
+    init(boundingBox: LayoutRect, tech: LayoutTechDatabase) throws {
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
-        let m1Rules = tech.ruleSet(for: m1ID)
-        let m2Rules = tech.ruleSet(for: m2ID)
-        let m1Pitch = (m1Rules?.minWidth ?? 0.23) + (m1Rules?.minSpacing ?? 0.23)
-        let m2Pitch = (m2Rules?.minWidth ?? 0.28) + (m2Rules?.minSpacing ?? 0.28)
+        let m1Rules = try tech.requiredRuleSet(for: m1ID)
+        let m2Rules = try tech.requiredRuleSet(for: m2ID)
+        let m1Pitch = m1Rules.minWidth + m1Rules.minSpacing
+        let m2Pitch = m2Rules.minWidth + m2Rules.minSpacing
 
         // Cell size: ~10 track pitches
         self.cellSize = max(m1Pitch, m2Pitch) * 10

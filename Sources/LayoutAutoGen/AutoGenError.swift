@@ -4,6 +4,7 @@ public enum AutoGenError: Error, Sendable, LocalizedError {
     case unsupportedDevice(String)
     case missingParameter(device: String, parameter: String)
     case missingLayerRule(String)
+    case missingEnclosureRule(outer: String, inner: String)
     case missingContactDefinition(String)
     case placementFailed(String)
     case routingFailed(String)
@@ -16,6 +17,8 @@ public enum AutoGenError: Error, Sendable, LocalizedError {
             return "Device '\(device)' is missing required parameter '\(parameter)'"
         case .missingLayerRule(let layer):
             return "Missing design rules for layer '\(layer)' in technology database"
+        case .missingEnclosureRule(let outer, let inner):
+            return "Missing enclosure rule from '\(outer)' to '\(inner)' in technology database"
         case .missingContactDefinition(let id):
             return "Missing contact definition '\(id)' in technology database"
         case .placementFailed(let reason):

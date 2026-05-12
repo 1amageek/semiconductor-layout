@@ -76,11 +76,13 @@ struct MazeRouter: Sendable {
         congestion: CongestionGrid,
         obstMap: ObstructionMap,
         tech: LayoutTechDatabase
-    ) -> [ChannelRouter.RouteSegment]? {
-        let m1Width = tech.ruleSet(for: layers.m1)?.minWidth ?? 0.23
-        let m2Width = tech.ruleSet(for: layers.m2)?.minWidth ?? 0.28
-        let m1Spacing = tech.ruleSet(for: layers.m1)?.minSpacing ?? 0.23
-        let m2Spacing = tech.ruleSet(for: layers.m2)?.minSpacing ?? 0.28
+    ) throws -> [ChannelRouter.RouteSegment]? {
+        let m1Rules = try tech.requiredRuleSet(for: layers.m1)
+        let m2Rules = try tech.requiredRuleSet(for: layers.m2)
+        let m1Width = m1Rules.minWidth
+        let m2Width = m2Rules.minWidth
+        let m1Spacing = m1Rules.minSpacing
+        let m2Spacing = m2Rules.minSpacing
 
         let srcCoord = congestion.gridCoordinates(for: source)
         let dstCoord = congestion.gridCoordinates(for: destination)

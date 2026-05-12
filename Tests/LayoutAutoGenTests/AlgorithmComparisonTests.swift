@@ -16,7 +16,7 @@ struct AlgorithmComparisonTests {
         let input = try BenchmarkCircuits.inverter()
 
         // Baseline: greedy
-        let greedyResult = RowBasedPlacementEngine().place(
+        let greedyResult = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let greedyHPWL = computeHPWL(
@@ -29,7 +29,7 @@ struct AlgorithmComparisonTests {
             configuration: .init(initialTemperature: 500, coolingRate: 0.95, minTemperature: 0.1),
             constraints: input.constraints
         )
-        let saResult = saEngine.place(
+        let saResult = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let saHPWL = computeHPWL(
@@ -52,12 +52,12 @@ struct AlgorithmComparisonTests {
             temperatureMode: .fixed(500),
             randomSeed: 42
         )
-        let first = SAPlacementEngine(configuration: configuration, constraints: input.constraints).place(
+        let first = try SAPlacementEngine(configuration: configuration, constraints: input.constraints).place(
             instances: input.instances,
             nets: input.nets,
             tech: input.tech
         )
-        let second = SAPlacementEngine(configuration: configuration, constraints: input.constraints).place(
+        let second = try SAPlacementEngine(configuration: configuration, constraints: input.constraints).place(
             instances: input.instances,
             nets: input.nets,
             tech: input.tech
@@ -67,11 +67,57 @@ struct AlgorithmComparisonTests {
         #expect(first.totalBoundingBox == second.totalBoundingBox)
     }
 
+    @Test("Placement rejects missing technology rules")
+    func placementRejectsMissingTechnologyRules() throws {
+        let input = try BenchmarkCircuits.inverter()
+        let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
+        var tech = input.tech
+        tech.layerRules.removeAll { $0.layerID == m1ID }
+
+        #expect(throws: AutoGenError.self) {
+            _ = try RowBasedPlacementEngine().place(
+                instances: input.instances,
+                nets: input.nets,
+                tech: tech
+            )
+        }
+    }
+
+    @Test("Routing rejects missing technology rules")
+    func routingRejectsMissingTechnologyRules() throws {
+        let input = try BenchmarkCircuits.inverter()
+        let placement = try RowBasedPlacementEngine().place(
+            instances: input.instances,
+            nets: input.nets,
+            tech: input.tech
+        )
+        let routingNets = buildRoutingNets(
+            nets: input.nets,
+            instances: input.instances,
+            placements: placement.placements,
+            cells: input.cells,
+            tech: input.tech
+        )
+        let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
+        var tech = input.tech
+        tech.layerRules.removeAll { $0.layerID == m2ID }
+
+        #expect(throws: AutoGenError.self) {
+            _ = try SteinerRoutingEngine().route(
+                nets: routingNets,
+                placements: placement.placements,
+                cells: input.cells,
+                obstructions: placement.powerRails,
+                tech: tech
+            )
+        }
+    }
+
     @Test("SA placement produces lower HPWL than greedy on differential pair")
     func saPlacementDiffPairHPWL() throws {
         let input = try BenchmarkCircuits.differentialPair()
 
-        let greedyResult = RowBasedPlacementEngine().place(
+        let greedyResult = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let greedyHPWL = computeHPWL(
@@ -83,7 +129,7 @@ struct AlgorithmComparisonTests {
             configuration: .init(initialTemperature: 1000, coolingRate: 0.95, minTemperature: 0.1),
             constraints: input.constraints
         )
-        let saResult = saEngine.place(
+        let saResult = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let saHPWL = computeHPWL(
@@ -99,7 +145,7 @@ struct AlgorithmComparisonTests {
     @Test("Steiner routing achieves full completion on inverter")
     func steinerRoutingInverterCompletion() throws {
         let input = try BenchmarkCircuits.inverter()
-        let placement = RowBasedPlacementEngine().place(
+        let placement = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -109,7 +155,7 @@ struct AlgorithmComparisonTests {
         )
 
         let steinerEngine = SteinerRoutingEngine()
-        let result = steinerEngine.route(
+        let result = try steinerEngine.route(
             nets: routingNets, placements: placement.placements,
             cells: input.cells, obstructions: placement.powerRails, tech: input.tech
         )
@@ -121,7 +167,7 @@ struct AlgorithmComparisonTests {
     @Test("Steiner routing completion on OTA")
     func steinerRoutingOTACompletion() throws {
         let input = try BenchmarkCircuits.simpleOTA()
-        let placement = RowBasedPlacementEngine().place(
+        let placement = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -131,7 +177,7 @@ struct AlgorithmComparisonTests {
         )
 
         let steinerEngine = SteinerRoutingEngine()
-        let result = steinerEngine.route(
+        let result = try steinerEngine.route(
             nets: routingNets, placements: placement.placements,
             cells: input.cells, obstructions: placement.powerRails, tech: input.tech
         )
@@ -146,7 +192,7 @@ struct AlgorithmComparisonTests {
     @Test("Quality evaluator produces valid metrics")
     func qualityEvaluatorBasic() throws {
         let input = try BenchmarkCircuits.inverter()
-        let placement = RowBasedPlacementEngine().place(
+        let placement = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -156,7 +202,7 @@ struct AlgorithmComparisonTests {
         )
 
         let simpleEngine = SimpleRoutingEngine()
-        let routing = simpleEngine.route(
+        let routing = try simpleEngine.route(
             nets: routingNets, placements: placement.placements,
             cells: input.cells, obstructions: placement.powerRails, tech: input.tech
         )
@@ -249,7 +295,7 @@ struct AlgorithmComparisonTests {
         let saEngine = SAPlacementEngine(
             configuration: .init(initialTemperature: 100, coolingRate: 0.9, minTemperature: 1.0)
         )
-        let result = saEngine.place(
+        let result = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -265,7 +311,7 @@ struct AlgorithmComparisonTests {
         let saEngine = SAPlacementEngine(
             configuration: .init(initialTemperature: 500, coolingRate: 0.95, minTemperature: 0.5)
         )
-        let result = saEngine.place(
+        let result = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -280,14 +326,14 @@ struct AlgorithmComparisonTests {
     @Test("Inverter layout has limited DRC violations")
     func inverterDRC() throws {
         let input = try BenchmarkCircuits.inverter()
-        let placement = RowBasedPlacementEngine().place(
+        let placement = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let routingNets = buildRoutingNets(
             nets: input.nets, instances: input.instances,
             placements: placement.placements, cells: input.cells, tech: input.tech
         )
-        let routing = SteinerRoutingEngine().route(
+        let routing = try SteinerRoutingEngine().route(
             nets: routingNets, placements: placement.placements,
             cells: input.cells, obstructions: placement.powerRails, tech: input.tech
         )
@@ -314,7 +360,7 @@ struct AlgorithmComparisonTests {
             configuration: .init(initialTemperature: 500, coolingRate: 0.95, minTemperature: 0.1),
             constraints: input.constraints
         )
-        let result = saEngine.place(
+        let result = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -349,7 +395,7 @@ struct AlgorithmComparisonTests {
             configuration: .init(initialTemperature: 1000, coolingRate: 0.95, minTemperature: 0.1),
             constraints: input.constraints
         )
-        let result = saEngine.place(
+        let result = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -372,7 +418,7 @@ struct AlgorithmComparisonTests {
             configuration: .init(initialTemperature: 1000, coolingRate: 0.95, minTemperature: 0.1),
             constraints: input.constraints
         )
-        let result = saEngine.place(
+        let result = try saEngine.place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
 
@@ -393,14 +439,14 @@ struct AlgorithmComparisonTests {
     @Test("Total wirelength >= HPWL")
     func wirelengthGEQhpwl() throws {
         let input = try BenchmarkCircuits.inverter()
-        let placement = RowBasedPlacementEngine().place(
+        let placement = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let routingNets = buildRoutingNets(
             nets: input.nets, instances: input.instances,
             placements: placement.placements, cells: input.cells, tech: input.tech
         )
-        let routing = SteinerRoutingEngine().route(
+        let routing = try SteinerRoutingEngine().route(
             nets: routingNets, placements: placement.placements,
             cells: input.cells, obstructions: placement.powerRails, tech: input.tech
         )
@@ -425,14 +471,14 @@ struct AlgorithmComparisonTests {
     @Test("Metrics include valid new fields")
     func metricsIncludeNewFields() throws {
         let input = try BenchmarkCircuits.inverter()
-        let placement = RowBasedPlacementEngine().place(
+        let placement = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         let routingNets = buildRoutingNets(
             nets: input.nets, instances: input.instances,
             placements: placement.placements, cells: input.cells, tech: input.tech
         )
-        let routing = SteinerRoutingEngine().route(
+        let routing = try SteinerRoutingEngine().route(
             nets: routingNets, placements: placement.placements,
             cells: input.cells, obstructions: placement.powerRails, tech: input.tech
         )
@@ -716,7 +762,7 @@ struct TierImprovementTests {
             configuration: .init(initialTemperature: 1000, coolingRate: 0.95, minTemperature: 0.1),
             constraints: constraints
         )
-        let result = saEngine.place(instances: instances, nets: nets, tech: tech)
+        let result = try saEngine.place(instances: instances, nets: nets, tech: tech)
 
         // Verify tail is near the axis of symmetry
         guard let m1T = result.placements[m1ID],
@@ -769,10 +815,10 @@ struct TierImprovementTests {
         ]
 
         // Build state and cost function
-        let initial = RowBasedPlacementEngine().place(instances: instances, nets: nets, tech: tech)
+        let initial = try RowBasedPlacementEngine().place(instances: instances, nets: nets, tech: tech)
         var state = buildState(from: initial, instances: instances)
 
-        let costFn = SACostFunction(
+        let costFn = try SACostFunction(
             nets: nets, tech: tech, constraints: constraints,
             weights: CostWeights()
         )
@@ -799,18 +845,19 @@ struct TierImprovementTests {
     func incrementalCostConsistency() throws {
         let input = try BenchmarkCircuits.differentialPair()
 
-        let initial = RowBasedPlacementEngine().place(
+        let initial = try RowBasedPlacementEngine().place(
             instances: input.instances, nets: input.nets, tech: input.tech
         )
         var state = buildState(from: initial, instances: input.instances)
 
-        var costFn = SACostFunction(
+        var costFn = try SACostFunction(
             nets: input.nets, tech: input.tech, constraints: input.constraints,
             weights: CostWeights()
         )
         costFn.calibrate(initialState: state)
 
         let fullCostBefore = costFn.cost(for: state)
+        #expect(fullCostBefore.isFinite, "Initial full cost should be finite")
 
         // Apply a shift move
         guard let (instID, _) = state.slots.first else {
@@ -879,7 +926,7 @@ struct TierImprovementTests {
             configuration: .init(initialTemperature: 1000, coolingRate: 0.95, minTemperature: 0.1),
             constraints: constraints
         )
-        let result = saEngine.place(instances: instances, nets: nets, tech: tech)
+        let result = try saEngine.place(instances: instances, nets: nets, tech: tech)
 
         // Verify pair is approximately symmetric about the fixed axis
         guard let t1 = result.placements[m1ID],
@@ -921,13 +968,13 @@ struct TierImprovementTests {
             origin: LayoutPoint(x: -1.0, y: -1.0),
             size: LayoutSize(width: 5.0, height: 5.0)
         )
-        let congestion = CongestionGrid(boundingBox: bbox, tech: tech)
+        let congestion = try CongestionGrid(boundingBox: bbox, tech: tech)
 
         let router = MazeRouter()
         let from = LayoutPoint(x: 0.0, y: 1.0)
         let to = LayoutPoint(x: 3.0, y: 1.0)
 
-        let result = router.route(
+        let result = try router.route(
             from: from, to: to,
             layers: (m1: m1ID, m2: m2ID),
             congestion: congestion,
@@ -935,26 +982,23 @@ struct TierImprovementTests {
             tech: tech
         )
 
-        // MazeRouter may return nil if no path exists on the grid, or empty segments
-        // for very short routes. The key test is that it handles obstructions.
-        if let segments = result {
-            // If a route was found, it should contain segments
-            #expect(segments.count >= 0, "Route should have non-negative segment count")
-        }
-        // Either finds a route or correctly reports nil (both are valid with obstruction)
-        #expect(true, "MazeRouter completed without crash")
+        #expect(result != nil, "MazeRouter should report an explicit result for this routed grid")
+        let segments = result ?? []
+        #expect(segments.allSatisfy { segment in
+            segment.width > 0 && (segment.layer == m1ID || segment.layer == m2ID)
+        }, "Found route should use known metal layers with positive widths")
     }
 
     // MARK: - PathFinder Multiplicative Cost
 
     @Test("Congestion cost uses multiplicative history formula")
-    func multiplicativeCongestionCost() {
+    func multiplicativeCongestionCost() throws {
         let tech = LayoutTechDatabase.sampleProcess()
         let bbox = LayoutRect(
             origin: LayoutPoint(x: 0.0, y: 0.0),
             size: LayoutSize(width: 10.0, height: 10.0)
         )
-        var congestion = CongestionGrid(boundingBox: bbox, tech: tech)
+        var congestion = try CongestionGrid(boundingBox: bbox, tech: tech)
 
         let from = LayoutPoint(x: 1.0, y: 1.0)
         let to = LayoutPoint(x: 5.0, y: 1.0)

@@ -20,11 +20,11 @@ public struct SimpleRoutingEngine: RoutingEngine {
         cells: [UUID: LayoutCell],
         obstructions: [LayoutShape],
         tech: LayoutTechDatabase
-    ) -> RoutingResult {
+    ) throws -> RoutingResult {
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
-        let m1Rules = tech.ruleSet(for: m1ID)
-        let m2Rules = tech.ruleSet(for: m2ID)
+        let m1Rules = try tech.requiredRuleSet(for: m1ID)
+        let m2Rules = try tech.requiredRuleSet(for: m2ID)
 
         guard let viaDef = tech.vias.first else {
             return RoutingResult(
@@ -32,12 +32,12 @@ public struct SimpleRoutingEngine: RoutingEngine {
                 unroutedNets: nets.map(\.name)
             )
         }
-        let minM1Width = m1Rules?.minWidth ?? 0.23
-        let minM2Width = m2Rules?.minWidth ?? 0.28
+        let minM1Width = m1Rules.minWidth
+        let minM2Width = m2Rules.minWidth
         let m1Width = max(minM1Width, viaDef.cutSize.width + 2 * viaDef.enclosure.bottom)
         let m2Width = max(minM2Width, viaDef.cutSize.width + 2 * viaDef.enclosure.top)
-        let m1Spacing = m1Rules?.minSpacing ?? 0.23
-        let m2Spacing = m2Rules?.minSpacing ?? 0.28
+        let m1Spacing = m1Rules.minSpacing
+        let m2Spacing = m2Rules.minSpacing
         let grid = tech.grid
 
         var obstMap = ObstructionMap()

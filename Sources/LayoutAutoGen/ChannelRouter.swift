@@ -31,11 +31,11 @@ struct ChannelRouter: Sendable {
         congestion: inout CongestionGrid,
         obstMap: ObstructionMap,
         grid: Double
-    ) -> RouteResult {
+    ) throws -> RouteResult {
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
-        let m1Width = tech.ruleSet(for: m1ID)?.minWidth ?? 0.23
-        let m2Width = tech.ruleSet(for: m2ID)?.minWidth ?? 0.28
+        let m1Width = try tech.requiredRuleSet(for: m1ID).minWidth
+        let m2Width = try tech.requiredRuleSet(for: m2ID).minWidth
 
         var segments: [RouteSegment] = []
         var viaPositions: [LayoutPoint] = []
@@ -114,13 +114,15 @@ struct ChannelRouter: Sendable {
         congestion: inout CongestionGrid,
         obstMap: ObstructionMap,
         grid: Double
-    ) -> RouteResult {
+    ) throws -> RouteResult {
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
-        let m1Width = tech.ruleSet(for: m1ID)?.minWidth ?? 0.23
-        let m2Width = tech.ruleSet(for: m2ID)?.minWidth ?? 0.28
-        let m1Spacing = tech.ruleSet(for: m1ID)?.minSpacing ?? 0.23
-        let m2Spacing = tech.ruleSet(for: m2ID)?.minSpacing ?? 0.28
+        let m1Rules = try tech.requiredRuleSet(for: m1ID)
+        let m2Rules = try tech.requiredRuleSet(for: m2ID)
+        let m1Width = m1Rules.minWidth
+        let m2Width = m2Rules.minWidth
+        let m1Spacing = m1Rules.minSpacing
+        let m2Spacing = m2Rules.minSpacing
 
         var segments: [RouteSegment] = []
         var viaPositions: [LayoutPoint] = []
@@ -186,7 +188,7 @@ struct ChannelRouter: Sendable {
 
                 // If both L-shapes collide, fall back to MazeRouter
                 if collisionA && collisionB {
-                    if let mazeSegments = mazeRouter.route(
+                    if let mazeSegments = try mazeRouter.route(
                         from: snap2D(p1, grid: grid),
                         to: snap2D(p2, grid: grid),
                         layers: (m1: m1ID, m2: m2ID),
