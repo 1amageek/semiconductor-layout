@@ -3,6 +3,8 @@ import LayoutCore
 import LayoutTech
 import LayoutVerify
 import LayoutIO
+import LayoutIR
+import GeometryOps
 
 @Observable
 @MainActor
@@ -376,26 +378,25 @@ public final class LayoutEditorViewModel {
 
             guard polygons.count >= 2 else { continue }
 
-            // Simple merge: compute the convex-hull-like union via bounding box union
-            // For a proper merge we'd need polygon union, but for now we compute the
-            // outer boundary as the union of all vertex points forming a single polygon.
-            // This uses a simple approach: combine all vertices and compute convex hull.
-            var allPoints: [LayoutPoint] = []
-            for poly in polygons {
-                allPoints.append(contentsOf: poly.points)
-            }
+            let mergedPolygons = union(polygons: polygons, dbuPerMicron: editor.document.units.dbuPerMicron)
+            guard !mergedPolygons.isEmpty else { continue }
+            let mergedNetID = commonNetID(in: shapes)
+            let mergedProperties = commonProperties(in: shapes)
 
-            let hull = convexHull(allPoints)
-            guard hull.count >= 3 else { continue }
-
-            // Remove original shapes and add the merged result
             do {
                 for shape in shapes {
                     if case .path = shape.geometry { continue }
                     try editor.removeShape(id: shape.id, from: cellID)
                 }
-                let merged = LayoutShape(layer: layer, geometry: .polygon(LayoutPolygon(points: hull)))
-                try editor.addShape(merged, to: cellID)
+                for polygon in mergedPolygons {
+                    let merged = LayoutShape(
+                        layer: layer,
+                        netID: mergedNetID,
+                        geometry: .polygon(polygon),
+                        properties: mergedProperties
+                    )
+                    try editor.addShape(merged, to: cellID)
+                }
             } catch {
                 handleError(error)
             }
@@ -804,33 +805,55 @@ public final class LayoutEditorViewModel {
         lastError = error.localizedDescription
     }
 
-    /// Computes the convex hull of a set of points (Andrew's monotone chain).
-    private func convexHull(_ points: [LayoutPoint]) -> [LayoutPoint] {
-        let sorted = points.sorted { $0.x < $1.x || ($0.x == $1.x && $0.y < $1.y) }
-        guard sorted.count >= 3 else { return sorted }
+    private func union(polygons: [LayoutPolygon], dbuPerMicron: Double) -> [LayoutPolygon] {
+        let boundaries = polygons.compactMap { irBoundary(from: $0, dbuPerMicron: dbuPerMicron) }
+        guard let first = boundaries.first else { return [] }
 
-        var lower: [LayoutPoint] = []
-        for p in sorted {
-            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 {
-                lower.removeLast()
-            }
-            lower.append(p)
+        var region = Region(polygons: [first])
+        for boundary in boundaries.dropFirst() {
+            region = region.or(Region(polygons: [boundary]))
         }
 
-        var upper: [LayoutPoint] = []
-        for p in sorted.reversed() {
-            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 {
-                upper.removeLast()
-            }
-            upper.append(p)
-        }
-
-        lower.removeLast()
-        upper.removeLast()
-        return lower + upper
+        return region.polygons.compactMap { polygon(from: $0, dbuPerMicron: dbuPerMicron) }
     }
 
-    private func cross(_ o: LayoutPoint, _ a: LayoutPoint, _ b: LayoutPoint) -> Double {
-        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    private func irBoundary(from polygon: LayoutPolygon, dbuPerMicron: Double) -> IRBoundary? {
+        guard polygon.points.count >= 3, dbuPerMicron > 0 else { return nil }
+        var points = polygon.points.map { point in
+            IRPoint(
+                x: Int32((point.x * dbuPerMicron).rounded()),
+                y: Int32((point.y * dbuPerMicron).rounded())
+            )
+        }
+        guard Set(points).count >= 3 else { return nil }
+        if points.first != points.last {
+            points.append(points[0])
+        }
+        return IRBoundary(layer: 0, datatype: 0, points: points)
+    }
+
+    private func polygon(from boundary: IRBoundary, dbuPerMicron: Double) -> LayoutPolygon? {
+        guard dbuPerMicron > 0 else { return nil }
+        var points = boundary.points.map { point in
+            LayoutPoint(
+                x: Double(point.x) / dbuPerMicron,
+                y: Double(point.y) / dbuPerMicron
+            )
+        }
+        if points.first == points.last {
+            points.removeLast()
+        }
+        guard points.count >= 3 else { return nil }
+        return LayoutPolygon(points: points)
+    }
+
+    private func commonNetID(in shapes: [LayoutShape]) -> UUID? {
+        guard let first = shapes.first else { return nil }
+        return shapes.allSatisfy { $0.netID == first.netID } ? first.netID : nil
+    }
+
+    private func commonProperties(in shapes: [LayoutShape]) -> [String: String] {
+        guard let first = shapes.first else { return [:] }
+        return shapes.allSatisfy { $0.properties == first.properties } ? first.properties : [:]
     }
 }

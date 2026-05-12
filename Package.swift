@@ -62,6 +62,7 @@ let package = Package(
                 "LayoutIO",
                 "LayoutIntegration",
                 .product(name: "LayoutIR", package: "swift-mask-data"),
+                .product(name: "GeometryOps", package: "swift-mask-data"),
             ]
         ),
         .target(
@@ -85,6 +86,7 @@ let package = Package(
                 "LayoutCore",
                 "LayoutTech",
                 "LayoutVerify",
+                "LayoutEditor",
             ]
         ),
     ]
