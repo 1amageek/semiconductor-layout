@@ -125,9 +125,15 @@ public struct LayoutDRCService {
                     let measured = pair.distance / dbu
                     violations.append(LayoutViolation(
                         kind: .minWidth,
+                        ruleID: layerRuleID(layer: layer, rule: "minWidth"),
                         message: "Min width violation on \(layer.name). Required \(rules.minWidth)µm, measured \(String(format: "%.3f", measured))µm",
                         layer: layer,
-                        region: rect
+                        region: rect,
+                        measured: measured,
+                        required: rules.minWidth,
+                        unit: "um",
+                        shapeIDs: layerShapes.map(\.id),
+                        suggestedFix: "Increase geometry width or update the layer rule if the process allows the measured width."
                     ))
                 }
             }
@@ -139,9 +145,15 @@ public struct LayoutDRCService {
                     let rect = LayoutGeometryUtils.boundingBox(for: shape.geometry)
                     violations.append(LayoutViolation(
                         kind: .minArea,
+                        ruleID: layerRuleID(layer: layer, rule: "minArea"),
                         message: "Min area violation on \(layer.name). Required \(rules.minArea), got \(area)",
                         layer: layer,
-                        region: rect
+                        region: rect,
+                        measured: area,
+                        required: rules.minArea,
+                        unit: "um2",
+                        shapeIDs: [shape.id],
+                        suggestedFix: "Increase the shape area or merge it with connected same-net geometry."
                     ))
                 }
             }
@@ -178,9 +190,16 @@ public struct LayoutDRCService {
                         guard measured + spacingTolerance < rules.minSpacing else { continue }
                         violations.append(LayoutViolation(
                             kind: .minSpacing,
+                            ruleID: layerRuleID(layer: layer, rule: "minSpacing"),
                             message: "Min spacing violation on \(layer.name). Required \(rules.minSpacing)µm, measured \(String(format: "%.3f", measured))µm",
                             layer: layer,
-                            region: rect
+                            region: rect,
+                            measured: measured,
+                            required: rules.minSpacing,
+                            unit: "um",
+                            shapeIDs: [a.id, b.id],
+                            netIDs: [a.netID, b.netID].compactMap { $0 },
+                            suggestedFix: "Move same-layer geometry apart or assign matching net connectivity if the contact is intentional."
                         ))
                     }
                 }
@@ -225,9 +244,16 @@ public struct LayoutDRCService {
                 ].compactMap { $0 }.joined(separator: ", ")
                 violations.append(LayoutViolation(
                     kind: .enclosure,
+                    ruleID: "via.\(via.viaDefinitionID).enclosure",
                     message: "Via enclosure violation for \(via.viaDefinitionID): missing \(missing)",
                     layer: def.cutLayer,
-                    region: cutRect
+                    region: cutRect,
+                    measured: 0,
+                    required: max(def.enclosure.top, def.enclosure.bottom),
+                    unit: "um",
+                    viaIDs: [via.id],
+                    netIDs: [via.netID].compactMap { $0 },
+                    suggestedFix: "Add top and bottom metal coverage around the via cut."
                 ))
             }
         }
@@ -248,9 +274,16 @@ public struct LayoutDRCService {
             if density < rules.minDensity || density > rules.maxDensity {
                 violations.append(LayoutViolation(
                     kind: .density,
+                    ruleID: layerRuleID(layer: layer, rule: density < rules.minDensity ? "minDensity" : "maxDensity"),
+                    severity: .warning,
                     message: "Density violation on \(layer.name). Range \(rules.minDensity)-\(rules.maxDensity), got \(density)",
                     layer: layer,
-                    region: overall
+                    region: overall,
+                    measured: density,
+                    required: density < rules.minDensity ? rules.minDensity : rules.maxDensity,
+                    unit: "ratio",
+                    shapeIDs: layerShapes.map(\.id),
+                    suggestedFix: density < rules.minDensity ? "Add fill or enlarge layer coverage in the checked window." : "Remove excess fill or reduce layer coverage in the checked window."
                 ))
             }
         }
@@ -272,9 +305,13 @@ public struct LayoutDRCService {
                     )
                     violations.append(LayoutViolation(
                         kind: .overlapShort,
+                        ruleID: "connectivity.short.sameLayerOverlap",
                         message: "Short between shapes on different nets",
                         layer: a.layer,
-                        region: region
+                        region: region,
+                        shapeIDs: [a.id, b.id],
+                        netIDs: [na, nb],
+                        suggestedFix: "Separate the shapes or intentionally assign them to the same net before verification."
                     ))
                 }
             }
@@ -332,8 +369,13 @@ public struct LayoutDRCService {
                 let region = overallBoundingBox(geometries: geometries) ?? .zero
                 violations.append(LayoutViolation(
                     kind: .disconnectedOpen,
+                    ruleID: "connectivity.open.disconnectedNet",
                     message: "Open detected in net \(netID)",
-                    region: region
+                    region: region,
+                    shapeIDs: shapesForNet.map(\.id),
+                    viaIDs: netVias.map(\.id),
+                    netIDs: [netID],
+                    suggestedFix: "Add metal or vias to connect all geometry belonging to this net."
                 ))
             }
         }
@@ -410,11 +452,20 @@ public struct LayoutDRCService {
                 let ratio = metalArea / gateArea
                 if ratio > rule.maxRatio {
                     let region = overallBoundingBox(shapes: netShapes) ?? .zero
+                    let gatePins = netPins.filter { $0.role == .gate }
                     violations.append(LayoutViolation(
                         kind: .antenna,
+                        ruleID: antennaRuleID(rule),
                         message: "Antenna violation on net \(netID). Ratio \(ratio) exceeds \(rule.maxRatio)",
                         layer: rule.layerID,
-                        region: region
+                        region: region,
+                        measured: ratio,
+                        required: rule.maxRatio,
+                        unit: "ratio",
+                        shapeIDs: netShapes.filter { $0.layer == rule.layerID }.map(\.id),
+                        pinIDs: gatePins.map(\.id),
+                        netIDs: [netID],
+                        suggestedFix: "Add an antenna diode, insert a layer jump, or reduce connected metal area before the gate."
                     ))
                 }
             }
@@ -444,13 +495,31 @@ public struct LayoutDRCService {
                 let measured = pair.distance / dbu
                 violations.append(LayoutViolation(
                     kind: .enclosure,
+                    ruleID: enclosureRuleID(rule),
                     message: "Enclosure violation: \(rule.innerLayer.name) must be enclosed by \(rule.outerLayer.name) by at least \(rule.minEnclosure)µm, measured \(String(format: "%.3f", measured))µm",
                     layer: rule.innerLayer,
-                    region: rect
+                    region: rect,
+                    measured: measured,
+                    required: rule.minEnclosure,
+                    unit: "um",
+                    shapeIDs: outerShapes.map(\.id) + innerShapes.map(\.id),
+                    suggestedFix: "Expand the outer layer or shrink the inner layer to satisfy enclosure."
                 ))
             }
         }
         return violations
+    }
+
+    private func layerRuleID(layer: LayoutLayerID, rule: String) -> String {
+        "layer.\(layer.name).\(layer.purpose).\(rule)"
+    }
+
+    private func enclosureRuleID(_ rule: LayoutEnclosureRule) -> String {
+        "enclosure.\(rule.outerLayer.name).\(rule.outerLayer.purpose).\(rule.innerLayer.name).\(rule.innerLayer.purpose)"
+    }
+
+    private func antennaRuleID(_ rule: LayoutAntennaRule) -> String {
+        "antenna.\(rule.layerID.name).\(rule.layerID.purpose).maxRatio"
     }
 
     // MARK: - GeometryOps Bridge

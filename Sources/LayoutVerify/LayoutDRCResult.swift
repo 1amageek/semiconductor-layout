@@ -8,6 +8,14 @@ public struct LayoutDRCResult: Hashable, Sendable, Codable {
     }
 
     public var hasErrors: Bool {
+        violations.contains { $0.severity == .error }
+    }
+
+    public var hasWarnings: Bool {
+        violations.contains { $0.severity == .warning }
+    }
+
+    public var hasViolations: Bool {
         !violations.isEmpty
     }
 }
