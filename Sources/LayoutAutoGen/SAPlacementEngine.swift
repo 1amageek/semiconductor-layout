@@ -329,6 +329,7 @@ public struct SAPlacementEngine: PlacementEngine {
         public var weights: CostWeights
         public var maxReheats: Int
         public var temperatureMode: TemperatureMode
+        public var randomSeed: UInt64
 
         public init(
             initialTemperature: Double = 1000.0,
@@ -337,7 +338,8 @@ public struct SAPlacementEngine: PlacementEngine {
             minTemperature: Double = 0.01,
             weights: CostWeights = CostWeights(),
             maxReheats: Int = 3,
-            temperatureMode: TemperatureMode = .adaptive(sampleCount: 100, targetAcceptance: 0.95)
+            temperatureMode: TemperatureMode = .adaptive(sampleCount: 100, targetAcceptance: 0.95),
+            randomSeed: UInt64 = 0x5EED
         ) {
             self.initialTemperature = initialTemperature
             self.coolingRate = coolingRate
@@ -346,6 +348,7 @@ public struct SAPlacementEngine: PlacementEngine {
             self.weights = weights
             self.maxReheats = maxReheats
             self.temperatureMode = temperatureMode
+            self.randomSeed = randomSeed
         }
     }
 
@@ -387,10 +390,11 @@ public struct SAPlacementEngine: PlacementEngine {
         let maxCellWidth = instances.map {
             SAPlacementState.cellBoundingBox($0.cell).size.width
         }.max() ?? 1.0
-        let moveGen = SAMoveGenerator(
+        var moveGen = SAMoveGenerator(
             grid: tech.grid,
             maxCellWidth: maxCellWidth,
-            constraints: constraints
+            constraints: constraints,
+            seed: configuration.randomSeed
         )
 
         // 3. Determine initial temperature
@@ -402,7 +406,7 @@ public struct SAPlacementEngine: PlacementEngine {
             initialTemp = calibrateTemperature(
                 state: &state,
                 costFn: costFn,
-                moveGen: moveGen,
+                moveGen: &moveGen,
                 tech: tech,
                 sampleCount: sampleCount,
                 targetAcceptance: targetAcceptance
@@ -455,7 +459,7 @@ public struct SAPlacementEngine: PlacementEngine {
                 let delta = newCost - currentCost
 
                 // Metropolis acceptance
-                if delta < 0 || Double.random(in: 0..<1) < exp(-delta / temperature) {
+                if delta < 0 || moveGen.nextUnit() < exp(-delta / temperature) {
                     currentCost = newCost
                     if delta < 0 { locallyImproved = true }
                     if currentCost < bestCost {
@@ -506,7 +510,7 @@ public struct SAPlacementEngine: PlacementEngine {
     private func calibrateTemperature(
         state: inout SAPlacementState,
         costFn: SACostFunction,
-        moveGen: SAMoveGenerator,
+        moveGen: inout SAMoveGenerator,
         tech: LayoutTechDatabase,
         sampleCount: Int,
         targetAcceptance: Double

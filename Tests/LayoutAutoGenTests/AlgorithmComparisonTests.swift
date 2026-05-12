@@ -41,6 +41,32 @@ struct AlgorithmComparisonTests {
         #expect(saHPWL <= greedyHPWL * 1.0, "SA HPWL (\(saHPWL)) should not exceed greedy (\(greedyHPWL))")
     }
 
+    @Test("SA placement is deterministic for a fixed seed")
+    func saPlacementDeterministicForFixedSeed() throws {
+        let input = try BenchmarkCircuits.differentialPair()
+        let configuration = SAPlacementEngine.Configuration(
+            initialTemperature: 500,
+            coolingRate: 0.95,
+            iterationsPerTemperature: 25,
+            minTemperature: 1.0,
+            temperatureMode: .fixed(500),
+            randomSeed: 42
+        )
+        let first = SAPlacementEngine(configuration: configuration, constraints: input.constraints).place(
+            instances: input.instances,
+            nets: input.nets,
+            tech: input.tech
+        )
+        let second = SAPlacementEngine(configuration: configuration, constraints: input.constraints).place(
+            instances: input.instances,
+            nets: input.nets,
+            tech: input.tech
+        )
+
+        #expect(first.placements == second.placements)
+        #expect(first.totalBoundingBox == second.totalBoundingBox)
+    }
+
     @Test("SA placement produces lower HPWL than greedy on differential pair")
     func saPlacementDiffPairHPWL() throws {
         let input = try BenchmarkCircuits.differentialPair()

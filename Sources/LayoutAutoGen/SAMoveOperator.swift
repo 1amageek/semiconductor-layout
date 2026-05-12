@@ -68,21 +68,23 @@ struct SAMoveGenerator: Sendable {
     let grid: Double
     let maxCellWidth: Double
     let constraintIndex: ConstraintIndex
+    private var rng: SeededRandomNumberGenerator
 
-    init(grid: Double, maxCellWidth: Double, constraints: [LayoutConstraint] = []) {
+    init(grid: Double, maxCellWidth: Double, constraints: [LayoutConstraint] = [], seed: UInt64) {
         self.grid = grid
         self.maxCellWidth = max(maxCellWidth, grid * 10)
         self.constraintIndex = ConstraintIndex(constraints: constraints)
+        self.rng = SeededRandomNumberGenerator(seed: seed)
     }
 
     /// Generates a random move appropriate for the current temperature.
-    func randomMove(
+    mutating func randomMove(
         state: SAPlacementState,
         temperature: Double,
         maxTemperature: Double
     ) -> SAMove? {
         let ratio = temperature / maxTemperature
-        let r = Double.random(in: 0..<1)
+        let r = Double.random(in: 0..<1, using: &rng)
 
         if constraintIndex.hasConstraints {
             // With constraints: include symmetry-aware and group moves
@@ -167,16 +169,20 @@ struct SAMoveGenerator: Sendable {
 
     // MARK: - Move Generators
 
-    private func randomSwap(state: SAPlacementState) -> SAMove? {
+    mutating func nextUnit() -> Double {
+        Double.random(in: 0..<1, using: &rng)
+    }
+
+    private mutating func randomSwap(state: SAPlacementState) -> SAMove? {
         let nonEmptyRows = state.rowAssignments.filter { $0.value.count >= 2 }
-        guard let (_, ids) = nonEmptyRows.randomElement() else { return nil }
+        guard let (_, ids) = nonEmptyRows.randomElement(using: &rng) else { return nil }
         guard ids.count >= 2 else { return nil }
-        let shuffled = ids.shuffled()
+        let shuffled = ids.shuffled(using: &rng)
         return .swap(a: shuffled[0], b: shuffled[1])
     }
 
-    private func randomShift(state: SAPlacementState, ratio: Double) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement() else { return nil }
+    private mutating func randomShift(state: SAPlacementState, ratio: Double) -> SAMove? {
+        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
 
         // Self-symmetric instances on vertical axis: only shift along axis (Y only)
         if let selfAxis = constraintIndex.selfSymmetricInstances[instID] {
@@ -190,28 +196,28 @@ struct SAMoveGenerator: Sendable {
         let dx = gaussianRandom(sigma: sigma)
         let snappedDx = (dx / grid).rounded() * grid
         guard abs(snappedDx) >= grid else {
-            return .shift(instance: instID, dx: grid * (Bool.random() ? 1 : -1))
+            return .shift(instance: instID, dx: grid * (Bool.random(using: &rng) ? 1 : -1))
         }
         return .shift(instance: instID, dx: snappedDx)
     }
 
-    private func randomShiftY(state: SAPlacementState, ratio: Double) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement() else { return nil }
+    private mutating func randomShiftY(state: SAPlacementState, ratio: Double) -> SAMove? {
+        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
         return randomShiftY(state: state, ratio: ratio, forInstance: instID)
     }
 
-    private func randomShiftY(state: SAPlacementState, ratio: Double, forInstance instID: UUID) -> SAMove? {
+    private mutating func randomShiftY(state: SAPlacementState, ratio: Double, forInstance instID: UUID) -> SAMove? {
         let sigma = maxCellWidth * ratio * 0.5
         let dy = gaussianRandom(sigma: sigma)
         let snappedDy = (dy / grid).rounded() * grid
         guard abs(snappedDy) >= grid else {
-            return .shiftY(instance: instID, dy: grid * (Bool.random() ? 1 : -1))
+            return .shiftY(instance: instID, dy: grid * (Bool.random(using: &rng) ? 1 : -1))
         }
         return .shiftY(instance: instID, dy: snappedDy)
     }
 
-    private func randomSymmetricShift(state: SAPlacementState, ratio: Double) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement() else { return nil }
+    private mutating func randomSymmetricShift(state: SAPlacementState, ratio: Double) -> SAMove? {
+        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
 
         // If this is a self-symmetric instance, only shift along the axis
         if let selfAxis = constraintIndex.selfSymmetricInstances[instID] {
@@ -222,7 +228,7 @@ struct SAMoveGenerator: Sendable {
                 let dy = gaussianRandom(sigma: sigma)
                 let snappedDy = (dy / grid).rounded() * grid
                 guard abs(snappedDy) >= grid else {
-                    return .shiftY(instance: instID, dy: grid * (Bool.random() ? 1 : -1))
+                    return .shiftY(instance: instID, dy: grid * (Bool.random(using: &rng) ? 1 : -1))
                 }
                 return .shiftY(instance: instID, dy: snappedDy)
             case .horizontal:
@@ -230,7 +236,7 @@ struct SAMoveGenerator: Sendable {
                 let dx = gaussianRandom(sigma: sigma)
                 let snappedDx = (dx / grid).rounded() * grid
                 guard abs(snappedDx) >= grid else {
-                    return .shift(instance: instID, dx: grid * (Bool.random() ? 1 : -1))
+                    return .shift(instance: instID, dx: grid * (Bool.random(using: &rng) ? 1 : -1))
                 }
                 return .shift(instance: instID, dx: snappedDx)
             }
@@ -262,13 +268,13 @@ struct SAMoveGenerator: Sendable {
         }
     }
 
-    private func randomGroupSwap(state: SAPlacementState) -> SAMove? {
+    private mutating func randomGroupSwap(state: SAPlacementState) -> SAMove? {
         // Try to find two instances with matching partners and swap them
         let nonEmptyRows = state.rowAssignments.filter { $0.value.count >= 2 }
-        guard let (_, ids) = nonEmptyRows.randomElement() else { return nil }
+        guard let (_, ids) = nonEmptyRows.randomElement(using: &rng) else { return nil }
         guard ids.count >= 2 else { return nil }
 
-        let shuffled = ids.shuffled()
+        let shuffled = ids.shuffled(using: &rng)
         let a = shuffled[0]
         let b = shuffled[1]
 
@@ -282,20 +288,20 @@ struct SAMoveGenerator: Sendable {
         return .swap(a: a, b: b)
     }
 
-    private func randomRotate(state: SAPlacementState) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement() else { return nil }
+    private mutating func randomRotate(state: SAPlacementState) -> SAMove? {
+        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
         return .rotate(instance: instID)
     }
 
-    private func randomMirror(state: SAPlacementState) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement() else { return nil }
+    private mutating func randomMirror(state: SAPlacementState) -> SAMove? {
+        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
         return .mirror(instance: instID)
     }
 
     /// Box-Muller transform for Gaussian random numbers.
-    private func gaussianRandom(sigma: Double) -> Double {
-        let u1 = Double.random(in: 0.0001..<1.0)
-        let u2 = Double.random(in: 0..<1.0)
+    private mutating func gaussianRandom(sigma: Double) -> Double {
+        let u1 = Double.random(in: 0.0001..<1.0, using: &rng)
+        let u2 = Double.random(in: 0..<1.0, using: &rng)
         return sigma * sqrt(-2.0 * log(u1)) * cos(2.0 * .pi * u2)
     }
 }
