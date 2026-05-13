@@ -989,6 +989,55 @@ struct TierImprovementTests {
         }, "Found route should use known metal layers with positive widths")
     }
 
+    @Test("Simple router does not route through unrelated pins")
+    func simpleRouterDoesNotRouteThroughUnrelatedPins() throws {
+        let tech = LayoutTechDatabase.sampleProcess()
+        let signalID = UUID()
+        let blockerID = UUID()
+        let instanceA = UUID()
+        let instanceB = UUID()
+        let blockerInstance = UUID()
+        let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
+
+        let signal = RoutingNet(
+            id: signalID,
+            name: "sig",
+            pins: [
+                RoutingPin(instanceID: instanceA, pinName: "a", absolutePosition: LayoutPoint(x: 0, y: 0), layer: m1ID),
+                RoutingPin(instanceID: instanceB, pinName: "b", absolutePosition: LayoutPoint(x: 4, y: 0), layer: m1ID),
+            ],
+            isPower: false
+        )
+        let blocker = RoutingNet(
+            id: blockerID,
+            name: "blocker",
+            pins: [
+                RoutingPin(instanceID: blockerInstance, pinName: "p", absolutePosition: LayoutPoint(x: 2, y: 0), layer: m1ID),
+            ],
+            isPower: false
+        )
+
+        let result = try SimpleRoutingEngine().route(
+            nets: [signal, blocker],
+            placements: [:],
+            cells: [:],
+            obstructions: [],
+            tech: tech
+        )
+
+        #expect(result.unroutedNets.isEmpty)
+        let signalRoute = try #require(result.routes.first { $0.netID == signalID })
+        let blockerPin = LayoutRect(
+            origin: LayoutPoint(x: 1.8, y: -0.2),
+            size: LayoutSize(width: 0.4, height: 0.4)
+        )
+        let overlapsBlockerPin = signalRoute.shapes.contains { shape in
+            guard shape.layer == m1ID else { return false }
+            return LayoutGeometryUtils.boundingBox(for: shape.geometry).intersects(blockerPin)
+        }
+        #expect(!overlapsBlockerPin)
+    }
+
     // MARK: - PathFinder Multiplicative Cost
 
     @Test("Congestion cost uses multiplicative history formula")

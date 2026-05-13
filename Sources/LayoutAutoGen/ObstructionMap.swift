@@ -10,6 +10,7 @@ public struct ObstructionMap: Sendable {
     private struct IndexedRect: Sendable {
         let shapeID: UUID
         let rect: LayoutRect
+        let netID: UUID?
     }
 
     private var obstructions: [String: [IndexedRect]]  // layerKey → indexed rects
@@ -26,17 +27,17 @@ public struct ObstructionMap: Sendable {
         let key = layerKey(shape.layer)
         let bounds = geometryBounds(shape.geometry)
         let shapeID = UUID()
-        obstructions[key, default: []].append(IndexedRect(shapeID: shapeID, rect: bounds))
+        obstructions[key, default: []].append(IndexedRect(shapeID: shapeID, rect: bounds, netID: shape.netID))
         shapeLayerIndex[shapeID] = key
         return shapeID
     }
 
     /// Registers a rect on a layer and returns its assigned shape ID.
     @discardableResult
-    public mutating func register(rect: LayoutRect, layer: LayoutLayerID) -> UUID {
+    public mutating func register(rect: LayoutRect, layer: LayoutLayerID, netID: UUID? = nil) -> UUID {
         let key = layerKey(layer)
         let shapeID = UUID()
-        obstructions[key, default: []].append(IndexedRect(shapeID: shapeID, rect: rect))
+        obstructions[key, default: []].append(IndexedRect(shapeID: shapeID, rect: rect, netID: netID))
         shapeLayerIndex[shapeID] = key
         return shapeID
     }
@@ -54,11 +55,21 @@ public struct ObstructionMap: Sendable {
         }
     }
 
-    public func hasCollision(rect: LayoutRect, layer: LayoutLayerID, spacing: Double) -> Bool {
+    public func hasCollision(
+        rect: LayoutRect,
+        layer: LayoutLayerID,
+        spacing: Double,
+        ignoringNetID: UUID? = nil
+    ) -> Bool {
         let key = layerKey(layer)
         guard let rects = obstructions[key] else { return false }
         let expanded = rect.expanded(by: spacing, spacing)
-        return rects.contains { $0.rect.intersects(expanded) }
+        return rects.contains { obstruction in
+            if let ignoringNetID, obstruction.netID == ignoringNetID {
+                return false
+            }
+            return obstruction.rect.intersects(expanded)
+        }
     }
 
     private func layerKey(_ layer: LayoutLayerID) -> String {

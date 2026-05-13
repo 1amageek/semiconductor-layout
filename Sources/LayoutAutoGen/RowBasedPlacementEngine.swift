@@ -24,7 +24,9 @@ public struct RowBasedPlacementEngine: PlacementEngine {
 
         let grid = tech.grid
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
+        let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
         let m1Rules = try tech.requiredRuleSet(for: m1ID)
+        let m2Rules = try tech.requiredRuleSet(for: m2ID)
         let m1Width = m1Rules.minWidth
 
         // Spacing between cells
@@ -32,7 +34,13 @@ public struct RowBasedPlacementEngine: PlacementEngine {
         let polyID = LayoutLayerID(name: "POLY", purpose: "drawing")
         let activeSpacing = try tech.requiredRuleSet(for: activeID).minSpacing
         let polySpacing = try tech.requiredRuleSet(for: polyID).minSpacing
-        let cellSpacing = max(activeSpacing, polySpacing) + grid * 10 // extra margin
+        let routingPitch = max(
+            m1Rules.minWidth + m1Rules.minSpacing,
+            m2Rules.minWidth + m2Rules.minSpacing
+        )
+        let routingChannelSpacing = ContactArrayHelper.snapUp(routingPitch * 4, grid: grid)
+        let deviceSpacing = max(activeSpacing, polySpacing) + grid * 10
+        let cellSpacing = max(deviceSpacing, routingChannelSpacing)
 
         // Build adjacency graph (shared nets between instances)
         let adjacency = buildAdjacency(instances: instances, nets: nets)
@@ -188,14 +196,26 @@ public struct RowBasedPlacementEngine: PlacementEngine {
     }
 
     private func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
-        guard let first = cell.shapes.first else {
+        var boxes = cell.shapes.map { geometryBounds($0.geometry) }
+        boxes.append(contentsOf: cell.pins.map(pinBounds))
+        guard let first = boxes.first else {
             return .zero
         }
-        var bbox = geometryBounds(first.geometry)
-        for shape in cell.shapes.dropFirst() {
-            bbox = bbox.union(geometryBounds(shape.geometry))
+        var bbox = first
+        for box in boxes.dropFirst() {
+            bbox = bbox.union(box)
         }
         return bbox
+    }
+
+    private func pinBounds(_ pin: LayoutPin) -> LayoutRect {
+        LayoutRect(
+            origin: LayoutPoint(
+                x: pin.position.x - pin.size.width / 2,
+                y: pin.position.y - pin.size.height / 2
+            ),
+            size: pin.size
+        )
     }
 
     private func geometryBounds(_ geometry: LayoutGeometry) -> LayoutRect {

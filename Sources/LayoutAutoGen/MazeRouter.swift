@@ -75,7 +75,8 @@ struct MazeRouter: Sendable {
         layers: (m1: LayoutLayerID, m2: LayoutLayerID),
         congestion: CongestionGrid,
         obstMap: ObstructionMap,
-        tech: LayoutTechDatabase
+        tech: LayoutTechDatabase,
+        ignoringNetID: UUID? = nil
     ) throws -> [ChannelRouter.RouteSegment]? {
         let m1Rules = try tech.requiredRuleSet(for: layers.m1)
         let m2Rules = try tech.requiredRuleSet(for: layers.m2)
@@ -151,7 +152,16 @@ struct MazeRouter: Sendable {
                     ),
                     size: LayoutSize(width: width, height: width)
                 )
-                if obstMap.hasCollision(rect: probeRect, layer: layerID, spacing: spacing) {
+                if let ignoringNetID {
+                    if obstMap.hasCollision(
+                        rect: probeRect,
+                        layer: layerID,
+                        spacing: spacing,
+                        ignoringNetID: ignoringNetID
+                    ) {
+                        continue
+                    }
+                } else if obstMap.hasCollision(rect: probeRect, layer: layerID, spacing: spacing) {
                     continue
                 }
 

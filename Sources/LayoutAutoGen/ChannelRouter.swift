@@ -113,7 +113,8 @@ struct ChannelRouter: Sendable {
         tech: LayoutTechDatabase,
         congestion: inout CongestionGrid,
         obstMap: ObstructionMap,
-        grid: Double
+        grid: Double,
+        netID: UUID? = nil
     ) throws -> RouteResult {
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2ID = LayoutLayerID(name: "M2", purpose: "drawing")
@@ -171,8 +172,19 @@ struct ChannelRouter: Sendable {
                     from: snap2D(bendA, grid: grid), to: snap2D(p2, grid: grid),
                     width: m2Width, isHorizontal: false
                 )
-                let collisionA = obstMap.hasCollision(rect: rectA1, layer: m1ID, spacing: m1Spacing)
-                    || obstMap.hasCollision(rect: rectA2, layer: m2ID, spacing: m2Spacing)
+                let collisionA = hasCollision(
+                    obstMap: obstMap,
+                    rect: rectA1,
+                    layer: m1ID,
+                    spacing: m1Spacing,
+                    ignoringNetID: netID
+                ) || hasCollision(
+                    obstMap: obstMap,
+                    rect: rectA2,
+                    layer: m2ID,
+                    spacing: m2Spacing,
+                    ignoringNetID: netID
+                )
 
                 // Check obstruction for option B (V first, then H)
                 let rectB1 = segmentBoundingRect(
@@ -183,8 +195,19 @@ struct ChannelRouter: Sendable {
                     from: snap2D(bendB, grid: grid), to: snap2D(p2, grid: grid),
                     width: m1Width, isHorizontal: true
                 )
-                let collisionB = obstMap.hasCollision(rect: rectB1, layer: m2ID, spacing: m2Spacing)
-                    || obstMap.hasCollision(rect: rectB2, layer: m1ID, spacing: m1Spacing)
+                let collisionB = hasCollision(
+                    obstMap: obstMap,
+                    rect: rectB1,
+                    layer: m2ID,
+                    spacing: m2Spacing,
+                    ignoringNetID: netID
+                ) || hasCollision(
+                    obstMap: obstMap,
+                    rect: rectB2,
+                    layer: m1ID,
+                    spacing: m1Spacing,
+                    ignoringNetID: netID
+                )
 
                 // If both L-shapes collide, fall back to MazeRouter
                 if collisionA && collisionB {
@@ -194,7 +217,8 @@ struct ChannelRouter: Sendable {
                         layers: (m1: m1ID, m2: m2ID),
                         congestion: congestion,
                         obstMap: obstMap,
-                        tech: tech
+                        tech: tech,
+                        ignoringNetID: netID
                     ) {
                         for seg in mazeSegments {
                             segments.append(seg)
@@ -290,6 +314,24 @@ struct ChannelRouter: Sendable {
     }
 
     // MARK: - Helpers
+
+    private func hasCollision(
+        obstMap: ObstructionMap,
+        rect: LayoutRect,
+        layer: LayoutLayerID,
+        spacing: Double,
+        ignoringNetID: UUID?
+    ) -> Bool {
+        if let ignoringNetID {
+            return obstMap.hasCollision(
+                rect: rect,
+                layer: layer,
+                spacing: spacing,
+                ignoringNetID: ignoringNetID
+            )
+        }
+        return obstMap.hasCollision(rect: rect, layer: layer, spacing: spacing)
+    }
 
     private func deduplicateVias(_ viaPositions: [LayoutPoint]) -> [LayoutPoint] {
         var uniqueVias: [LayoutPoint] = []

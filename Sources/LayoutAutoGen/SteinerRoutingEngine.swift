@@ -52,6 +52,7 @@ public struct SteinerRoutingEngine: RoutingEngine {
         for obs in obstructions {
             obstMap.register(shape: obs)
         }
+        registerPinObstructions(nets: nets, obstacleMap: &obstMap)
 
         // 2. Compute bounding box for congestion grid
         let bbox = computeBoundingBox(
@@ -121,7 +122,8 @@ public struct SteinerRoutingEngine: RoutingEngine {
                 tech: tech,
                 congestion: &congestion,
                 obstMap: obstMap,
-                grid: grid
+                grid: grid,
+                netID: net.id
             )
 
             segmentMap[net.id] = result.segments
@@ -174,6 +176,27 @@ public struct SteinerRoutingEngine: RoutingEngine {
         if name == "vdd" || name == "vcc" { return vddRailY }
         if name == "vss" || name == "gnd" || name == "0" { return vssRailY }
         return vssRailY ?? vddRailY
+    }
+
+    private func registerPinObstructions(
+        nets: [RoutingNet],
+        obstacleMap: inout ObstructionMap
+    ) {
+        for net in nets {
+            for pin in net.pins {
+                obstacleMap.register(shape: LayoutShape(
+                    layer: pin.layer,
+                    netID: net.id,
+                    geometry: .rect(LayoutRect(
+                        origin: LayoutPoint(
+                            x: pin.absolutePosition.x - pin.size.width / 2,
+                            y: pin.absolutePosition.y - pin.size.height / 2
+                        ),
+                        size: pin.size
+                    ))
+                ))
+            }
+        }
     }
 
     private func routePowerNet(
@@ -230,7 +253,8 @@ public struct SteinerRoutingEngine: RoutingEngine {
         var shapes: [LayoutShape] = []
         var registeredIDs: [UUID] = []
         for seg in segments {
-            let shape = segmentToShape(seg, grid: grid)
+            var shape = segmentToShape(seg, grid: grid)
+            shape.netID = netID
             let shapeID = obstMap.register(shape: shape)
             registeredIDs.append(shapeID)
             shapes.append(shape)
@@ -291,6 +315,27 @@ public struct SteinerRoutingEngine: RoutingEngine {
                     y: snap(minY, grid: grid)
                 ),
                 size: LayoutSize(width: snap(width, grid: grid), height: h)
+            ))
+        )
+    }
+
+    private func makeViaLandingShape(
+        at point: LayoutPoint,
+        layer: LayoutLayerID,
+        size: Double,
+        grid: Double,
+        netID: UUID?
+    ) -> LayoutShape {
+        let snappedSize = ContactArrayHelper.snapUp(size + 2 * grid, grid: grid)
+        return LayoutShape(
+            layer: layer,
+            netID: netID,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(
+                    x: snap(point.x - snappedSize / 2, grid: grid),
+                    y: snap(point.y - snappedSize / 2, grid: grid)
+                ),
+                size: LayoutSize(width: snappedSize, height: snappedSize)
             ))
         )
     }

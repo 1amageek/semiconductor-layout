@@ -243,12 +243,14 @@ struct SAPlacementState: Sendable {
         let totalBBox = bbox ?? .zero
 
         let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
-        let m1Width = try tech.requiredRuleSet(for: m1ID).minWidth
+        let m1Rules = try tech.requiredRuleSet(for: m1ID)
+        let m1Width = m1Rules.minWidth
         let railHeight = snap(max(m1Width * 3, 0.46), grid: tech.grid)
+        let railClearance = snap(m1Rules.minSpacing + tech.grid * 2, grid: tech.grid)
 
         let totalWidth = snap(max(totalBBox.size.width + 1.0, 2.0), grid: tech.grid)
-        let vssY = snap(totalBBox.minY - railHeight - tech.grid * 5, grid: tech.grid)
-        let vddY = snap(totalBBox.maxY + tech.grid * 5, grid: tech.grid)
+        let vssY = snap(totalBBox.minY - railHeight - railClearance, grid: tech.grid)
+        let vddY = snap(totalBBox.maxY + railClearance, grid: tech.grid)
 
         let vssRail = LayoutShape(
             layer: m1ID,
@@ -280,10 +282,19 @@ struct SAPlacementState: Sendable {
     // MARK: - Helpers
 
     static func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
+        var boxes = cell.shapes.map { LayoutGeometryUtils.boundingBox(for: $0.geometry) }
+        boxes.append(contentsOf: cell.pins.map { pin in
+            LayoutRect(
+                origin: LayoutPoint(
+                    x: pin.position.x - pin.size.width / 2,
+                    y: pin.position.y - pin.size.height / 2
+                ),
+                size: pin.size
+            )
+        })
         var bbox: LayoutRect?
-        for shape in cell.shapes {
-            let shapeBBox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
-            bbox = bbox.map { $0.union(shapeBBox) } ?? shapeBBox
+        for box in boxes {
+            bbox = bbox.map { $0.union(box) } ?? box
         }
         return bbox ?? .zero
     }
@@ -387,6 +398,7 @@ public struct SAPlacementEngine: PlacementEngine {
         // 1. Warm start from greedy placement
         let initial = try RowBasedPlacementEngine().place(instances: instances, nets: nets, tech: tech)
         var state = buildInitialState(from: initial, instances: instances)
+        alignSelfSymmetricMembers(in: &state, constraints: constraints, grid: tech.grid)
 
         // 2. Setup cost function and move generator
         var costFn = try SACostFunction(
@@ -581,5 +593,77 @@ public struct SAPlacementEngine: PlacementEngine {
         }
 
         return SAPlacementState(slots: slots, rowAssignments: rowAssignments)
+    }
+
+    private func alignSelfSymmetricMembers(
+        in state: inout SAPlacementState,
+        constraints: [LayoutConstraint],
+        grid: Double
+    ) {
+        for constraint in constraints {
+            guard case .symmetry(let symmetry) = constraint,
+                  let axisPosition = resolvedAxisPosition(for: symmetry, state: state) else {
+                continue
+            }
+
+            for memberID in symmetry.selfSymmetricMembers {
+                guard var slot = state.slots[memberID] else { continue }
+                let bbox = SAPlacementState.transformedBoundingBox(
+                    SAPlacementState.cellBoundingBox(slot.cell),
+                    transform: slot.transform
+                )
+                let translation = slot.transform.translation
+                let projectedTranslation: LayoutPoint
+                switch symmetry.axis {
+                case .vertical:
+                    projectedTranslation = LayoutPoint(
+                        x: snap(translation.x + axisPosition - bbox.center.x, grid: grid),
+                        y: translation.y
+                    )
+                case .horizontal:
+                    projectedTranslation = LayoutPoint(
+                        x: translation.x,
+                        y: snap(translation.y + axisPosition - bbox.center.y, grid: grid)
+                    )
+                }
+                slot.transform = LayoutTransform(
+                    translation: projectedTranslation,
+                    rotationDegrees: slot.transform.rotationDegrees,
+                    magnification: slot.transform.magnification,
+                    mirrorX: slot.transform.mirrorX,
+                    mirrorY: slot.transform.mirrorY
+                )
+                state.slots[memberID] = slot
+            }
+        }
+    }
+
+    private func resolvedAxisPosition(
+        for symmetry: LayoutSymmetryConstraint,
+        state: SAPlacementState
+    ) -> Double? {
+        if let axisPosition = symmetry.axisPosition {
+            return axisPosition
+        }
+
+        let centers = symmetry.members.compactMap { memberID -> Double? in
+            guard let slot = state.slots[memberID] else { return nil }
+            let bbox = SAPlacementState.transformedBoundingBox(
+                SAPlacementState.cellBoundingBox(slot.cell),
+                transform: slot.transform
+            )
+            switch symmetry.axis {
+            case .vertical:
+                return bbox.center.x
+            case .horizontal:
+                return bbox.center.y
+            }
+        }
+        guard !centers.isEmpty else { return nil }
+        return centers.reduce(0, +) / Double(centers.count)
+    }
+
+    private func snap(_ value: Double, grid: Double) -> Double {
+        (value / grid).rounded() * grid
     }
 }

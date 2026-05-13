@@ -9,17 +9,20 @@ public struct RoutingPin: Sendable {
     public let pinName: String
     public let absolutePosition: LayoutPoint
     public let layer: LayoutLayerID
+    public let size: LayoutSize
 
     public init(
         instanceID: UUID,
         pinName: String,
         absolutePosition: LayoutPoint,
-        layer: LayoutLayerID
+        layer: LayoutLayerID,
+        size: LayoutSize = LayoutSize(width: 0.4, height: 0.4)
     ) {
         self.instanceID = instanceID
         self.pinName = pinName
         self.absolutePosition = absolutePosition
         self.layer = layer
+        self.size = size
     }
 }
 
