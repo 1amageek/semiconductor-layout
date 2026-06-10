@@ -41,14 +41,16 @@ enum ContactArrayHelper {
     ) -> [LayoutShape] {
         var contacts: [LayoutShape] = []
         let pitch = snapUp(contSize + contSpacing, grid: grid)
-        let count = max(1, Int(floor((regionHeight + contSpacing) / pitch)))
-        let totalHeight = Double(count) * contSize + Double(count - 1) * contSpacing
-        let startY = regionY + (regionHeight - totalHeight) / 2
+        let effectiveSpacing = pitch - contSize
+        let count = max(1, Int(floor((regionHeight + effectiveSpacing) / pitch)))
+        let totalHeight = contSize + Double(count - 1) * pitch
+        let startY = snap(regionY + (regionHeight - totalHeight) / 2, grid: grid)
+        let x = snap(regionX, grid: grid)
 
         for i in 0..<count {
             let y = snap(startY + Double(i) * pitch, grid: grid)
             let rect = LayoutRect(
-                origin: LayoutPoint(x: snap(regionX, grid: grid), y: y),
+                origin: LayoutPoint(x: x, y: y),
                 size: LayoutSize(width: contSize, height: contSize)
             )
             contacts.append(LayoutShape(layer: contLayer, geometry: .rect(rect)))
@@ -83,15 +85,16 @@ enum ContactArrayHelper {
     ) -> [LayoutShape] {
         var contacts: [LayoutShape] = []
         let pitch = snapUp(contSize + contSpacing, grid: grid)
+        let effectiveSpacing = pitch - contSize
 
-        let colCount = max(1, Int(floor((regionWidth + contSpacing) / pitch)))
-        let rowCount = max(1, Int(floor((regionHeight + contSpacing) / pitch)))
+        let colCount = max(1, Int(floor((regionWidth + effectiveSpacing) / pitch)))
+        let rowCount = max(1, Int(floor((regionHeight + effectiveSpacing) / pitch)))
 
-        let totalWidth = Double(colCount) * contSize + Double(colCount - 1) * contSpacing
-        let totalHeight = Double(rowCount) * contSize + Double(rowCount - 1) * contSpacing
+        let totalWidth = contSize + Double(colCount - 1) * pitch
+        let totalHeight = contSize + Double(rowCount - 1) * pitch
 
-        let startX = regionX + (regionWidth - totalWidth) / 2
-        let startY = regionY + (regionHeight - totalHeight) / 2
+        let startX = snap(regionX + (regionWidth - totalWidth) / 2, grid: grid)
+        let startY = snap(regionY + (regionHeight - totalHeight) / 2, grid: grid)
 
         for row in 0..<rowCount {
             let y = snap(startY + Double(row) * pitch, grid: grid)

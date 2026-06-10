@@ -6,6 +6,8 @@ import LayoutIR
 /// Converts between IRLibrary (GDSII/OASIS intermediate representation)
 /// and LayoutDocument (editor-native model).
 public struct IRLayoutBridge: Sendable {
+    private static let viaDefinitionPropertyAttribute: Int16 = 7301
+    private static let viaDefinitionPropertyName = "lsi.viaDefinition"
 
     public init() {}
 
@@ -68,25 +70,28 @@ public struct IRLayoutBridge: Sendable {
         _ irCell: IRCell,
         cellID: UUID,
         dbu: Double,
-        layerMap: [LayerKey: LayoutLayerID],
+        layerMap: LayerMap,
         cellNameToID: [String: UUID]
     ) -> LayoutCell {
         var shapes: [LayoutShape] = []
+        var vias: [LayoutVia] = []
         var labels: [LayoutLabel] = []
         var instances: [LayoutInstance] = []
 
         for element in irCell.elements {
             switch element {
             case .boundary(let b):
-                if let shape = convertBoundary(b, dbu: dbu, layerMap: layerMap) {
+                if let via = convertViaBoundary(b, dbu: dbu, layerMap: layerMap) {
+                    vias.append(via)
+                } else if let shape = convertBoundary(b, dbu: dbu, layerMap: layerMap.ids) {
                     shapes.append(shape)
                 }
             case .path(let p):
-                if let shape = convertPath(p, dbu: dbu, layerMap: layerMap) {
+                if let shape = convertPath(p, dbu: dbu, layerMap: layerMap.ids) {
                     shapes.append(shape)
                 }
             case .text(let t):
-                if let label = convertText(t, dbu: dbu, layerMap: layerMap) {
+                if let label = convertText(t, dbu: dbu, layerMap: layerMap.ids) {
                     labels.append(label)
                 }
             case .cellRef(let r):
@@ -102,6 +107,7 @@ public struct IRLayoutBridge: Sendable {
             id: cellID,
             name: irCell.name,
             shapes: shapes,
+            vias: vias,
             labels: labels,
             instances: instances
         )
@@ -196,18 +202,38 @@ public struct IRLayoutBridge: Sendable {
         return instances
     }
 
+    private func convertViaBoundary(_ boundary: IRBoundary, dbu: Double, layerMap: LayerMap) -> LayoutVia? {
+        guard let viaDefinitionID = viaDefinitionID(from: boundary.properties) else {
+            return nil
+        }
+        guard let definition = layerMap.tech.viaDefinition(for: viaDefinitionID) else {
+            return nil
+        }
+        guard layerMap.ids[LayerKey(gdsLayer: Int(boundary.layer), gdsDatatype: Int(boundary.datatype))] == definition.cutLayer else {
+            return nil
+        }
+        guard let rect = rectangle(from: boundary.points, dbu: dbu) else {
+            return nil
+        }
+        guard approximatelyEqual(rect.size.width, definition.cutSize.width, tolerance: 1 / dbu),
+              approximatelyEqual(rect.size.height, definition.cutSize.height, tolerance: 1 / dbu) else {
+            return nil
+        }
+        return LayoutVia(viaDefinitionID: viaDefinitionID, position: rect.center)
+    }
+
     // MARK: - Private: Export helpers
 
     private func convertToIRCell(
         _ cell: LayoutCell,
         dbu: Double,
-        reverseLayerMap: [LayoutLayerID: (Int16, Int16)],
+        reverseLayerMap: ReverseLayerMap,
         cellIDToName: [UUID: String]
     ) -> IRCell {
         var elements: [IRElement] = []
 
         for shape in cell.shapes {
-            let (layer, datatype) = reverseLayerMap[shape.layer] ?? (0, 0)
+            let (layer, datatype) = reverseLayerMap.ids[shape.layer] ?? (0, 0)
             switch shape.geometry {
             case .polygon(let poly):
                 var pts = poly.points.map { micronToDBU($0, dbu: dbu) }
@@ -246,8 +272,28 @@ public struct IRLayoutBridge: Sendable {
             }
         }
 
+        for via in cell.vias {
+            guard let viaDefinition = reverseLayerMap.tech.viaDefinition(for: via.viaDefinitionID) else {
+                continue
+            }
+            guard let (layer, datatype) = reverseLayerMap.ids[viaDefinition.cutLayer] else {
+                continue
+            }
+            elements.append(.boundary(IRBoundary(
+                layer: layer,
+                datatype: datatype,
+                points: viaCutBoundaryPoints(via: via, definition: viaDefinition, dbu: dbu),
+                properties: [
+                    IRProperty(
+                        attribute: Self.viaDefinitionPropertyAttribute,
+                        value: "\(Self.viaDefinitionPropertyName)=\(via.viaDefinitionID)"
+                    )
+                ]
+            )))
+        }
+
         for label in cell.labels {
-            let (layer, texttype) = reverseLayerMap[label.layer] ?? (0, 0)
+            let (layer, texttype) = reverseLayerMap.ids[label.layer] ?? (0, 0)
             elements.append(.text(IRText(
                 layer: layer, texttype: texttype,
                 transform: .identity,
@@ -278,6 +324,63 @@ public struct IRLayoutBridge: Sendable {
         return IRCell(name: cell.name, elements: elements)
     }
 
+    private func viaCutBoundaryPoints(via: LayoutVia, definition: LayoutViaDefinition, dbu: Double) -> [IRPoint] {
+        let halfWidth = definition.cutSize.width / 2
+        let halfHeight = definition.cutSize.height / 2
+        let rect = LayoutRect(
+            origin: LayoutPoint(x: via.position.x - halfWidth, y: via.position.y - halfHeight),
+            size: definition.cutSize
+        )
+        return [
+            micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu),
+            micronToDBU(LayoutPoint(x: rect.maxX, y: rect.minY), dbu: dbu),
+            micronToDBU(LayoutPoint(x: rect.maxX, y: rect.maxY), dbu: dbu),
+            micronToDBU(LayoutPoint(x: rect.minX, y: rect.maxY), dbu: dbu),
+            micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu),
+        ]
+    }
+
+    private func rectangle(from points: [IRPoint], dbu: Double) -> LayoutRect? {
+        var layoutPoints = points.map { dbuToMicron($0, dbu: dbu) }
+        if layoutPoints.count > 1 && layoutPoints.first == layoutPoints.last {
+            layoutPoints.removeLast()
+        }
+        guard layoutPoints.count == 4 else { return nil }
+        let xs = Set(layoutPoints.map(\.x))
+        let ys = Set(layoutPoints.map(\.y))
+        guard xs.count == 2, ys.count == 2 else { return nil }
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else {
+            return nil
+        }
+        guard maxX > minX, maxY > minY else { return nil }
+        return LayoutRect(
+            origin: LayoutPoint(x: minX, y: minY),
+            size: LayoutSize(width: maxX - minX, height: maxY - minY)
+        )
+    }
+
+    private func approximatelyEqual(_ lhs: Double, _ rhs: Double, tolerance: Double) -> Bool {
+        abs(lhs - rhs) <= max(tolerance, 1e-12)
+    }
+
+    private func viaDefinitionID(from properties: [IRProperty]) -> String? {
+        for property in properties {
+            if property.attribute == Self.viaDefinitionPropertyAttribute {
+                return propertyValue(property.value, for: Self.viaDefinitionPropertyName) ?? property.value
+            }
+            if let value = propertyValue(property.value, for: Self.viaDefinitionPropertyName) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func propertyValue(_ rawValue: String, for key: String) -> String? {
+        let parts = rawValue.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == key else { return nil }
+        return String(parts[1])
+    }
+
     // MARK: - Coordinate conversion
 
     private func dbuToMicron(_ p: IRPoint, dbu: Double) -> LayoutPoint {
@@ -295,20 +398,30 @@ public struct IRLayoutBridge: Sendable {
         let gdsDatatype: Int
     }
 
-    private func buildLayerMap(tech: LayoutTechDatabase) -> [LayerKey: LayoutLayerID] {
+    private struct LayerMap {
+        let ids: [LayerKey: LayoutLayerID]
+        let tech: LayoutTechDatabase
+    }
+
+    private struct ReverseLayerMap {
+        let ids: [LayoutLayerID: (Int16, Int16)]
+        let tech: LayoutTechDatabase
+    }
+
+    private func buildLayerMap(tech: LayoutTechDatabase) -> LayerMap {
         var map: [LayerKey: LayoutLayerID] = [:]
         for def in tech.layers {
             map[LayerKey(gdsLayer: def.gdsLayer, gdsDatatype: def.gdsDatatype)] = def.id
         }
-        return map
+        return LayerMap(ids: map, tech: tech)
     }
 
-    private func buildReverseLayerMap(tech: LayoutTechDatabase) -> [LayoutLayerID: (Int16, Int16)] {
+    private func buildReverseLayerMap(tech: LayoutTechDatabase) -> ReverseLayerMap {
         var map: [LayoutLayerID: (Int16, Int16)] = [:]
         for def in tech.layers {
             map[def.id] = (Int16(def.gdsLayer), Int16(def.gdsDatatype))
         }
-        return map
+        return ReverseLayerMap(ids: map, tech: tech)
     }
 
     private func resolveLayer(gdsLayer: Int, gdsDatatype: Int, layerMap: [LayerKey: LayoutLayerID]) -> LayoutLayerID {

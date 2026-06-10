@@ -7,6 +7,9 @@ import LayoutTech
 /// Assigns horizontal segments to M1 and vertical segments to M2,
 /// inserting VIAs at layer transition points within each edge independently.
 struct ChannelRouter: Sendable {
+    enum RoutingFailure: Error, Sendable, Equatable {
+        case unroutableEdge
+    }
 
     struct RouteSegment: Sendable {
         var layer: LayoutLayerID
@@ -236,7 +239,7 @@ struct ChannelRouter: Sendable {
                         if p2IsPin { viaPositions.append(snap2D(p2, grid: grid)) }
                         continue
                     }
-                    // MazeRouter failed: fall through to best L-shape anyway
+                    throw RoutingFailure.unroutableEdge
                 }
 
                 let costA = congestion.congestionCostWithHistory(from: p1, to: bendA, isHorizontal: true)

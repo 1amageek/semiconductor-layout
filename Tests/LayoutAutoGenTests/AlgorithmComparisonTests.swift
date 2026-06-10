@@ -506,7 +506,7 @@ struct AlgorithmComparisonTests {
     private func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
         var bbox: LayoutRect?
         for shape in cell.shapes {
-            let shapeBBox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
+            let shapeBBox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             bbox = bbox.map { $0.union(shapeBBox) } ?? shapeBBox
         }
         return bbox ?? .zero
@@ -1033,7 +1033,7 @@ struct TierImprovementTests {
         )
         let overlapsBlockerPin = signalRoute.shapes.contains { shape in
             guard shape.layer == m1ID else { return false }
-            return LayoutGeometryUtils.boundingBox(for: shape.geometry).intersects(blockerPin)
+            return LayoutGeometryAnalysis.boundingBox(for: shape.geometry).intersects(blockerPin)
         }
         #expect(!overlapsBlockerPin)
     }
@@ -1074,7 +1074,7 @@ struct TierImprovementTests {
     private func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
         var bbox: LayoutRect?
         for shape in cell.shapes {
-            let shapeBBox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
+            let shapeBBox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             bbox = bbox.map { $0.union(shapeBBox) } ?? shapeBBox
         }
         return bbox ?? .zero

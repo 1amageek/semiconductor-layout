@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -31,7 +31,7 @@ let package = Package(
                 "LayoutCore",
                 "LayoutTech",
                 .product(name: "LayoutIR", package: "swift-mask-data"),
-                .product(name: "GeometryOps", package: "swift-mask-data"),
+                .product(name: "MaskGeometry", package: "swift-mask-data"),
             ]
         ),
         .target(
@@ -62,7 +62,7 @@ let package = Package(
                 "LayoutIO",
                 "LayoutIntegration",
                 .product(name: "LayoutIR", package: "swift-mask-data"),
-                .product(name: "GeometryOps", package: "swift-mask-data"),
+                .product(name: "MaskGeometry", package: "swift-mask-data"),
             ]
         ),
         .target(

@@ -4,7 +4,7 @@ import LayoutTech
 import LayoutVerify
 import LayoutIO
 import LayoutIR
-import GeometryOps
+import MaskGeometry
 
 @Observable
 @MainActor
@@ -218,7 +218,7 @@ public final class LayoutEditorViewModel {
         }
         for shape in cell.shapes.reversed() {
             guard isLayerVisible(shape.layer) else { continue }
-            if LayoutGeometryUtils.contains(point, in: shape.geometry) {
+            if LayoutGeometryAnalysis.contains(point, in: shape.geometry) {
                 selectedShapeIDs = [shape.id]
                 selectedInstanceID = nil
                 return
@@ -410,9 +410,9 @@ public final class LayoutEditorViewModel {
     public func contentBounds() -> LayoutRect? {
         let shapes = flattenedDocumentShapes()
         guard let first = shapes.first else { return nil }
-        var result = LayoutGeometryUtils.boundingBox(for: first.geometry)
+        var result = LayoutGeometryAnalysis.boundingBox(for: first.geometry)
         for shape in shapes.dropFirst() {
-            result = result.union(LayoutGeometryUtils.boundingBox(for: shape.geometry))
+            result = result.union(LayoutGeometryAnalysis.boundingBox(for: shape.geometry))
         }
         return result
     }
@@ -572,7 +572,7 @@ public final class LayoutEditorViewModel {
                 guard rect.intersects(cutRect) else { continue }
                 polygon = rect.toPolygon()
             case .polygon(let poly):
-                let bbox = LayoutGeometryUtils.boundingBox(for: poly)
+                let bbox = LayoutGeometryAnalysis.boundingBox(for: poly)
                 guard bbox.intersects(cutRect) else { continue }
                 polygon = poly
             case .path:
@@ -767,9 +767,9 @@ public final class LayoutEditorViewModel {
 
     private static func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
         guard let first = cell.shapes.first else { return .zero }
-        var bbox = LayoutGeometryUtils.boundingBox(for: first.geometry)
+        var bbox = LayoutGeometryAnalysis.boundingBox(for: first.geometry)
         for shape in cell.shapes.dropFirst() {
-            bbox = bbox.union(LayoutGeometryUtils.boundingBox(for: shape.geometry))
+            bbox = bbox.union(LayoutGeometryAnalysis.boundingBox(for: shape.geometry))
         }
         return bbox
     }

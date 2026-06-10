@@ -109,12 +109,19 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             enclosure: LayoutViaEnclosure(top: 0.01, bottom: 0.01),
             cutSpacing: 0.05
         )
+        // Typical foundry plasma-damage limit: each metal may collect at
+        // most 400x the connected gate area at its own etch stage.
+        let antennaRules = [
+            LayoutAntennaRule(layerID: m1.id, maxRatio: 400),
+            LayoutAntennaRule(layerID: m2.id, maxRatio: 400),
+        ]
         return LayoutTechDatabase(
             units: .defaultUnits,
             grid: 0.01,
             layers: [m1, m2, via1],
             vias: [viaDef],
-            layerRules: [rulesM1, rulesM2]
+            layerRules: [rulesM1, rulesM2],
+            antennaRules: antennaRules
         )
     }
 
@@ -246,7 +253,9 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             LayoutEnclosureRule(outerLayer: nwellID, innerLayer: activeID, minEnclosure: 0.18),
             LayoutEnclosureRule(outerLayer: nimpID, innerLayer: activeID, minEnclosure: 0.14),
             LayoutEnclosureRule(outerLayer: pimpID, innerLayer: activeID, minEnclosure: 0.14),
-            LayoutEnclosureRule(outerLayer: resiID, innerLayer: polyID, minEnclosure: 0.10),
+            // Resistor poly passes through the RESI marker to reach its
+            // terminals, so only the covered body must keep the margin.
+            LayoutEnclosureRule(outerLayer: resiID, innerLayer: polyID, minEnclosure: 0.10, allowsPassThrough: true),
         ]
 
         // Contact definitions
@@ -271,12 +280,22 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             ),
         ]
 
+        // Typical foundry plasma-damage limit: each metal may collect at
+        // most 400x the connected gate area at its own etch stage. Gates in
+        // this process connect into the stack at M1 (via the poly contact),
+        // so only the metal stages are evaluated.
+        let antennaRules = [
+            LayoutAntennaRule(layerID: m1ID, maxRatio: 400),
+            LayoutAntennaRule(layerID: m2ID, maxRatio: 400),
+        ]
+
         return LayoutTechDatabase(
             units: .defaultUnits,
             grid: 0.01,
             layers: layers,
             vias: [via1],
             layerRules: layerRules,
+            antennaRules: antennaRules,
             enclosureRules: enclosureRules,
             contacts: contacts
         )

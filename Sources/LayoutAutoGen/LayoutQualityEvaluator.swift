@@ -156,7 +156,7 @@ public struct LayoutQualityEvaluator: Sendable {
                 // Wire segment: length = longer dimension
                 total += max(rect.size.width, rect.size.height)
             case .path(let path):
-                total += LayoutGeometryUtils.pathLength(path)
+                total += LayoutGeometryAnalysis.length(of: path)
             case .polygon:
                 // Polygons are not typical routing shapes; skip
                 break
@@ -172,7 +172,7 @@ public struct LayoutQualityEvaluator: Sendable {
         }
         var bbox: LayoutRect?
         for shape in topCell.shapes {
-            let shapeBBox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
+            let shapeBBox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             bbox = bbox.map { $0.union(shapeBBox) } ?? shapeBBox
         }
         for instance in topCell.instances {
@@ -187,7 +187,7 @@ public struct LayoutQualityEvaluator: Sendable {
     private func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
         var bbox: LayoutRect?
         for shape in cell.shapes {
-            let shapeBBox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
+            let shapeBBox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             bbox = bbox.map { $0.union(shapeBBox) } ?? shapeBBox
         }
         return bbox ?? .zero

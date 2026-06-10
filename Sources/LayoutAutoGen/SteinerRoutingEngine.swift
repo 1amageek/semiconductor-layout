@@ -117,14 +117,20 @@ public struct SteinerRoutingEngine: RoutingEngine {
             let tree = SteinerTree.construct(pins: pins)
             trees[net.id] = tree
 
-            let result = try channelRouter.routeCongestionAware(
-                tree: tree,
-                tech: tech,
-                congestion: &congestion,
-                obstMap: obstMap,
-                grid: grid,
-                netID: net.id
-            )
+            let result: ChannelRouter.RouteResult
+            do {
+                result = try channelRouter.routeCongestionAware(
+                    tree: tree,
+                    tech: tech,
+                    congestion: &congestion,
+                    obstMap: obstMap,
+                    grid: grid,
+                    netID: net.id
+                )
+            } catch ChannelRouter.RoutingFailure.unroutableEdge {
+                unroutedNets.append(net.name)
+                continue
+            }
 
             segmentMap[net.id] = result.segments
 
@@ -354,7 +360,7 @@ public struct SteinerRoutingEngine: RoutingEngine {
             bbox = bbox.map { $0.union(r) } ?? r
         }
         for obs in obstructions {
-            let r = LayoutGeometryUtils.boundingBox(for: obs.geometry)
+            let r = LayoutGeometryAnalysis.boundingBox(for: obs.geometry)
             bbox = bbox.map { $0.union(r) } ?? r
         }
         return bbox?.expanded(by: 1.0, 1.0) ?? LayoutRect(

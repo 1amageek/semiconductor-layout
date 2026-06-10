@@ -38,7 +38,7 @@ struct LayoutEditorMergeTests {
 
         let mergedShapes = viewModel.editor.document.cell(withID: cell.id)?.shapes ?? []
         let totalArea = mergedShapes.reduce(0.0) { partial, shape in
-            partial + LayoutGeometryUtils.area(of: shape.geometry)
+            partial + LayoutGeometryAnalysis.area(of: shape.geometry)
         }
 
         #expect(mergedShapes.allSatisfy { $0.layer == layer })

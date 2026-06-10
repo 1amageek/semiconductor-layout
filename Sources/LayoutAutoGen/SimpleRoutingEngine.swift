@@ -26,12 +26,16 @@ public struct SimpleRoutingEngine: RoutingEngine {
         let m1Rules = try tech.requiredRuleSet(for: m1ID)
         let m2Rules = try tech.requiredRuleSet(for: m2ID)
 
-        guard let viaDef = tech.vias.first else {
+        guard let rawViaDef = tech.vias.first else {
             return RoutingResult(
                 routes: [],
                 unroutedNets: nets.map(\.name)
             )
         }
+        // Landing pads sized from the raw enclosure can fall below the
+        // metal min-area/min-width rules; widen the enclosure up front so
+        // every via this engine drops is legal on its own.
+        let viaDef = ViaLandingRule.sized(rawViaDef, bottomRules: m1Rules, topRules: m2Rules)
         let minM1Width = m1Rules.minWidth
         let minM2Width = m2Rules.minWidth
         let m1Width = max(minM1Width, viaDef.cutSize.width + 2 * viaDef.enclosure.bottom)
@@ -1037,6 +1041,14 @@ public struct SimpleRoutingEngine: RoutingEngine {
         return nil
     }
 
+    /// Adds redundant stitch vias where same-net M1 and M2 geometry crosses.
+    ///
+    /// Route primitives insert their own vias at every layer transition, so
+    /// net connectivity never depends on these stitches: any candidate that
+    /// would collide with another net or leave a sub-spacing sliver against
+    /// its own net is simply skipped. Crossings are stitched once per
+    /// connected crossing region, not once per shape pair, so overlapping
+    /// pads never spawn via farms.
     private func addLayerCrossingVias(
         to routedNet: inout RoutedNet,
         netID: UUID,
@@ -1050,38 +1062,91 @@ public struct SimpleRoutingEngine: RoutingEngine {
     ) {
         let m1Shapes = routedNet.shapes.filter { $0.layer == m1ID }
         let m2Shapes = routedNet.shapes.filter { $0.layer == m2ID }
-        var existingViaKeys = Set(routedNet.vias.map { pointKey($0.position) })
+        var crossings: [LayoutRect] = []
         for m1Shape in m1Shapes {
             let m1Rect = boundingRect(m1Shape)
             for m2Shape in m2Shapes {
-                guard let overlap = positiveIntersection(m1Rect, boundingRect(m2Shape)) else {
-                    continue
+                if let overlap = positiveIntersection(m1Rect, boundingRect(m2Shape)) {
+                    crossings.append(overlap)
                 }
-                let point = snap2D(overlap.center, grid: grid)
-                guard existingViaKeys.insert(pointKey(point)).inserted else {
-                    continue
-                }
-                let viaLandings = makeViaLandingShapes(
-                    at: point,
-                    viaDef: viaDef,
-                    grid: grid,
-                    netID: netID
-                )
-                guard !hasCollision(
-                    shapes: viaLandings,
-                    m1ID: m1ID,
-                    m2ID: m2ID,
-                    m1Spacing: m1Spacing,
-                    m2Spacing: m2Spacing,
-                    obstacleMap: obstMap,
-                    ignoringNetID: netID
-                ) else {
-                    continue
-                }
-                appendVia(at: point, netID: netID, viaDef: viaDef, grid: grid, shapes: &routedNet.shapes, vias: &routedNet.vias)
-                registerRecentViaLandings(in: routedNet.shapes, obstacleMap: &obstMap)
             }
         }
+        guard !crossings.isEmpty else { return }
+
+        let viaPositions = routedNet.vias.map(\.position)
+        var existingViaKeys = Set(routedNet.vias.map { pointKey($0.position) })
+        for cluster in clusterTouchingRects(crossings) {
+            let alreadyStitched = viaPositions.contains { position in
+                cluster.contains { rectContains($0, position) }
+            }
+            if alreadyStitched { continue }
+            guard let anchor = cluster.max(by: { rectArea($0) < rectArea($1) }) else { continue }
+            let point = snap2D(anchor.center, grid: grid)
+            guard existingViaKeys.insert(pointKey(point)).inserted else { continue }
+            let viaLandings = makeViaLandingShapes(
+                at: point,
+                viaDef: viaDef,
+                grid: grid,
+                netID: netID
+            )
+            guard !hasCollision(
+                shapes: viaLandings,
+                m1ID: m1ID,
+                m2ID: m2ID,
+                m1Spacing: m1Spacing,
+                m2Spacing: m2Spacing,
+                obstacleMap: obstMap,
+                ignoringNetID: netID
+            ) else {
+                continue
+            }
+            appendVia(at: point, netID: netID, viaDef: viaDef, grid: grid, shapes: &routedNet.shapes, vias: &routedNet.vias)
+            registerRecentViaLandings(in: routedNet.shapes, obstacleMap: &obstMap)
+        }
+    }
+
+    /// Groups rects into clusters of transitively touching or overlapping
+    /// rects (union-find).
+    private func clusterTouchingRects(_ rects: [LayoutRect]) -> [[LayoutRect]] {
+        var parent = Array(0..<rects.count)
+        func find(_ index: Int) -> Int {
+            var index = index
+            while parent[index] != index {
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            }
+            return index
+        }
+        for i in 0..<rects.count {
+            for j in (i + 1)..<rects.count where rectSeparation(rects[i], rects[j]) <= 1.0e-9 {
+                let ri = find(i)
+                let rj = find(j)
+                if ri != rj { parent[ri] = rj }
+            }
+        }
+        var groups: [Int: [LayoutRect]] = [:]
+        for (i, rect) in rects.enumerated() {
+            groups[find(i), default: []].append(rect)
+        }
+        return Array(groups.values)
+    }
+
+    /// Euclidean gap between two axis-aligned rects; 0 when they touch or overlap.
+    private func rectSeparation(_ a: LayoutRect, _ b: LayoutRect) -> Double {
+        let dx = max(0, max(b.origin.x - (a.origin.x + a.size.width), a.origin.x - (b.origin.x + b.size.width)))
+        let dy = max(0, max(b.origin.y - (a.origin.y + a.size.height), a.origin.y - (b.origin.y + b.size.height)))
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
+    private func rectContains(_ rect: LayoutRect, _ point: LayoutPoint) -> Bool {
+        point.x >= rect.origin.x - 1.0e-9
+            && point.x <= rect.origin.x + rect.size.width + 1.0e-9
+            && point.y >= rect.origin.y - 1.0e-9
+            && point.y <= rect.origin.y + rect.size.height + 1.0e-9
+    }
+
+    private func rectArea(_ rect: LayoutRect) -> Double {
+        rect.size.width * rect.size.height
     }
 
     private func positiveIntersection(_ lhs: LayoutRect, _ rhs: LayoutRect) -> LayoutRect? {
@@ -1294,11 +1359,23 @@ public struct SimpleRoutingEngine: RoutingEngine {
             } else {
                 spacing = min(m1Spacing, m2Spacing)
             }
-            return obstacleMap.hasCollision(
-                rect: boundingRect(shape),
+            let rect = boundingRect(shape)
+            if obstacleMap.hasCollision(
+                rect: rect,
                 layer: shape.layer,
                 spacing: spacing,
                 ignoringNetID: ignoringNetID
+            ) {
+                return true
+            }
+            // Same-net geometry must either merge (touch) or keep the full
+            // spacing; a sub-spacing gap is a sliver that spacing DRC
+            // rejects regardless of net.
+            return obstacleMap.hasSameNetSliver(
+                rect: rect,
+                layer: shape.layer,
+                spacing: spacing,
+                netID: ignoringNetID
             )
         }
     }

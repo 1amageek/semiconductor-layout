@@ -26,11 +26,11 @@ extension LayoutPolygon {
     /// with a zero-width bridge connecting the outer boundary to the hole.
     /// For partial overlaps, traces the difference boundary to produce minimal polygons.
     public func subtract(cut: LayoutRect) -> [LayoutPolygon] {
-        let poly = self.ensureCCW()
+        let poly = self.ensureCounterClockwise()
         let n = poly.points.count
         guard n >= 3 else { return [] }
 
-        let bbox = LayoutGeometryUtils.boundingBox(for: poly)
+        let bbox = LayoutGeometryAnalysis.boundingBox(for: poly)
         guard bbox.intersects(cut) else { return [self] }
 
         // Clip cut to polygon's bounding box to avoid tracing far outside
@@ -72,7 +72,7 @@ extension LayoutPolygon {
                 x: (clippedCut.minX + clippedCut.maxX) / 2,
                 y: (clippedCut.minY + clippedCut.maxY) / 2
             )
-            if LayoutGeometryUtils.pointInPolygon(cutCenter, polygon: poly) {
+            if LayoutGeometryAnalysis.contains(cutCenter, in: poly) {
                 // Interior hole → keyhole polygon
                 return [Self.makeKeyhole(outer: poly, hole: clippedCut)]
             }
@@ -338,7 +338,7 @@ extension LayoutPolygon {
     /// Splits this polygon vertically at the given x coordinate.
     /// Returns `(left, right)` or nil if x is outside the polygon bounding box.
     public func splitVertically(at x: Double) -> (LayoutPolygon, LayoutPolygon)? {
-        let bbox = LayoutGeometryUtils.boundingBox(for: self)
+        let bbox = LayoutGeometryAnalysis.boundingBox(for: self)
         guard x > bbox.minX, x < bbox.maxX else { return nil }
 
         let leftRect = LayoutRect(
@@ -358,7 +358,7 @@ extension LayoutPolygon {
     /// Splits this polygon horizontally at the given y coordinate.
     /// Returns `(bottom, top)` or nil if y is outside the polygon bounding box.
     public func splitHorizontally(at y: Double) -> (LayoutPolygon, LayoutPolygon)? {
-        let bbox = LayoutGeometryUtils.boundingBox(for: self)
+        let bbox = LayoutGeometryAnalysis.boundingBox(for: self)
         guard y > bbox.minY, y < bbox.maxY else { return nil }
 
         let bottomRect = LayoutRect(
@@ -460,7 +460,7 @@ extension LayoutPolygon {
     }
 
     /// Ensures CCW winding order.
-    public func ensureCCW() -> LayoutPolygon {
+    public func ensureCounterClockwise() -> LayoutPolygon {
         if signedArea < 0 {
             return LayoutPolygon(points: points.reversed())
         }

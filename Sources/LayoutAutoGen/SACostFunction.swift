@@ -813,7 +813,7 @@ struct SACostFunction: Sendable {
     private func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
         var bbox: LayoutRect?
         for shape in cell.shapes {
-            let shapeBBox = LayoutGeometryUtils.boundingBox(for: shape.geometry)
+            let shapeBBox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             bbox = bbox.map { $0.union(shapeBBox) } ?? shapeBBox
         }
         return bbox ?? .zero

@@ -72,6 +72,36 @@ public struct ObstructionMap: Sendable {
         }
     }
 
+    /// True when geometry of `netID` on `layer` sits at a positive gap
+    /// smaller than `spacing` from `rect`.
+    ///
+    /// Same-net features may touch (they merge into one mask feature) or
+    /// keep the full spacing; anything in between is a sliver gap that
+    /// spacing DRC rejects regardless of net.
+    public func hasSameNetSliver(
+        rect: LayoutRect,
+        layer: LayoutLayerID,
+        spacing: Double,
+        netID: UUID
+    ) -> Bool {
+        let key = layerKey(layer)
+        guard let rects = obstructions[key] else { return false }
+        let tolerance = 1.0e-9
+        return rects.contains { obstruction in
+            guard obstruction.netID == netID else { return false }
+            let separation = Self.separation(rect, obstruction.rect)
+            return separation > tolerance && separation < spacing - tolerance
+        }
+    }
+
+    /// Euclidean gap between two axis-aligned rects; 0 when they touch
+    /// or overlap. The diagonal metric matches corner-to-corner spacing DRC.
+    private static func separation(_ a: LayoutRect, _ b: LayoutRect) -> Double {
+        let dx = max(0, max(b.origin.x - (a.origin.x + a.size.width), a.origin.x - (b.origin.x + b.size.width)))
+        let dy = max(0, max(b.origin.y - (a.origin.y + a.size.height), a.origin.y - (b.origin.y + b.size.height)))
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
     private func layerKey(_ layer: LayoutLayerID) -> String {
         "\(layer.name):\(layer.purpose)"
     }

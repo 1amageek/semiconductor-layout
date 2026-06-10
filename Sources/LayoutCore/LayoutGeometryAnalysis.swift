@@ -1,6 +1,6 @@
 import Foundation
 
-public struct LayoutGeometryUtils {
+public enum LayoutGeometryAnalysis {
     public static func boundingBox(for geometry: LayoutGeometry) -> LayoutRect {
         switch geometry {
         case .rect(let rect):
@@ -104,7 +104,7 @@ public struct LayoutGeometryUtils {
         var minDistance = Double.greatestFiniteMagnitude
         for s1 in segmentsA {
             for s2 in segmentsB {
-                let dist = distanceBetweenSegments(s1, s2)
+                let dist = distance(between: s1, and: s2)
                 minDistance = min(minDistance, dist)
             }
         }
@@ -116,10 +116,38 @@ public struct LayoutGeometryUtils {
     }
 
     public static func intersects(_ a: LayoutGeometry, _ b: LayoutGeometry) -> Bool {
+        let boxA = boundingBox(for: a)
+        let boxB = boundingBox(for: b)
+        guard boxA.intersects(boxB) else { return false }
         if minimumDistance(between: a, and: b) == 0 {
             return true
         }
+        if representativePoints(for: a).contains(where: { contains($0, in: b) }) {
+            return true
+        }
+        if representativePoints(for: b).contains(where: { contains($0, in: a) }) {
+            return true
+        }
         return false
+    }
+
+    private static func representativePoints(for geometry: LayoutGeometry) -> [LayoutPoint] {
+        switch geometry {
+        case .rect(let rect):
+            return [
+                rect.center,
+                LayoutPoint(x: rect.minX, y: rect.minY),
+                LayoutPoint(x: rect.maxX, y: rect.minY),
+                LayoutPoint(x: rect.maxX, y: rect.maxY),
+                LayoutPoint(x: rect.minX, y: rect.maxY),
+            ]
+        case .polygon(let polygon):
+            let box = boundingBox(for: polygon)
+            return [box.center] + polygon.points
+        case .path(let path):
+            let box = boundingBox(for: path)
+            return [box.center] + path.points
+        }
     }
 
     public static func contains(_ point: LayoutPoint, in geometry: LayoutGeometry) -> Bool {
@@ -127,9 +155,9 @@ public struct LayoutGeometryUtils {
         case .rect(let rect):
             return rect.contains(point)
         case .polygon(let polygon):
-            return pointInPolygon(point, polygon: polygon)
+            return contains(point, in: polygon)
         case .path(let path):
-            return distanceToPath(point, path: path) <= path.width / 2
+            return distance(from: point, to: path) <= path.width / 2
         }
     }
 
@@ -138,13 +166,13 @@ public struct LayoutGeometryUtils {
         case .rect(let rect):
             return rect.size.width * rect.size.height
         case .polygon(let polygon):
-            return polygonArea(polygon)
+            return area(of: polygon)
         case .path(let path):
-            return pathLength(path) * path.width
+            return length(of: path) * path.width
         }
     }
 
-    public static func polygonArea(_ polygon: LayoutPolygon) -> Double {
+    public static func area(of polygon: LayoutPolygon) -> Double {
         guard polygon.points.count >= 3 else { return 0 }
         var sum = 0.0
         for i in 0..<polygon.points.count {
@@ -155,7 +183,7 @@ public struct LayoutGeometryUtils {
         return abs(sum) * 0.5
     }
 
-    public static func pathLength(_ path: LayoutPath) -> Double {
+    public static func length(of path: LayoutPath) -> Double {
         guard path.points.count >= 2 else { return 0 }
         var length = 0.0
         for i in 0..<(path.points.count - 1) {
@@ -168,34 +196,34 @@ public struct LayoutGeometryUtils {
         hypot(b.x - a.x, b.y - a.y)
     }
 
-    public static func distanceBetweenSegments(_ s1: LayoutSegment, _ s2: LayoutSegment) -> Double {
-        if segmentsIntersect(s1, s2) {
+    public static func distance(between s1: LayoutSegment, and s2: LayoutSegment) -> Double {
+        if intersects(s1, s2) {
             return 0
         }
-        let d1 = distancePointToSegment(s1.start, s2)
-        let d2 = distancePointToSegment(s1.end, s2)
-        let d3 = distancePointToSegment(s2.start, s1)
-        let d4 = distancePointToSegment(s2.end, s1)
+        let d1 = distance(from: s1.start, to: s2)
+        let d2 = distance(from: s1.end, to: s2)
+        let d3 = distance(from: s2.start, to: s1)
+        let d4 = distance(from: s2.end, to: s1)
         return min(min(d1, d2), min(d3, d4))
     }
 
-    public static func distancePointToSegment(_ p: LayoutPoint, _ segment: LayoutSegment) -> Double {
+    public static func distance(from point: LayoutPoint, to segment: LayoutSegment) -> Double {
         let v = vector(from: segment.start, to: segment.end)
-        let w = vector(from: segment.start, to: p)
+        let w = vector(from: segment.start, to: point)
         let c1 = dot(w, v)
         if c1 <= 0 {
-            return distance(p, segment.start)
+            return distance(point, segment.start)
         }
         let c2 = dot(v, v)
         if c2 <= c1 {
-            return distance(p, segment.end)
+            return distance(point, segment.end)
         }
         let b = c1 / c2
         let pb = LayoutPoint(x: segment.start.x + b * v.x, y: segment.start.y + b * v.y)
-        return distance(p, pb)
+        return distance(point, pb)
     }
 
-    public static func segmentsIntersect(_ s1: LayoutSegment, _ s2: LayoutSegment) -> Bool {
+    public static func intersects(_ s1: LayoutSegment, _ s2: LayoutSegment) -> Bool {
         let d1 = direction(s1.start, s1.end, s2.start)
         let d2 = direction(s1.start, s1.end, s2.end)
         let d3 = direction(s2.start, s2.end, s1.start)
@@ -210,7 +238,7 @@ public struct LayoutGeometryUtils {
             (d3 > 0 && d4 < 0 || d3 < 0 && d4 > 0)
     }
 
-    public static func pointInPolygon(_ point: LayoutPoint, polygon: LayoutPolygon) -> Bool {
+    public static func contains(_ point: LayoutPoint, in polygon: LayoutPolygon) -> Bool {
         guard polygon.points.count >= 3 else { return false }
         var inside = false
         var j = polygon.points.count - 1
@@ -226,11 +254,11 @@ public struct LayoutGeometryUtils {
         return inside
     }
 
-    public static func distanceToPath(_ point: LayoutPoint, path: LayoutPath) -> Double {
+    public static func distance(from point: LayoutPoint, to path: LayoutPath) -> Double {
         let segments = segments(for: path)
         var minDistance = Double.greatestFiniteMagnitude
         for segment in segments {
-            minDistance = min(minDistance, distancePointToSegment(point, segment))
+            minDistance = min(minDistance, distance(from: point, to: segment))
         }
         return minDistance
     }
@@ -242,11 +270,11 @@ public struct LayoutGeometryUtils {
         case .path(let path):
             return path.width
         case .polygon(let polygon):
-            return minimumPolygonWidth(polygon)
+            return minimumWidth(of: polygon)
         }
     }
 
-    public static func minimumPolygonWidth(_ polygon: LayoutPolygon) -> Double {
+    public static func minimumWidth(of polygon: LayoutPolygon) -> Double {
         let segments = segments(for: polygon)
         guard segments.count >= 2 else { return 0 }
         var minWidth = Double.greatestFiniteMagnitude
@@ -257,7 +285,7 @@ public struct LayoutGeometryUtils {
                 let b = segments[j]
                 let directionB = vector(from: b.start, to: b.end)
                 if isParallel(directionA, directionB) {
-                    let dist = distanceBetweenSegments(a, b)
+                    let dist = distance(between: a, and: b)
                     minWidth = min(minWidth, dist)
                 }
             }

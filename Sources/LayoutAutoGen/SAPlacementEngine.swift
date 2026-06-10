@@ -282,7 +282,7 @@ struct SAPlacementState: Sendable {
     // MARK: - Helpers
 
     static func cellBoundingBox(_ cell: LayoutCell) -> LayoutRect {
-        var boxes = cell.shapes.map { LayoutGeometryUtils.boundingBox(for: $0.geometry) }
+        var boxes = cell.shapes.map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
         boxes.append(contentsOf: cell.pins.map { pin in
             LayoutRect(
                 origin: LayoutPoint(

@@ -8,6 +8,7 @@ public enum AutoGenError: Error, Sendable, LocalizedError {
     case missingContactDefinition(String)
     case placementFailed(String)
     case routingFailed(String)
+    case antennaMitigationFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ public enum AutoGenError: Error, Sendable, LocalizedError {
             return "Placement failed: \(reason)"
         case .routingFailed(let reason):
             return "Routing failed: \(reason)"
+        case .antennaMitigationFailed(let reason):
+            return "Antenna mitigation failed: \(reason)"
         }
     }
 }

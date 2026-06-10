@@ -241,7 +241,7 @@ public struct LayoutCanvasView: View {
 
     private func shapeHitTest(at point: LayoutPoint, in ids: Set<UUID>) -> Bool {
         for shape in viewModel.documentShapes() where ids.contains(shape.id) {
-            if LayoutGeometryUtils.contains(point, in: shape.geometry) {
+            if LayoutGeometryAnalysis.contains(point, in: shape.geometry) {
                 return true
             }
         }
