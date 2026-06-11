@@ -115,6 +115,42 @@ struct LayoutDRCServiceRobustnessTests {
         #expect(violation?.measured == 1.0)
     }
 
+    @Test func densityCountsOverlappingShapesOnce() {
+        // Two overlapping rects: merged coverage 150 over a 15x10 extent is
+        // exactly 1.0. A per-shape sum would report 200/150 = 1.33 — a
+        // physically impossible density — and falsely violate maxDensity.
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let left = rect(layer: m1, x: 0, y: 0, width: 10, height: 10)
+        let right = rect(layer: m1, x: 5, y: 0, width: 10, height: 10)
+        let result = LayoutDRCService().run(
+            document: document(shapes: [left, right]),
+            tech: tech(layer: m1, maxDensity: 1.0)
+        )
+
+        #expect(!result.violations.contains { $0.kind == .density })
+    }
+
+    @Test func densityViolationMeasuresMergedCoverage() {
+        // A shape fully inside another adds no coverage: merged area is 60
+        // over the 10x10 window, so the verdict must carry 0.6 — not the
+        // per-shape sum 1.0.
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let outer = rect(layer: m1, x: 0, y: 0, width: 6, height: 10)
+        let inner = rect(layer: m1, x: 2, y: 0, width: 4, height: 10)
+        let result = LayoutDRCService().run(
+            document: document(shapes: [outer, inner]),
+            tech: tech(
+                layer: m1,
+                maxDensity: 0.5,
+                densityWindow: LayoutSize(width: 10, height: 10),
+                densityStep: 10
+            )
+        )
+
+        let violation = result.violations.first { $0.kind == .density }
+        #expect(violation?.measured == 0.6)
+    }
+
     @Test func hierarchicalTerminalMappingPropagatesThroughViaStack() {
         let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2 = LayoutLayerID(name: "M2", purpose: "drawing")

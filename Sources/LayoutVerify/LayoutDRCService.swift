@@ -647,9 +647,9 @@ public struct LayoutDRCService {
             guard let rules = tech.ruleSet(for: layer) else { continue }
             let windows = densityWindows(for: overall, rules: rules)
             for window in windows {
-                let area = layerShapes.reduce(0.0) {
-                    $0 + clippedArea(of: $1.geometry, in: window, dbu: tech.units.dbuPerMicron)
-                }
+                let area = mergedClippedArea(
+                    of: layerShapes, in: window, dbu: tech.units.dbuPerMicron
+                )
                 if let violation = densityViolation(
                     layerShapes: layerShapes, layer: layer, rules: rules, window: window, area: area
                 ) {
@@ -661,9 +661,11 @@ public struct LayoutDRCService {
     }
 
     /// Emits the density verdict for one window given the precomputed clipped
-    /// area. The area must be the document-order sum of per-shape clipped
-    /// areas so that incremental callers reproduce the full-run float
-    /// bit-exactly.
+    /// area. The area must be the boolean-merged (union) clipped area from
+    /// `mergedClippedArea` — overlapping geometry counts once, so the
+    /// measured density can never exceed 1.0 — and the integer dbu-space
+    /// union is order-independent, so incremental callers reproduce the
+    /// full-run value exactly.
     func densityViolation(
         layerShapes: [LayoutShape],
         layer: LayoutLayerID,
@@ -1439,13 +1441,31 @@ public struct LayoutDRCService {
         return starts
     }
 
-    func clippedArea(of geometry: LayoutGeometry, in window: LayoutRect, dbu: Double) -> Double {
-        guard let boundary = geometryToIRBoundary(geometry, dbu: dbu) else {
-            return 0
+    /// Boolean-merged (union) area of the shapes inside the window, in um².
+    ///
+    /// Shapes whose slack-expanded bounding box misses the window are
+    /// skipped — dbu rounding can move an edge by up to half a dbu, so the
+    /// one-dbu slack guarantees the prefilter never drops a contributing
+    /// shape. The union area of a point set is canonical, so the result is
+    /// independent of shape order and of which zero-contribution shapes
+    /// are passed; the incremental session relies on this to reproduce the
+    /// full run exactly.
+    func mergedClippedArea(of shapes: [LayoutShape], in window: LayoutRect, dbu: Double) -> Double {
+        let slack = 1.0 / dbu
+        var boundaries: [IRBoundary] = []
+        for shape in shapes {
+            let bbox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
+            guard bbox.expanded(by: slack, slack).intersects(window) else { continue }
+            if let boundary = geometryToIRBoundary(shape.geometry, dbu: dbu) {
+                boundaries.append(boundary)
+            }
         }
-        let geometryRegion = Region(polygons: [boundary])
-        let windowRegion = rectToRegion(window, dbu: dbu)
-        let clipped = geometryRegion.and(windowRegion)
+        guard !boundaries.isEmpty else { return 0 }
+        // OR with the empty region normalizes overlapping input polygons
+        // into disjoint ones; the AND of disjoint polygons with the window
+        // is disjoint, so the shoelace `area` is the exact union area.
+        let merged = Region(polygons: boundaries).or(Region())
+        let clipped = merged.and(rectToRegion(window, dbu: dbu))
         return abs(Double(clipped.area)) / (dbu * dbu)
     }
 

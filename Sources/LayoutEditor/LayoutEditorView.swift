@@ -45,11 +45,23 @@ public struct LayoutEditorView: View {
                 }
                 .layoutPriority(1)
 
-            if !viewModel.violations.isEmpty {
-                LayoutDiagnosticsBar(violations: viewModel.violations)
+            if !viewModel.violations.isEmpty || !viewModel.staleViolationKinds.isEmpty {
+                LayoutDiagnosticsBar(
+                    violations: viewModel.violations,
+                    staleKinds: viewModel.staleViolationKinds
+                )
             }
         }
         .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Picker("DRD Mode", selection: $viewModel.drdMode) {
+                    ForEach(DRDMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .help("Design-rule-driven editing: live verification (Observe) and legal-position drags (Enforce)")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showFileImporter = true

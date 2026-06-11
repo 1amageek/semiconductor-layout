@@ -18,10 +18,6 @@ public struct LayoutCanvasView: View {
     @State private var dragMode: DragMode?
     @State private var panStartOffset: CGPoint?
 
-    // MARK: - Move State
-
-    @State private var moveAnchor: LayoutPoint?
-
     private let dragThreshold: CGFloat = 3
     private let polygonCloseThreshold: CGFloat = 10
 
@@ -44,6 +40,7 @@ public struct LayoutCanvasView: View {
 
             drawShapes(context: &context)
             drawInstances(context: &context)
+            drawViolations(context: &context)
             drawSelection(context: &context)
             drawInstanceHighlights(context: &context)
             drawRulers(context: &context)
@@ -123,6 +120,10 @@ public struct LayoutCanvasView: View {
             viewModel.deleteSelectedShapes()
             return .handled
         case .escape:
+            if viewModel.isDraggingShapes {
+                viewModel.cancelShapeDrag()
+                return .handled
+            }
             if !drawingVertices.isEmpty {
                 drawingVertices.removeAll()
                 return .handled
@@ -181,7 +182,7 @@ public struct LayoutCanvasView: View {
                         if !viewModel.selectedShapeIDs.isEmpty,
                            shapeHitTest(at: layoutPt, in: viewModel.selectedShapeIDs) {
                             dragMode = .movingShape
-                            moveAnchor = viewModel.snapToGrid(layoutPt)
+                            viewModel.beginShapeDrag()
                         } else {
                             dragMode = .panningCanvas
                             panStartOffset = viewModel.offset
@@ -207,12 +208,14 @@ public struct LayoutCanvasView: View {
                 case .drawing:
                     dragCurrent = value.location
                 case .movingShape:
-                    let currentLayout = viewModel.snapToGrid(toLayout(value.location))
-                    if let anchor = moveAnchor {
-                        let delta = LayoutPoint(x: currentLayout.x - anchor.x, y: currentLayout.y - anchor.y)
-                        viewModel.moveSelectedShapes(by: delta)
-                        moveAnchor = currentLayout
-                    }
+                    // Cumulative offset from the drag origin in layout
+                    // coordinates; the view model quantizes and, in
+                    // enforce mode, resolves it to a legal position.
+                    let offset = LayoutPoint(
+                        x: Double(value.translation.width / viewModel.zoom),
+                        y: Double(value.translation.height / viewModel.zoom)
+                    )
+                    viewModel.updateShapeDrag(to: offset)
                 case .none:
                     break
                 }
@@ -223,7 +226,9 @@ public struct LayoutCanvasView: View {
                     case .drawing:
                         let start = dragStart ?? value.startLocation
                         handleDrawingEnd(start: start, end: value.location)
-                    case .panningCanvas, .movingShape, .none:
+                    case .movingShape:
+                        viewModel.endShapeDrag()
+                    case .panningCanvas, .none:
                         break
                     }
                 } else {
@@ -233,7 +238,6 @@ public struct LayoutCanvasView: View {
                 dragCurrent = nil
                 dragMode = nil
                 panStartOffset = nil
-                moveAnchor = nil
             }
     }
 
@@ -524,12 +528,64 @@ public struct LayoutCanvasView: View {
         }
     }
 
+    // MARK: - Drawing: Violations
+
+    private func drawViolations(context: inout GraphicsContext) {
+        guard !viewModel.violations.isEmpty else { return }
+        let minMarkerSize = 6.0 / viewModel.zoom
+        let lineWidth = 1.5 / viewModel.zoom
+        let dash = StrokeStyle(
+            lineWidth: lineWidth,
+            dash: [3 / viewModel.zoom, 2 / viewModel.zoom]
+        )
+
+        for violation in viewModel.violations {
+            if let layer = violation.layer, !viewModel.isLayerVisible(layer) { continue }
+
+            let baseColor: Color = violation.severity == .error ? .red : .orange
+            let isStale = viewModel.staleViolationKinds.contains(violation.kind)
+            let color = isStale ? baseColor.opacity(0.35) : baseColor
+
+            let region = violation.region
+            var rect = CGRect(
+                x: region.origin.x,
+                y: region.origin.y,
+                width: region.size.width,
+                height: region.size.height
+            )
+            // Degenerate regions (edge-to-edge gaps collapse to a line or
+            // point) still get a visible marker.
+            if rect.width < minMarkerSize {
+                rect = rect.insetBy(dx: (rect.width - minMarkerSize) / 2, dy: 0)
+            }
+            if rect.height < minMarkerSize {
+                rect = rect.insetBy(dx: 0, dy: (rect.height - minMarkerSize) / 2)
+            }
+
+            let path = Path(rect)
+            context.fill(path, with: .color(color.opacity(0.18)))
+            context.stroke(path, with: .color(color), style: dash)
+        }
+    }
+
     // MARK: - Drawing: Selection
 
+    /// Selection stroke color doubles as design-rule-driven drag feedback:
+    /// orange while the drag is being constrained to a legal position, red
+    /// while it is fully blocked.
+    private var selectionColor: Color {
+        switch viewModel.dragOutcome {
+        case .constrained: return .orange
+        case .blocked: return .red
+        case .followed, nil: return .yellow
+        }
+    }
+
     private func drawSelection(context: inout GraphicsContext) {
+        let color = selectionColor
         for shape in viewModel.documentShapes() where viewModel.selectedShapeIDs.contains(shape.id) {
             let path = pathForShape(shape)
-            context.stroke(path, with: .color(Color.yellow), lineWidth: 2 / viewModel.zoom)
+            context.stroke(path, with: .color(color), lineWidth: 2 / viewModel.zoom)
         }
     }
 

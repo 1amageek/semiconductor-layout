@@ -189,8 +189,19 @@ extension LayoutPolygon {
                 }
                 path.append(crossings[enteringIdx].point)
 
-                // Trace rect boundary CW from entering → next leaving
-                let nextLeavingIdx = (enteringIdx + 1) % nc
+                // Trace rect boundary CW from entering → the geometrically
+                // next crossing along the cut boundary. Crossings alternate
+                // entering/leaving along the clip boundary (Weiler–Atherton),
+                // so it is a leaving one. Picking the next crossing in
+                // polyParam order instead would stitch separate remainder
+                // pieces into one self-intersecting polygon whenever the cut
+                // severs the polygon.
+                let nextLeavingIdx = Self.nextCrossingCW(
+                    from: crossings[enteringIdx].point,
+                    crossings: crossings,
+                    cut: cut,
+                    excluding: enteringIdx
+                )
                 addRectCW(
                     from: crossings[enteringIdx].point,
                     to: crossings[nextLeavingIdx].point,
@@ -241,6 +252,29 @@ extension LayoutPolygon {
 
     private static func clamp01(_ v: Double) -> Double {
         min(max(v, 0), 1)
+    }
+
+    /// Index of the crossing closest to `point` walking the rectangle
+    /// boundary clockwise, excluding the crossing we are standing on.
+    private static func nextCrossingCW(
+        from point: LayoutPoint,
+        crossings: [SubtractCrossing],
+        cut: LayoutRect,
+        excluding: Int
+    ) -> Int {
+        let startP = rectParamCW(point, cut: cut)
+        var bestIdx = excluding
+        var bestDelta = Double.greatestFiniteMagnitude
+        for (i, crossing) in crossings.enumerated() {
+            guard i != excluding else { continue }
+            var delta = rectParamCW(crossing.point, cut: cut) - startP
+            if delta <= 1e-9 { delta += 4.0 }
+            if delta < bestDelta {
+                bestDelta = delta
+                bestIdx = i
+            }
+        }
+        return bestIdx
     }
 
     /// Adds rectangle corner points between `from` and `to` in CW order.

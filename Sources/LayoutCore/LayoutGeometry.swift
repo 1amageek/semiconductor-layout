@@ -66,7 +66,26 @@ public extension LayoutGeometry {
             return .polygon(LayoutPolygon(points: points))
         case .path(let path):
             let points = path.points.map { transform.apply(to: $0) }
-            return .path(LayoutPath(points: points, width: path.width))
+            return .path(LayoutPath(points: points, width: path.width, endCap: path.endCap))
+        }
+    }
+
+    /// The geometry shifted by a vector, preserving its kind: a rect stays
+    /// a rect, a path keeps its width and end cap. Unlike
+    /// ``transformed(by:)``, which canonicalizes to polygons for general
+    /// transforms, translation never needs that loss of form.
+    func translated(by delta: LayoutPoint) -> LayoutGeometry {
+        switch self {
+        case .rect(let rect):
+            return .rect(LayoutRect(origin: rect.origin.translated(by: delta), size: rect.size))
+        case .polygon(let polygon):
+            return .polygon(LayoutPolygon(points: polygon.points.map { $0.translated(by: delta) }))
+        case .path(let path):
+            return .path(LayoutPath(
+                points: path.points.map { $0.translated(by: delta) },
+                width: path.width,
+                endCap: path.endCap
+            ))
         }
     }
 }

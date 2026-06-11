@@ -27,6 +27,36 @@ public final class LayoutEditorViewModel {
     public var hiddenLayers: Set<LayoutLayerID> = []
     public var cellNavigationPath: [UUID] = []
 
+    // MARK: - Live DRC (DRD)
+
+    /// Design-rule-driven editing mode. In `observe` and `enforce` every
+    /// edit re-verifies incrementally and ``violations`` stays live; in
+    /// `enforce` interactive drags additionally stick at legal positions.
+    public var drdMode: DRDMode = .observe {
+        didSet {
+            guard drdMode != oldValue else { return }
+            if drdMode == .off {
+                liveDRC = nil
+                staleViolationKinds = []
+            } else {
+                resyncLiveDRC()
+            }
+        }
+    }
+
+    /// Violation kinds in ``violations`` not re-verified since the last
+    /// edit (the live session's deferred tier, or everything when live
+    /// verification is unavailable).
+    public private(set) var staleViolationKinds: Set<LayoutViolationKind> = []
+
+    /// How the last design-rule-driven drag proposal resolved, for canvas
+    /// feedback while a drag is active.
+    public private(set) var dragOutcome: DRDDragOutcome?
+
+    private var liveDRC: IncrementalDRCSession?
+    private var dragSession: DRDDragSession?
+    private var dragOriginShapes: [LayoutShape]?
+
     // MARK: - Tool Options
 
     /// Path width for the path tool. Defaults to minimum width of active layer or tech grid.
@@ -57,6 +87,7 @@ public final class LayoutEditorViewModel {
         self.activeViaID = tech.vias.first?.id ?? "VIA1"
         self.pathWidth = defaultPathWidth(for: tech)
         self.cellNavigationPath = [cell.id]
+        resyncLiveDRC()
     }
 
     public init(document: LayoutDocument, tech: LayoutTechDatabase) {
@@ -68,11 +99,156 @@ public final class LayoutEditorViewModel {
         self.activeViaID = tech.vias.first?.id ?? "VIA1"
         self.pathWidth = defaultPathWidth(for: tech)
         self.cellNavigationPath = Self.initialNavigationPath(document: document, activeCellID: self.activeCellID)
+        resyncLiveDRC()
     }
 
+    /// Full verification on demand: re-verifies the live session's
+    /// deferred tier when one is active, or runs the batch checker.
     public func runDRC() {
-        let service = LayoutDRCService()
-        violations = service.run(document: editor.document, tech: tech).violations
+        if let liveDRC {
+            violations = liveDRC.commit().violations
+            staleViolationKinds = []
+        } else {
+            let service = LayoutDRCService()
+            violations = service.run(document: editor.document, tech: tech, cellID: activeCellID).violations
+            staleViolationKinds = []
+        }
+    }
+
+    // MARK: - Live DRC Plumbing
+
+    /// (Re)builds the live session from the current document and active
+    /// cell. On failure the error is surfaced and every violation kind is
+    /// declared stale rather than pretending the snapshot is current.
+    private func resyncLiveDRC() {
+        guard drdMode != .off, let cellID = activeCellID else {
+            liveDRC = nil
+            return
+        }
+        do {
+            let result: LayoutDRCResult
+            if let liveDRC {
+                result = try liveDRC.rebuild(document: editor.document, cellID: cellID)
+            } else {
+                let session = try IncrementalDRCSession(
+                    document: editor.document,
+                    tech: tech,
+                    cellID: cellID
+                )
+                liveDRC = session
+                result = session.currentResult
+            }
+            violations = result.violations
+            staleViolationKinds = []
+        } catch {
+            liveDRC = nil
+            staleViolationKinds = Set(LayoutViolationKind.allCases)
+            handleError(error)
+        }
+    }
+
+    /// Tears down and rebuilds the live session — required when the
+    /// technology database changes, which a session cannot absorb.
+    private func restartLiveDRC() {
+        liveDRC = nil
+        resyncLiveDRC()
+    }
+
+    /// Single choke point for geometry edits: applies the delta to the
+    /// document and the live session with identical ordering semantics,
+    /// keeping ``violations`` exact. Discrete edits re-verify the deferred
+    /// antenna tier immediately; transient (gesture) edits defer it and
+    /// report it via ``staleViolationKinds``.
+    private func commitDelta(_ delta: LayoutEditDelta, transient: Bool = false) {
+        guard let cellID = activeCellID else { return }
+        do {
+            if transient {
+                try editor.performTransient { doc in
+                    try Self.applyDelta(delta, to: &doc, cellID: cellID)
+                }
+            } else {
+                try editor.perform { doc in
+                    try Self.applyDelta(delta, to: &doc, cellID: cellID)
+                }
+            }
+        } catch {
+            handleError(error)
+            return
+        }
+
+        guard let liveDRC else { return }
+        do {
+            let update = try liveDRC.apply(delta)
+            if transient {
+                violations = update.result.violations
+                staleViolationKinds = update.staleKinds
+            } else {
+                violations = liveDRC.commit().violations
+                staleViolationKinds = []
+            }
+        } catch {
+            // The document mutation succeeded but the session rejected the
+            // delta — a programming error in delta construction. Surface
+            // it and rebuild the session from the document so the live
+            // snapshot stays truthful.
+            handleError(error)
+            resyncLiveDRC()
+        }
+    }
+
+    /// Applies a delta to the cell with the session's ordering semantics:
+    /// updated elements keep their position, removed elements drop out,
+    /// added elements append in delta order.
+    private static func applyDelta(
+        _ delta: LayoutEditDelta,
+        to doc: inout LayoutDocument,
+        cellID: UUID
+    ) throws {
+        guard var cell = doc.cell(withID: cellID) else {
+            throw LayoutCoreError.cellNotFound(cellID)
+        }
+        for shape in delta.updatedShapes {
+            guard let index = cell.shapes.firstIndex(where: { $0.id == shape.id }) else {
+                throw LayoutCoreError.shapeNotFound(shape.id)
+            }
+            cell.shapes[index] = shape
+        }
+        for id in delta.removedShapeIDs {
+            guard let index = cell.shapes.firstIndex(where: { $0.id == id }) else {
+                throw LayoutCoreError.shapeNotFound(id)
+            }
+            cell.shapes.remove(at: index)
+        }
+        cell.shapes.append(contentsOf: delta.addedShapes)
+        for via in delta.updatedVias {
+            guard let index = cell.vias.firstIndex(where: { $0.id == via.id }) else {
+                throw LayoutCoreError.viaNotFound(via.id)
+            }
+            cell.vias[index] = via
+        }
+        for id in delta.removedViaIDs {
+            guard let index = cell.vias.firstIndex(where: { $0.id == id }) else {
+                throw LayoutCoreError.viaNotFound(id)
+            }
+            cell.vias.remove(at: index)
+        }
+        cell.vias.append(contentsOf: delta.addedVias)
+        doc.updateCell(cell)
+    }
+
+    // MARK: - Undo / Redo
+
+    public var canUndo: Bool { editor.canUndo }
+    public var canRedo: Bool { editor.canRedo }
+
+    public func undo() {
+        editor.undo()
+        resyncLiveDRC()
+    }
+
+    public func redo() {
+        editor.redo()
+        resyncLiveDRC()
     }
 
     // MARK: - Cell Navigation
@@ -129,7 +305,6 @@ public final class LayoutEditorViewModel {
     // MARK: - Shape Creation
 
     public func addRectangle(from start: LayoutPoint, to end: LayoutPoint) {
-        guard let cellID = activeCellID else { return }
         let minX = min(start.x, end.x)
         let minY = min(start.y, end.y)
         let maxX = max(start.x, end.x)
@@ -139,45 +314,26 @@ public final class LayoutEditorViewModel {
             size: LayoutSize(width: maxX - minX, height: maxY - minY)
         )
         let shape = LayoutShape(layer: activeLayer, geometry: .rect(rect))
-        do {
-            try editor.addShape(shape, to: cellID)
-        } catch {
-            handleError(error)
-        }
+        commitDelta(LayoutEditDelta(addedShapes: [shape]))
     }
 
     public func addPolygon(points: [LayoutPoint]) {
-        guard let cellID = activeCellID else { return }
         let polygon = LayoutPolygon(points: points)
         guard polygon.isValid else { return }
         let shape = LayoutShape(layer: activeLayer, geometry: .polygon(polygon))
-        do {
-            try editor.addShape(shape, to: cellID)
-        } catch {
-            handleError(error)
-        }
+        commitDelta(LayoutEditDelta(addedShapes: [shape]))
     }
 
     public func addPath(points: [LayoutPoint]) {
-        guard let cellID = activeCellID else { return }
         let path = LayoutPath(points: points, width: pathWidth, endCap: pathEndCap)
         guard path.isValid else { return }
         let shape = LayoutShape(layer: activeLayer, geometry: .path(path))
-        do {
-            try editor.addShape(shape, to: cellID)
-        } catch {
-            handleError(error)
-        }
+        commitDelta(LayoutEditDelta(addedShapes: [shape]))
     }
 
     public func addVia(at point: LayoutPoint) {
-        guard let cellID = activeCellID else { return }
         let via = LayoutVia(viaDefinitionID: activeViaID, position: point)
-        do {
-            try editor.addVia(via, to: cellID)
-        } catch {
-            handleError(error)
-        }
+        commitDelta(LayoutEditDelta(addedVias: [via]))
     }
 
     public func addLabel(text: String, at point: LayoutPoint) {
@@ -197,7 +353,11 @@ public final class LayoutEditorViewModel {
             try editor.addPin(pin, to: cellID)
         } catch {
             handleError(error)
+            return
         }
+        // Pins participate in connectivity checks but are structural for
+        // the live session, so they require a rebuild rather than a delta.
+        resyncLiveDRC()
     }
 
     // MARK: - Rulers
@@ -305,51 +465,131 @@ public final class LayoutEditorViewModel {
 
     // MARK: - Move Selected Shapes
 
+    /// Moves the selection by a vector as one discrete, ID-preserving
+    /// edit — the path for keyboard nudges and programmatic moves.
+    /// Interactive drags go through ``beginShapeDrag()`` /
+    /// ``updateShapeDrag(to:)`` / ``endShapeDrag()`` instead.
     public func moveSelectedShapes(by delta: LayoutPoint) {
-        guard let cellID = activeCellID else { return }
-        guard !selectedShapeIDs.isEmpty else { return }
+        let moved = selectedShapes().map { shape in
+            var copy = shape
+            copy.geometry = shape.geometry.translated(by: delta)
+            return copy
+        }
+        guard !moved.isEmpty else { return }
+        commitDelta(LayoutEditDelta(updatedShapes: moved))
+    }
 
-        for shapeID in selectedShapeIDs {
-            guard let cell = editor.document.cell(withID: cellID),
-                  let shape = cell.shapes.first(where: { $0.id == shapeID }) else { continue }
+    private func selectedShapes() -> [LayoutShape] {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID),
+              !selectedShapeIDs.isEmpty else { return [] }
+        return cell.shapes.filter { selectedShapeIDs.contains($0.id) }
+    }
 
-            let movedGeometry: LayoutGeometry
-            switch shape.geometry {
-            case .rect(let rect):
-                movedGeometry = .rect(LayoutRect(
-                    origin: LayoutPoint(x: rect.origin.x + delta.x, y: rect.origin.y + delta.y),
-                    size: rect.size
-                ))
-            case .polygon(let poly):
-                let movedPoints = poly.points.map {
-                    LayoutPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-                }
-                movedGeometry = .polygon(LayoutPolygon(points: movedPoints))
-            case .path(let path):
-                let movedPoints = path.points.map {
-                    LayoutPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-                }
-                movedGeometry = .path(LayoutPath(points: movedPoints, width: path.width, endCap: path.endCap))
-            }
+    // MARK: - Interactive Drag (DRD)
 
+    /// Whether an interactive shape drag is in progress.
+    public var isDraggingShapes: Bool { dragOriginShapes != nil }
+
+    /// Starts an interactive drag of the selected shapes. The whole drag
+    /// collapses into one undo step; in `observe`/`enforce` mode every
+    /// tick re-verifies through the live session.
+    public func beginShapeDrag() {
+        guard dragOriginShapes == nil else { return }
+        let shapes = selectedShapes()
+        guard !shapes.isEmpty else { return }
+        editor.recordUndoBoundary()
+        dragOriginShapes = shapes
+        if let liveDRC {
+            dragSession = DRDDragSession(session: liveDRC, shapes: shapes, grid: gridSize)
+        }
+    }
+
+    /// Moves the drag to a cumulative offset from the drag origin. In
+    /// enforce mode the offset may resolve to the closest legal position;
+    /// the resolution is reported via ``dragOutcome``.
+    public func updateShapeDrag(to offset: LayoutPoint) {
+        guard let origin = dragOriginShapes else { return }
+        let applied: LayoutPoint
+        if let dragSession {
             do {
-                try editor.removeShape(id: shapeID, from: cellID)
-                var newShape = LayoutShape(layer: shape.layer, geometry: movedGeometry)
-                newShape.netID = shape.netID
-                newShape.properties = shape.properties
-                try editor.addShape(newShape, to: cellID)
-                // Update selection to the new shape ID
-                selectedShapeIDs.remove(shapeID)
-                selectedShapeIDs.insert(newShape.id)
+                let resolution = try dragSession.propose(
+                    offset: offset,
+                    enforce: drdMode == .enforce
+                )
+                violations = resolution.result.violations
+                staleViolationKinds = liveDRC?.staleKinds ?? []
+                dragOutcome = resolution.outcome
+                applied = resolution.appliedOffset
             } catch {
                 handleError(error)
+                resyncLiveDRC()
+                return
             }
+        } else {
+            applied = snapToGrid(offset)
+        }
+        mirrorDragOffset(applied, origin: origin)
+    }
+
+    /// Ends the drag at its current position and re-verifies the deferred
+    /// tier so the snapshot is exact again.
+    public func endShapeDrag() {
+        guard dragOriginShapes != nil else { return }
+        dragOriginShapes = nil
+        dragSession = nil
+        dragOutcome = nil
+        if let liveDRC {
+            violations = liveDRC.commit().violations
+            staleViolationKinds = []
+        }
+    }
+
+    /// Aborts the drag and restores the dragged shapes to their origin.
+    public func cancelShapeDrag() {
+        guard let origin = dragOriginShapes else { return }
+        if let dragSession {
+            do {
+                violations = try dragSession.cancel().violations
+                staleViolationKinds = liveDRC?.staleKinds ?? []
+            } catch {
+                handleError(error)
+                resyncLiveDRC()
+            }
+        }
+        mirrorDragOffset(.zero, origin: origin)
+        dragOriginShapes = nil
+        dragSession = nil
+        dragOutcome = nil
+        if let liveDRC {
+            violations = liveDRC.commit().violations
+            staleViolationKinds = []
+        }
+    }
+
+    /// Mirrors the drag position into the document as a transient edit so
+    /// the canvas renders from the same state the live session verified.
+    private func mirrorDragOffset(_ offset: LayoutPoint, origin: [LayoutShape]) {
+        guard let cellID = activeCellID else { return }
+        let moved = origin.map { shape in
+            var copy = shape
+            copy.geometry = shape.geometry.translated(by: offset)
+            return copy
+        }
+        do {
+            try editor.performTransient { doc in
+                try Self.applyDelta(LayoutEditDelta(updatedShapes: moved), to: &doc, cellID: cellID)
+            }
+        } catch {
+            handleError(error)
         }
     }
 
     // MARK: - Merge
 
-    /// Merges all selected shapes on the same layer into polygons by computing their union.
+    /// Merges all selected shapes on the same layer into polygons by
+    /// computing their union. All layers merge as one edit: one undo step,
+    /// one live verification.
     public func mergeSelectedShapes() {
         guard let cellID = activeCellID, !selectedShapeIDs.isEmpty else { return }
         guard let cell = editor.document.cell(withID: cellID) else { return }
@@ -360,17 +600,24 @@ public final class LayoutEditorViewModel {
             shapesByLayer[shape.layer, default: []].append(shape)
         }
 
+        var removedIDs: [UUID] = []
+        var addedShapes: [LayoutShape] = []
+
         for (layer, shapes) in shapesByLayer {
             guard shapes.count >= 2 else { continue }
 
-            // Collect all polygons
+            // Collect the mergeable shapes (paths keep their centerline
+            // semantics and stay out of boolean merges).
             var polygons: [LayoutPolygon] = []
+            var mergeable: [LayoutShape] = []
             for shape in shapes {
                 switch shape.geometry {
                 case .rect(let rect):
                     polygons.append(rect.toPolygon())
+                    mergeable.append(shape)
                 case .polygon(let poly):
                     polygons.append(poly)
+                    mergeable.append(shape)
                 case .path:
                     continue
                 }
@@ -380,28 +627,22 @@ public final class LayoutEditorViewModel {
 
             let mergedPolygons = union(polygons: polygons, dbuPerMicron: editor.document.units.dbuPerMicron)
             guard !mergedPolygons.isEmpty else { continue }
-            let mergedNetID = commonNetID(in: shapes)
-            let mergedProperties = commonProperties(in: shapes)
+            let mergedNetID = commonNetID(in: mergeable)
+            let mergedProperties = commonProperties(in: mergeable)
 
-            do {
-                for shape in shapes {
-                    if case .path = shape.geometry { continue }
-                    try editor.removeShape(id: shape.id, from: cellID)
-                }
-                for polygon in mergedPolygons {
-                    let merged = LayoutShape(
-                        layer: layer,
-                        netID: mergedNetID,
-                        geometry: .polygon(polygon),
-                        properties: mergedProperties
-                    )
-                    try editor.addShape(merged, to: cellID)
-                }
-            } catch {
-                handleError(error)
+            removedIDs.append(contentsOf: mergeable.map(\.id))
+            for polygon in mergedPolygons {
+                addedShapes.append(LayoutShape(
+                    layer: layer,
+                    netID: mergedNetID,
+                    geometry: .polygon(polygon),
+                    properties: mergedProperties
+                ))
             }
         }
 
+        guard !removedIDs.isEmpty else { return }
+        commitDelta(LayoutEditDelta(addedShapes: addedShapes, removedShapeIDs: removedIDs))
         selectedShapeIDs.removeAll()
     }
 
@@ -443,14 +684,9 @@ public final class LayoutEditorViewModel {
     }
 
     public func deleteSelectedShapes() {
-        guard let cellID = activeCellID, !selectedShapeIDs.isEmpty else { return }
-        for shapeID in selectedShapeIDs {
-            do {
-                try editor.removeShape(id: shapeID, from: cellID)
-            } catch {
-                handleError(error)
-            }
-        }
+        let ids = selectedShapes().map(\.id)
+        guard !ids.isEmpty else { return }
+        commitDelta(LayoutEditDelta(removedShapeIDs: ids))
         selectedShapeIDs.removeAll()
     }
 
@@ -487,6 +723,9 @@ public final class LayoutEditorViewModel {
         self.selectedInstanceID = nil
         self.hiddenLayers.removeAll()
         self.violations.removeAll()
+        // The technology may have changed with the document; a live
+        // session cannot absorb that, so start a fresh one.
+        restartLiveDRC()
     }
 
     public func centerOn(_ point: LayoutPoint) {
@@ -561,7 +800,8 @@ public final class LayoutEditorViewModel {
         guard let cellID = activeCellID,
               let cell = editor.document.cell(withID: cellID) else { return }
 
-        var operations: [(removeID: UUID, addPolygons: [LayoutPolygon], layer: LayoutLayerID)] = []
+        var removedIDs: [UUID] = []
+        var addedShapes: [LayoutShape] = []
 
         for shape in cell.shapes {
             guard shape.layer == activeLayer else { continue }
@@ -581,23 +821,15 @@ public final class LayoutEditorViewModel {
 
             let remainders = polygon.subtract(cut: cutRect)
             if remainders.count != 1 || remainders.first != polygon {
-                operations.append((shape.id, remainders, shape.layer))
-            }
-        }
-
-        guard !operations.isEmpty else { return }
-
-        for op in operations {
-            do {
-                try editor.removeShape(id: op.removeID, from: cellID)
-                for poly in op.addPolygons {
-                    let newShape = LayoutShape(layer: op.layer, geometry: .polygon(poly))
-                    try editor.addShape(newShape, to: cellID)
+                removedIDs.append(shape.id)
+                for poly in remainders {
+                    addedShapes.append(LayoutShape(layer: shape.layer, geometry: .polygon(poly)))
                 }
-            } catch {
-                handleError(error)
             }
         }
+
+        guard !removedIDs.isEmpty else { return }
+        commitDelta(LayoutEditDelta(addedShapes: addedShapes, removedShapeIDs: removedIDs))
         selectedShapeIDs.removeAll()
     }
 
@@ -612,7 +844,8 @@ public final class LayoutEditorViewModel {
             ? (start.y + end.y) / 2
             : (start.x + end.x) / 2
 
-        var operations: [(removeID: UUID, a: LayoutPolygon, b: LayoutPolygon, layer: LayoutLayerID)] = []
+        var removedIDs: [UUID] = []
+        var addedShapes: [LayoutShape] = []
 
         for shape in cell.shapes {
             guard shape.layer == activeLayer else { continue }
@@ -629,26 +862,21 @@ public final class LayoutEditorViewModel {
 
             if isHorizontalCut {
                 if let (bottom, top) = polygon.splitHorizontally(at: cutPos) {
-                    operations.append((shape.id, bottom, top, shape.layer))
+                    removedIDs.append(shape.id)
+                    addedShapes.append(LayoutShape(layer: shape.layer, geometry: .polygon(bottom)))
+                    addedShapes.append(LayoutShape(layer: shape.layer, geometry: .polygon(top)))
                 }
             } else {
                 if let (left, right) = polygon.splitVertically(at: cutPos) {
-                    operations.append((shape.id, left, right, shape.layer))
+                    removedIDs.append(shape.id)
+                    addedShapes.append(LayoutShape(layer: shape.layer, geometry: .polygon(left)))
+                    addedShapes.append(LayoutShape(layer: shape.layer, geometry: .polygon(right)))
                 }
             }
         }
 
-        guard !operations.isEmpty else { return }
-
-        for op in operations {
-            do {
-                try editor.removeShape(id: op.removeID, from: cellID)
-                try editor.addShape(LayoutShape(layer: op.layer, geometry: .polygon(op.a)), to: cellID)
-                try editor.addShape(LayoutShape(layer: op.layer, geometry: .polygon(op.b)), to: cellID)
-            } catch {
-                handleError(error)
-            }
-        }
+        guard !removedIDs.isEmpty else { return }
+        commitDelta(LayoutEditDelta(addedShapes: addedShapes, removedShapeIDs: removedIDs))
         selectedShapeIDs.removeAll()
     }
 
@@ -695,6 +923,7 @@ public final class LayoutEditorViewModel {
         selectedInstanceID = nil
         highlightedInstanceIDs.removeAll()
         violations.removeAll()
+        resyncLiveDRC()
     }
 
     private func restoreNavigationState(_ state: CellNavigationState) {
@@ -708,6 +937,7 @@ public final class LayoutEditorViewModel {
         selectedInstanceID = nil
         highlightedInstanceIDs.removeAll()
         violations.removeAll()
+        resyncLiveDRC()
     }
 
     private static func initialNavigationPath(document: LayoutDocument, activeCellID: UUID?) -> [UUID] {

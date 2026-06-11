@@ -1,6 +1,6 @@
 import Foundation
 
-public enum LayoutViolationKind: String, Sendable, Codable {
+public enum LayoutViolationKind: String, Sendable, Codable, CaseIterable {
     case minWidth
     case minSpacing
     case minArea

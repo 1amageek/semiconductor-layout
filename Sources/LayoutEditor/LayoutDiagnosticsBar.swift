@@ -6,10 +6,12 @@ import LayoutVerify
 /// Shows a summary row with violation count. Expands to reveal individual violation messages.
 public struct LayoutDiagnosticsBar: View {
     let violations: [LayoutViolation]
+    let staleKinds: Set<LayoutViolationKind>
     @State private var isExpanded = false
 
-    public init(violations: [LayoutViolation]) {
+    public init(violations: [LayoutViolation], staleKinds: Set<LayoutViolationKind> = []) {
         self.violations = violations
+        self.staleKinds = staleKinds
     }
 
     public var body: some View {
@@ -25,6 +27,11 @@ public struct LayoutDiagnosticsBar: View {
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .foregroundStyle(.orange)
+                    if !staleKinds.isEmpty {
+                        Label(staleSummary, systemImage: "clock.arrow.circlepath")
+                            .foregroundStyle(.secondary)
+                            .help("These checks have not re-verified since the last edit; run DRC to refresh them.")
+                    }
                     Spacer()
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
@@ -72,5 +79,10 @@ public struct LayoutDiagnosticsBar: View {
             }
         }
         .background(.bar)
+    }
+
+    private var staleSummary: String {
+        let names = staleKinds.map(\.rawValue).sorted().joined(separator: ", ")
+        return "stale: \(names)"
     }
 }

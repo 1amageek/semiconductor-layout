@@ -540,18 +540,9 @@ public final class IncrementalDRCSession {
             densityStateByLayer[layer] = nil
             return
         }
-        let dbu = tech.units.dbuPerMicron
-        let slack = 1.0 / dbu
         var state = LayerDensityState()
         state.windows = service.densityWindows(for: overall, rules: rules)
-        state.clippedAreaByWindow = Array(repeating: [:], count: state.windows.count)
-        for (windowIndex, window) in state.windows.enumerated() {
-            for (key, shape) in layerPairs {
-                let bbox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
-                guard bbox.expanded(by: slack, slack).intersects(window) else { continue }
-                state.clippedAreaByWindow[windowIndex][key] =
-                    service.clippedArea(of: shape.geometry, in: window, dbu: dbu)
-            }
+        for windowIndex in state.windows.indices {
             refreshDensityVerdict(
                 layer: layer, layerPairs: layerPairs, rules: rules,
                 windowIndex: windowIndex, state: &state
@@ -560,9 +551,9 @@ public final class IncrementalDRCSession {
         densityStateByLayer[layer] = state
     }
 
-    /// Re-clips the edited shapes against the windows their old or new
-    /// geometry touches and re-emits the verdicts of every window whose
-    /// area sum or shape-ID payload can have changed.
+    /// Re-derives the verdicts of every window the edited geometry touches
+    /// or whose shape-ID payload can have changed; untouched windows keep
+    /// their cached verdicts.
     private func updateLayerDensity(
         layer: LayoutLayerID,
         layerPairs: [(key: FlatShapeKey, shape: LayoutShape)],
@@ -579,31 +570,14 @@ public final class IncrementalDRCSession {
             rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
             return
         }
-        let dbu = tech.units.dbuPerMicron
-        let slack = 1.0 / dbu
-        var presentEdited: [FlatShapeKey: LayoutShape] = [:]
-        for (key, shape) in layerPairs where editedKeys.contains(key) {
-            presentEdited[key] = shape
-        }
+        let slack = 1.0 / tech.units.dbuPerMicron
         for (windowIndex, window) in state.windows.enumerated() {
-            // A cache entry can only exist or change where a shape's old or
+            // A window's merged area can only change where a shape's old or
             // new bounding box (plus rounding slack) meets the window.
             let geometryTouched = dirtyRects.contains {
                 $0.expanded(by: slack, slack).intersects(window)
             }
             guard geometryTouched || idListChanged else { continue }
-            if geometryTouched {
-                for key in editedKeys {
-                    if let shape = presentEdited[key],
-                       LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
-                           .expanded(by: slack, slack).intersects(window) {
-                        state.clippedAreaByWindow[windowIndex][key] =
-                            service.clippedArea(of: shape.geometry, in: window, dbu: dbu)
-                    } else {
-                        state.clippedAreaByWindow[windowIndex].removeValue(forKey: key)
-                    }
-                }
-            }
             refreshDensityVerdict(
                 layer: layer, layerPairs: layerPairs, rules: rules,
                 windowIndex: windowIndex, state: &state
@@ -612,8 +586,8 @@ public final class IncrementalDRCSession {
         densityStateByLayer[layer] = state
     }
 
-    /// Sums the cached clipped areas over the layer's shape list in
-    /// document order — bit-identical to the full check's reduction — and
+    /// Recomputes the window's boolean-merged clipped area — identical to
+    /// the full check's computation because both call the same union — and
     /// stores the window's verdict.
     private func refreshDensityVerdict(
         layer: LayoutLayerID,
@@ -622,8 +596,11 @@ public final class IncrementalDRCSession {
         windowIndex: Int,
         state: inout LayerDensityState
     ) {
-        let cache = state.clippedAreaByWindow[windowIndex]
-        let area = layerPairs.reduce(0.0) { $0 + (cache[$1.key] ?? 0.0) }
+        let area = service.mergedClippedArea(
+            of: layerPairs.map(\.shape),
+            in: state.windows[windowIndex],
+            dbu: tech.units.dbuPerMicron
+        )
         state.violationByWindow[windowIndex] = service.densityViolation(
             layerShapes: layerPairs.map(\.shape),
             layer: layer,

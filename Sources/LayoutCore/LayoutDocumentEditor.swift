@@ -17,6 +17,22 @@ public struct LayoutDocumentEditor: Sendable {
         try body(&document)
     }
 
+    /// Records the current document as an undo boundary without mutating.
+    /// Call once at the start of an interactive gesture whose intermediate
+    /// states go through ``performTransient(_:)``, so the whole gesture
+    /// undoes as one step.
+    public mutating func recordUndoBoundary() {
+        undoStack.record(document)
+    }
+
+    /// Mutates the document without recording an undo boundary — for the
+    /// intermediate states of an interactive gesture. The caller must have
+    /// recorded a boundary with ``recordUndoBoundary()`` when the gesture
+    /// began, or the gesture will fuse with the previous undo step.
+    public mutating func performTransient(_ body: (inout LayoutDocument) throws -> Void) rethrows {
+        try body(&document)
+    }
+
     public mutating func undo() {
         if let previous = undoStack.undo(current: document) {
             document = previous
