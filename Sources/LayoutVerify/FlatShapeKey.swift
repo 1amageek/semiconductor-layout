@@ -14,10 +14,11 @@ enum FlatShapeKey: Hashable, Comparable, Sendable {
     case child(Int)
 
     /// Total order for deterministic cluster keys and assembly: child
-    /// occurrences by position first, then top shapes by UUID string.
+    /// occurrences by position first, then top shapes in canonical UUID
+    /// order (identical to `uuidString` order, without the allocations).
     static func < (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
-        case let (.top(a), .top(b)): return a.uuidString < b.uuidString
+        case let (.top(a), .top(b)): return a.isCanonicallyOrderedBefore(b)
         case let (.child(a), .child(b)): return a < b
         case (.child, .top): return true
         case (.top, .child): return false

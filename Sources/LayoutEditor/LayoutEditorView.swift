@@ -45,10 +45,11 @@ public struct LayoutEditorView: View {
                 }
                 .layoutPriority(1)
 
-            if !viewModel.violations.isEmpty || !viewModel.staleViolationKinds.isEmpty {
+            if showsDiagnosticsBar {
                 LayoutDiagnosticsBar(
                     violations: viewModel.violations,
-                    staleKinds: viewModel.staleViolationKinds
+                    staleKinds: viewModel.staleViolationKinds,
+                    connectivity: viewModel.connectivityAnalysis
                 )
             }
         }
@@ -100,6 +101,18 @@ public struct LayoutEditorView: View {
             Text(fileImportError ?? "")
         }
         .simultaneousGesture(backSwipeGesture)
+    }
+
+    /// The bar appears whenever there is a live verdict to show: DRC
+    /// violations, stale checks, or connectivity problems (shorts / opens).
+    private var showsDiagnosticsBar: Bool {
+        if !viewModel.violations.isEmpty || !viewModel.staleViolationKinds.isEmpty {
+            return true
+        }
+        if let connectivity = viewModel.connectivityAnalysis {
+            return !connectivity.shorts.isEmpty || !connectivity.opens.isEmpty
+        }
+        return false
     }
 
     private var backSwipeGesture: some Gesture {

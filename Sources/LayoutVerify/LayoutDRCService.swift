@@ -842,7 +842,14 @@ public struct LayoutDRCService {
         )
     }
 
-    private func shouldConnect(
+    /// Single source of truth for "do these two flattened elements touch
+    /// electrically": shape–shape requires the same layer plus geometric
+    /// intersection, via–via never connects directly, and via–shape
+    /// requires the shape to sit on the via's top or bottom layer and
+    /// intersect the cut rectangle. The open check and the connectivity
+    /// extractor both call this so their notions of contact can never
+    /// diverge.
+    func shouldConnect(
         indexA: Int,
         indexB: Int,
         geometries: [LayoutGeometry],

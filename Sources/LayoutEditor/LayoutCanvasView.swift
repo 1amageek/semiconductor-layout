@@ -41,6 +41,7 @@ public struct LayoutCanvasView: View {
             drawShapes(context: &context)
             drawInstances(context: &context)
             drawViolations(context: &context)
+            drawConnectivity(context: &context)
             drawSelection(context: &context)
             drawInstanceHighlights(context: &context)
             drawRulers(context: &context)
@@ -565,6 +566,92 @@ public struct LayoutCanvasView: View {
             let path = Path(rect)
             context.fill(path, with: .color(color.opacity(0.18)))
             context.stroke(path, with: .color(color), style: dash)
+        }
+    }
+
+    // MARK: - Drawing: Connectivity
+
+    /// Live connectivity overlay: short regions, open-net flylines, and
+    /// the highlighted net. Everything here comes from the incremental
+    /// extraction session, so it tracks the gesture in progress.
+    private func drawConnectivity(context: inout GraphicsContext) {
+        guard let analysis = viewModel.connectivityAnalysis else { return }
+        let lineWidth = 1.5 / viewModel.zoom
+
+        drawHighlightedNet(context: &context)
+
+        // Short regions: one conductor piece carrying several declared
+        // nets — red, hatched apart from DRC markers by a tighter dash.
+        if !analysis.shorts.isEmpty {
+            let dash = StrokeStyle(
+                lineWidth: lineWidth,
+                dash: [2 / viewModel.zoom, 2 / viewModel.zoom]
+            )
+            for short in analysis.shorts {
+                let region = short.region
+                let rect = CGRect(
+                    x: region.origin.x,
+                    y: region.origin.y,
+                    width: region.size.width,
+                    height: region.size.height
+                )
+                let path = Path(rect.insetBy(dx: -2 / viewModel.zoom, dy: -2 / viewModel.zoom))
+                context.fill(path, with: .color(.red.opacity(0.12)))
+                context.stroke(path, with: .color(.red), style: dash)
+            }
+        }
+
+        // Flylines: minimum spanning connections of each open net's
+        // islands — the classic unrouted-net guide.
+        if !analysis.opens.isEmpty {
+            let dash = StrokeStyle(
+                lineWidth: lineWidth,
+                dash: [5 / viewModel.zoom, 3 / viewModel.zoom]
+            )
+            let endpointRadius = 2.5 / viewModel.zoom
+            for flyline in analysis.flylines {
+                var path = Path()
+                path.move(to: CGPoint(x: flyline.start.x, y: flyline.start.y))
+                path.addLine(to: CGPoint(x: flyline.end.x, y: flyline.end.y))
+                context.stroke(path, with: .color(.yellow), style: dash)
+                for point in [flyline.start, flyline.end] {
+                    let dot = Path(ellipseIn: CGRect(
+                        x: point.x - endpointRadius,
+                        y: point.y - endpointRadius,
+                        width: endpointRadius * 2,
+                        height: endpointRadius * 2
+                    ))
+                    context.fill(dot, with: .color(.yellow))
+                }
+            }
+        }
+    }
+
+    /// Glow stroke over every member of the highlighted net, including
+    /// via cuts, so the whole conductor reads as one piece.
+    private func drawHighlightedNet(context: inout GraphicsContext) {
+        guard let net = viewModel.highlightedNet else { return }
+        let shapeIDs = Set(net.shapeIDs)
+        let viaIDs = Set(net.viaIDs)
+        let glowWidth = 4 / viewModel.zoom
+        let coreWidth = 1.5 / viewModel.zoom
+
+        for shape in viewModel.documentShapes() where shapeIDs.contains(shape.id) {
+            let path = pathForShape(shape)
+            context.stroke(path, with: .color(.cyan.opacity(0.35)), lineWidth: glowWidth)
+            context.stroke(path, with: .color(.cyan), lineWidth: coreWidth)
+        }
+        for via in viewModel.documentVias() where viaIDs.contains(via.id) {
+            guard let def = viewModel.tech.viaDefinition(for: via.viaDefinitionID) else { continue }
+            let rect = CGRect(
+                x: via.position.x - def.cutSize.width / 2,
+                y: via.position.y - def.cutSize.height / 2,
+                width: def.cutSize.width,
+                height: def.cutSize.height
+            )
+            let path = Path(rect)
+            context.stroke(path, with: .color(.cyan.opacity(0.35)), lineWidth: glowWidth)
+            context.stroke(path, with: .color(.cyan), lineWidth: coreWidth)
         }
     }
 

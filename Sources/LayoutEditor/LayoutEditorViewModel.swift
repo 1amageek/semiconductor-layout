@@ -57,6 +57,52 @@ public final class LayoutEditorViewModel {
     private var dragSession: DRDDragSession?
     private var dragOriginShapes: [LayoutShape]?
 
+    // MARK: - Live Connectivity
+
+    /// Exact connectivity of the active cell, maintained incrementally
+    /// across every edit. `nil` means live connectivity is unavailable
+    /// (disabled, or the session failed and could not be rebuilt) — the
+    /// editor never shows a stale analysis as if it were current.
+    public private(set) var connectivityAnalysis: ConnectivityAnalysis?
+
+    /// Live connectivity extraction; independent of ``drdMode`` because
+    /// nets/shorts/opens are a different verdict channel than design
+    /// rules.
+    public var liveConnectivityEnabled: Bool = true {
+        didSet {
+            guard liveConnectivityEnabled != oldValue else { return }
+            if liveConnectivityEnabled {
+                resyncLiveConnectivity()
+            } else {
+                liveConnectivity = nil
+                connectivityAnalysis = nil
+            }
+        }
+    }
+
+    /// Flylines of every open net — the unrouted-connection guides the
+    /// canvas draws live while editing.
+    public var flylines: [Flyline] { connectivityAnalysis?.flylines ?? [] }
+
+    /// The extracted net the highlight anchor currently belongs to,
+    /// re-resolved against the live analysis so the highlight follows the
+    /// conductor through edits.
+    public var highlightedNet: ConnectivityNet? {
+        guard let anchor = netHighlightAnchor, let analysis = connectivityAnalysis else { return nil }
+        switch anchor {
+        case .shape(let id): return analysis.nets.first { $0.shapeIDs.contains(id) }
+        case .via(let id): return analysis.nets.first { $0.viaIDs.contains(id) }
+        }
+    }
+
+    private enum NetHighlightAnchor {
+        case shape(UUID)
+        case via(UUID)
+    }
+
+    private var liveConnectivity: LiveConnectivitySession?
+    private var netHighlightAnchor: NetHighlightAnchor?
+
     // MARK: - Tool Options
 
     /// Path width for the path tool. Defaults to minimum width of active layer or tech grid.
@@ -88,6 +134,7 @@ public final class LayoutEditorViewModel {
         self.pathWidth = defaultPathWidth(for: tech)
         self.cellNavigationPath = [cell.id]
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     public init(document: LayoutDocument, tech: LayoutTechDatabase) {
@@ -100,6 +147,7 @@ public final class LayoutEditorViewModel {
         self.pathWidth = defaultPathWidth(for: tech)
         self.cellNavigationPath = Self.initialNavigationPath(document: document, activeCellID: self.activeCellID)
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     /// Full verification on demand: re-verifies the live session's
@@ -154,6 +202,74 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
     }
 
+    // MARK: - Live Connectivity Plumbing
+
+    /// (Re)builds the connectivity session from the current document and
+    /// active cell. On failure the error is surfaced and the analysis
+    /// becomes `nil` — unavailable, never silently stale.
+    private func resyncLiveConnectivity() {
+        guard liveConnectivityEnabled, let cellID = activeCellID else {
+            liveConnectivity = nil
+            connectivityAnalysis = nil
+            return
+        }
+        do {
+            if let liveConnectivity {
+                connectivityAnalysis = try liveConnectivity.rebuild(
+                    document: editor.document,
+                    cellID: cellID
+                )
+            } else {
+                let session = try LiveConnectivitySession(
+                    document: editor.document,
+                    tech: tech,
+                    cellID: cellID
+                )
+                liveConnectivity = session
+                connectivityAnalysis = session.currentAnalysis
+            }
+        } catch {
+            liveConnectivity = nil
+            connectivityAnalysis = nil
+            handleError(error)
+        }
+    }
+
+    /// Tears down and rebuilds the connectivity session — required when
+    /// the technology database changes, which a session cannot absorb.
+    private func restartLiveConnectivity() {
+        liveConnectivity = nil
+        resyncLiveConnectivity()
+    }
+
+    /// Applies a document delta to the connectivity session in lockstep.
+    /// A rejected delta is a programming error in delta construction:
+    /// surface it and rebuild so the analysis stays truthful.
+    private func applyConnectivityDelta(_ delta: LayoutEditDelta) {
+        guard let liveConnectivity else { return }
+        do {
+            connectivityAnalysis = try liveConnectivity.apply(delta).analysis
+        } catch {
+            handleError(error)
+            resyncLiveConnectivity()
+        }
+    }
+
+    /// Anchors the net highlight to a shape; the highlighted net follows
+    /// the conductor that shape belongs to as the layout changes.
+    public func highlightNet(ofShape id: UUID) {
+        netHighlightAnchor = .shape(id)
+    }
+
+    /// Anchors the net highlight to a via.
+    public func highlightNet(ofVia id: UUID) {
+        netHighlightAnchor = .via(id)
+    }
+
+    public func clearNetHighlight() {
+        netHighlightAnchor = nil
+    }
+
     /// Single choke point for geometry edits: applies the delta to the
     /// document and the live session with identical ordering semantics,
     /// keeping ``violations`` exact. Discrete edits re-verify the deferred
@@ -176,24 +292,26 @@ public final class LayoutEditorViewModel {
             return
         }
 
-        guard let liveDRC else { return }
-        do {
-            let update = try liveDRC.apply(delta)
-            if transient {
-                violations = update.result.violations
-                staleViolationKinds = update.staleKinds
-            } else {
-                violations = liveDRC.commit().violations
-                staleViolationKinds = []
+        if let liveDRC {
+            do {
+                let update = try liveDRC.apply(delta)
+                if transient {
+                    violations = update.result.violations
+                    staleViolationKinds = update.staleKinds
+                } else {
+                    violations = liveDRC.commit().violations
+                    staleViolationKinds = []
+                }
+            } catch {
+                // The document mutation succeeded but the session rejected
+                // the delta — a programming error in delta construction.
+                // Surface it and rebuild the session from the document so
+                // the live snapshot stays truthful.
+                handleError(error)
+                resyncLiveDRC()
             }
-        } catch {
-            // The document mutation succeeded but the session rejected the
-            // delta — a programming error in delta construction. Surface
-            // it and rebuild the session from the document so the live
-            // snapshot stays truthful.
-            handleError(error)
-            resyncLiveDRC()
         }
+        applyConnectivityDelta(delta)
     }
 
     /// Applies a delta to the cell with the session's ordering semantics:
@@ -244,11 +362,13 @@ public final class LayoutEditorViewModel {
     public func undo() {
         editor.undo()
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     public func redo() {
         editor.redo()
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     // MARK: - Cell Navigation
@@ -356,8 +476,9 @@ public final class LayoutEditorViewModel {
             return
         }
         // Pins participate in connectivity checks but are structural for
-        // the live session, so they require a rebuild rather than a delta.
+        // the live sessions, so they require a rebuild rather than a delta.
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     // MARK: - Rulers
@@ -419,6 +540,13 @@ public final class LayoutEditorViewModel {
             return []
         }
         return cell.shapes
+    }
+
+    public func documentVias() -> [LayoutVia] {
+        guard let cellID = activeCellID, let cell = editor.document.cell(withID: cellID) else {
+            return []
+        }
+        return cell.vias
     }
 
     /// Returns all shapes from the active cell hierarchy, recursively flattening
@@ -582,7 +710,12 @@ public final class LayoutEditorViewModel {
             }
         } catch {
             handleError(error)
+            return
         }
+        // The DRC side of the drag verifies through DRDDragSession; the
+        // connectivity session follows the document directly so flylines
+        // and short/open verdicts stay live during the gesture.
+        applyConnectivityDelta(LayoutEditDelta(updatedShapes: moved))
     }
 
     // MARK: - Merge
@@ -724,8 +857,10 @@ public final class LayoutEditorViewModel {
         self.hiddenLayers.removeAll()
         self.violations.removeAll()
         // The technology may have changed with the document; a live
-        // session cannot absorb that, so start a fresh one.
+        // session cannot absorb that, so start fresh ones.
         restartLiveDRC()
+        restartLiveConnectivity()
+        clearNetHighlight()
     }
 
     public func centerOn(_ point: LayoutPoint) {
@@ -923,7 +1058,9 @@ public final class LayoutEditorViewModel {
         selectedInstanceID = nil
         highlightedInstanceIDs.removeAll()
         violations.removeAll()
+        clearNetHighlight()
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     private func restoreNavigationState(_ state: CellNavigationState) {
@@ -937,7 +1074,9 @@ public final class LayoutEditorViewModel {
         selectedInstanceID = nil
         highlightedInstanceIDs.removeAll()
         violations.removeAll()
+        clearNetHighlight()
         resyncLiveDRC()
+        resyncLiveConnectivity()
     }
 
     private static func initialNavigationPath(document: LayoutDocument, activeCellID: UUID?) -> [UUID] {
