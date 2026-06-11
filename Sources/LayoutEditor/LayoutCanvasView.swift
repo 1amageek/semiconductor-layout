@@ -578,31 +578,25 @@ public struct LayoutCanvasView: View {
     // MARK: - Drawing: Shapes
 
     private func drawShapes(context: inout GraphicsContext) {
-        let shapes = viewModel.flattenedDocumentShapes()
-
-        // Group shapes by layer so overlapping shapes on the same layer
-        // are filled/patterned once, producing uniform color.
-        var layerOrder: [LayoutLayerID] = []
-        var shapesByLayer: [LayoutLayerID: [LayoutShape]] = [:]
-        for shape in shapes {
-            if shapesByLayer[shape.layer] == nil {
-                layerOrder.append(shape.layer)
-            }
-            shapesByLayer[shape.layer, default: []].append(shape)
-        }
+        // The render plan culls to the viewport and tiers shapes by their
+        // on-screen size, so this draw is proportional to what is visible
+        // — never to the database. A nil plan means there is genuinely
+        // nothing to draw (no active cell or zero-sized canvas).
+        guard let plan = viewModel.currentRenderPlan() else { return }
 
         let strokeWidth = 1.0 / viewModel.zoom
 
-        for layer in layerOrder {
-            guard viewModel.isLayerVisible(layer) else { continue }
-            guard let layerShapes = shapesByLayer[layer] else { continue }
-            let color = colorForLayer(layer)
-            let pattern = patternForLayer(layer)
+        for batch in plan.batches {
+            guard viewModel.isLayerVisible(batch.layer) else { continue }
+            let color = colorForLayer(batch.layer)
+            let pattern = patternForLayer(batch.layer)
 
-            // Combine ALL shapes into a single fill path.
-            // Path geometries are converted to filled outlines via strokedPath().
+            // Combine full-tier geometry and box-tier rects into a single
+            // fill path so overlapping shapes on the same layer fill once,
+            // producing uniform color. Path geometries are converted to
+            // filled outlines via strokedPath().
             var combinedFillPath = Path()
-            for shape in layerShapes {
+            for shape in batch.fullShapes {
                 if case .path = shape.geometry {
                     let centerline = pathForShape(shape)
                     let width = pathLineWidth(for: shape)
@@ -614,6 +608,16 @@ public struct LayoutCanvasView: View {
                     combinedFillPath.addPath(pathForShape(shape))
                 }
             }
+            var boxPath = Path()
+            for rect in batch.boxRects {
+                boxPath.addRect(CGRect(
+                    x: rect.origin.x,
+                    y: rect.origin.y,
+                    width: rect.size.width,
+                    height: rect.size.height
+                ))
+            }
+            combinedFillPath.addPath(boxPath)
 
             // Pattern fill for all layers — solid uses semi-transparent fill
             if !combinedFillPath.isEmpty {
@@ -624,8 +628,10 @@ public struct LayoutCanvasView: View {
                 }
             }
 
-            // Outline strokes per shape
-            for shape in layerShapes {
+            // Outline strokes per full-tier shape; box-tier shapes are a
+            // few pixels at most, so one combined stroke keeps them as
+            // visible as individually stroked shapes used to be.
+            for shape in batch.fullShapes {
                 switch shape.geometry {
                 case .path:
                     let centerline = pathForShape(shape)
@@ -639,7 +645,48 @@ public struct LayoutCanvasView: View {
                     context.stroke(path, with: .color(color), lineWidth: strokeWidth)
                 }
             }
+            if !boxPath.isEmpty {
+                context.stroke(boxPath, with: .color(color), lineWidth: strokeWidth)
+            }
         }
+
+        drawDensityAggregates(context: &context, aggregates: plan.aggregates)
+    }
+
+    /// Sub-pixel shapes (or whole grid cells when the visit budget is
+    /// exceeded) drawn as density tiles: one fill per layer and quantized
+    /// density level, so a million aggregated shapes cost a handful of
+    /// draw calls.
+    private func drawDensityAggregates(
+        context: inout GraphicsContext,
+        aggregates: [LayoutRenderPlan.Aggregate]
+    ) {
+        guard !aggregates.isEmpty else { return }
+        let levelCount = 8
+        var buckets: [DensityBucket: Path] = [:]
+        for aggregate in aggregates {
+            guard viewModel.isLayerVisible(aggregate.layer) else { continue }
+            let level = min(Int(aggregate.density * Double(levelCount)), levelCount - 1)
+            let key = DensityBucket(layer: aggregate.layer, level: level)
+            buckets[key, default: Path()].addRect(CGRect(
+                x: aggregate.rect.origin.x,
+                y: aggregate.rect.origin.y,
+                width: aggregate.rect.size.width,
+                height: aggregate.rect.size.height
+            ))
+        }
+        for (bucket, path) in buckets {
+            let color = colorForLayer(bucket.layer)
+            let opacity = 0.15 + 0.45 * (Double(bucket.level) + 0.5) / Double(levelCount)
+            context.fill(path, with: .color(color.opacity(opacity)))
+        }
+    }
+
+    /// Density tiles bucket by layer and quantized opacity level to bound
+    /// the number of fill calls per frame.
+    private struct DensityBucket: Hashable {
+        var layer: LayoutLayerID
+        var level: Int
     }
 
     // MARK: - Drawing: Violations

@@ -122,6 +122,14 @@ public final class LayoutEditorViewModel {
     /// connectivity.
     public private(set) var constraintViolations: [LayoutConstraintViolation] = []
 
+    // MARK: - Scale Rendering
+
+    /// Spatial index over the active cell's flattened geometry, kept in
+    /// lockstep with every edit so ``currentRenderPlan()`` answers in
+    /// time proportional to the visible set, never the whole database.
+    /// `nil` only when there is no active cell.
+    private var renderIndex: LayoutRenderIndex?
+
     // MARK: - Tool Options
 
     /// Path width for the path tool. Defaults to minimum width of active layer or tech grid.
@@ -155,6 +163,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     public init(document: LayoutDocument, tech: LayoutTechDatabase) {
@@ -169,6 +178,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     /// Full verification on demand: re-verifies the live session's
@@ -344,6 +354,69 @@ public final class LayoutEditorViewModel {
         refreshConstraintViolations()
     }
 
+    // MARK: - Render Plumbing
+
+    /// (Re)builds the render index from the flattened active cell.
+    /// Structural changes (instances, cell navigation, undo/redo,
+    /// document loads) land here; geometry deltas instead go through
+    /// `LayoutRenderIndex.apply` in lockstep with the document.
+    private func rebuildRenderIndex() {
+        guard activeCellID != nil else {
+            renderIndex = nil
+            return
+        }
+        renderIndex = LayoutRenderIndex(shapes: flattenedDocumentShapes())
+    }
+
+    /// The level-of-detail draw plan for the current viewport, or `nil`
+    /// when there is nothing to plan against — no active cell, or the
+    /// canvas has not been laid out yet (zero size draws nothing, so
+    /// `nil` is the truthful answer, not a fallback).
+    public func currentRenderPlan(
+        options: LayoutRenderPlan.Options = LayoutRenderPlan.Options()
+    ) -> LayoutRenderPlan? {
+        guard let renderIndex, zoom > 0,
+              canvasSize.width > 0, canvasSize.height > 0 else { return nil }
+        let viewport = LayoutRect(
+            origin: LayoutPoint(
+                x: Double(-offset.x / zoom),
+                y: Double(-offset.y / zoom)
+            ),
+            size: LayoutSize(
+                width: Double(canvasSize.width / zoom),
+                height: Double(canvasSize.height / zoom)
+            )
+        )
+        return renderIndex.plan(
+            viewport: viewport,
+            pixelsPerMicron: Double(zoom),
+            options: options
+        )
+    }
+
+    /// The draw plan for an arbitrary viewport and scale — the overview
+    /// minimap plans at its own zoom through this.
+    public func renderPlan(
+        viewport: LayoutRect,
+        pixelsPerMicron: Double,
+        options: LayoutRenderPlan.Options = LayoutRenderPlan.Options()
+    ) -> LayoutRenderPlan? {
+        renderIndex?.plan(
+            viewport: viewport,
+            pixelsPerMicron: pixelsPerMicron,
+            options: options
+        )
+    }
+
+    /// Cheap content extent for overview framing: the render index's
+    /// occupied-cell bounds, an over-approximation by at most one grid
+    /// cell per side that never shrinks on removal until the next
+    /// structural rebuild. Exact framing (``fitAll()``) keeps using
+    /// ``contentBounds()``.
+    public var renderContentBounds: LayoutRect? {
+        renderIndex?.occupiedBounds
+    }
+
     /// Anchors the net highlight to a shape; the highlighted net follows
     /// the conductor that shape belongs to as the layout changes.
     public func highlightNet(ofShape id: UUID) {
@@ -402,6 +475,7 @@ public final class LayoutEditorViewModel {
         }
         applyConnectivityDelta(delta)
         refreshConstraintViolations()
+        renderIndex?.apply(delta)
     }
 
     /// Applies a delta to the cell with the session's ordering semantics:
@@ -454,6 +528,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     public func redo() {
@@ -461,6 +536,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     // MARK: - Cell Navigation
@@ -572,6 +648,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     // MARK: - Rulers
@@ -934,10 +1011,11 @@ public final class LayoutEditorViewModel {
             return
         }
         // The DRC side of the drag verifies through DRDDragSession; the
-        // connectivity and constraint verdicts follow the document
-        // directly so they stay live during the gesture.
+        // connectivity, constraint, and render-index views follow the
+        // document directly so they stay live during the gesture.
         applyConnectivityDelta(LayoutEditDelta(updatedShapes: moved))
         refreshConstraintViolations()
+        renderIndex?.apply(LayoutEditDelta(updatedShapes: moved))
     }
 
     // MARK: - Handle Editing (Stretch / Vertex)
@@ -1148,6 +1226,8 @@ public final class LayoutEditorViewModel {
         // session cannot absorb that, so start fresh ones.
         restartLiveDRC()
         restartLiveConnectivity()
+        refreshConstraintViolations()
+        rebuildRenderIndex()
         clearNetHighlight()
     }
 
@@ -1350,6 +1430,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     private func restoreNavigationState(_ state: CellNavigationState) {
@@ -1367,6 +1448,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        rebuildRenderIndex()
     }
 
     private static func initialNavigationPath(document: LayoutDocument, activeCellID: UUID?) -> [UUID] {

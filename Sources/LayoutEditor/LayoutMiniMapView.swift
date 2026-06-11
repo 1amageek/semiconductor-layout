@@ -19,7 +19,7 @@ struct LayoutMiniMapView: View {
                 return
             }
 
-            let hasContent = viewModel.contentBounds() != nil
+            let hasContent = viewModel.renderContentBounds != nil
             if hasContent {
                 drawShapes(in: &context, size: size, worldRect: worldRect)
                 drawInstances(in: &context, size: size, worldRect: worldRect)
@@ -52,7 +52,12 @@ struct LayoutMiniMapView: View {
 
     private func computeWorldRect(viewport: CGRect) -> CGRect {
         let base: CGRect
-        if let contentBounds = viewModel.contentBounds() {
+        // The render index's occupied-cell bounds are an O(1) over-
+        // approximation by at most one grid cell per side — exactly the
+        // tolerance an overview already hides inside its 15% margin —
+        // where `contentBounds()` would flatten the whole database every
+        // frame.
+        if let contentBounds = viewModel.renderContentBounds {
             let contentRect = CGRect(
                 x: contentBounds.origin.x,
                 y: contentBounds.origin.y,
@@ -97,41 +102,110 @@ struct LayoutMiniMapView: View {
     // MARK: - Drawing: Shapes
 
     private func drawShapes(in context: inout GraphicsContext, size: CGSize, worldRect: CGRect) {
-        for shape in viewModel.documentShapes() {
-            guard viewModel.isLayerVisible(shape.layer) else { continue }
-            let selected = viewModel.selectedShapeIDs.contains(shape.id)
-            let fillColor: Color = selected ? .accentColor.opacity(0.6) : colorForLayer(shape.layer).opacity(0.5)
+        let scaleX = (size.width - padding * 2) / worldRect.width
+        let scaleY = (size.height - padding * 2) / worldRect.height
+        let scale = min(scaleX, scaleY)
+        guard scale > 0, scale.isFinite else { return }
 
-            switch shape.geometry {
-            case .rect(let rect):
-                let topLeft = worldToMiniMap(CGPoint(x: rect.minX, y: rect.minY), size: size, worldRect: worldRect)
-                let bottomRight = worldToMiniMap(CGPoint(x: rect.maxX, y: rect.maxY), size: size, worldRect: worldRect)
-                let r = CGRect(
-                    x: min(topLeft.x, bottomRight.x),
-                    y: min(topLeft.y, bottomRight.y),
-                    width: abs(bottomRight.x - topLeft.x),
-                    height: abs(bottomRight.y - topLeft.y)
-                )
-                context.fill(Path(r), with: .color(fillColor))
-            case .path(let layoutPath):
-                guard let first = layoutPath.points.first else { continue }
-                var path = Path()
-                path.move(to: worldToMiniMap(CGPoint(x: first.x, y: first.y), size: size, worldRect: worldRect))
-                for p in layoutPath.points.dropFirst() {
-                    path.addLine(to: worldToMiniMap(CGPoint(x: p.x, y: p.y), size: size, worldRect: worldRect))
+        // The minimap is its own viewport over the same render index. A
+        // smaller visit budget reaches the density-tile fallback sooner,
+        // which a thumbnail this size cannot visually distinguish from
+        // exact drawing anyway.
+        let viewport = LayoutRect(
+            origin: LayoutPoint(x: worldRect.minX, y: worldRect.minY),
+            size: LayoutSize(width: worldRect.width, height: worldRect.height)
+        )
+        guard let plan = viewModel.renderPlan(
+            viewport: viewport,
+            pixelsPerMicron: Double(scale),
+            options: LayoutRenderPlan.Options(visitBudget: 50_000)
+        ) else { return }
+
+        for batch in plan.batches {
+            guard viewModel.isLayerVisible(batch.layer) else { continue }
+            let layerColor = colorForLayer(batch.layer).opacity(0.5)
+
+            for shape in batch.fullShapes {
+                let selected = viewModel.selectedShapeIDs.contains(shape.id)
+                let fillColor: Color = selected ? .accentColor.opacity(0.6) : layerColor
+
+                switch shape.geometry {
+                case .rect(let rect):
+                    let r = projectedRect(
+                        LayoutRect(origin: rect.origin, size: rect.size),
+                        size: size,
+                        worldRect: worldRect
+                    )
+                    context.fill(Path(r), with: .color(fillColor))
+                case .path(let layoutPath):
+                    guard let first = layoutPath.points.first else { continue }
+                    var path = Path()
+                    path.move(to: worldToMiniMap(CGPoint(x: first.x, y: first.y), size: size, worldRect: worldRect))
+                    for p in layoutPath.points.dropFirst() {
+                        path.addLine(to: worldToMiniMap(CGPoint(x: p.x, y: p.y), size: size, worldRect: worldRect))
+                    }
+                    context.stroke(path, with: .color(fillColor), lineWidth: 1)
+                case .polygon(let polygon):
+                    guard let first = polygon.points.first else { continue }
+                    var path = Path()
+                    path.move(to: worldToMiniMap(CGPoint(x: first.x, y: first.y), size: size, worldRect: worldRect))
+                    for p in polygon.points.dropFirst() {
+                        path.addLine(to: worldToMiniMap(CGPoint(x: p.x, y: p.y), size: size, worldRect: worldRect))
+                    }
+                    path.closeSubpath()
+                    context.fill(path, with: .color(fillColor))
                 }
-                context.stroke(path, with: .color(fillColor), lineWidth: 1)
-            case .polygon(let polygon):
-                guard let first = polygon.points.first else { continue }
-                var path = Path()
-                path.move(to: worldToMiniMap(CGPoint(x: first.x, y: first.y), size: size, worldRect: worldRect))
-                for p in polygon.points.dropFirst() {
-                    path.addLine(to: worldToMiniMap(CGPoint(x: p.x, y: p.y), size: size, worldRect: worldRect))
-                }
-                path.closeSubpath()
-                context.fill(path, with: .color(fillColor))
+            }
+
+            var boxPath = Path()
+            for rect in batch.boxRects {
+                boxPath.addRect(projectedRect(rect, size: size, worldRect: worldRect))
+            }
+            if !boxPath.isEmpty {
+                context.fill(boxPath, with: .color(layerColor))
             }
         }
+
+        drawDensityAggregates(in: &context, aggregates: plan.aggregates, size: size, worldRect: worldRect)
+    }
+
+    /// Density tiles bucketed by layer and quantized level so even a
+    /// fully aggregated million-shape document costs a handful of fills.
+    private func drawDensityAggregates(
+        in context: inout GraphicsContext,
+        aggregates: [LayoutRenderPlan.Aggregate],
+        size: CGSize,
+        worldRect: CGRect
+    ) {
+        guard !aggregates.isEmpty else { return }
+        let levelCount = 4
+        var buckets: [DensityBucket: Path] = [:]
+        for aggregate in aggregates {
+            guard viewModel.isLayerVisible(aggregate.layer) else { continue }
+            let level = min(Int(aggregate.density * Double(levelCount)), levelCount - 1)
+            buckets[DensityBucket(layer: aggregate.layer, level: level), default: Path()]
+                .addRect(projectedRect(aggregate.rect, size: size, worldRect: worldRect))
+        }
+        for (bucket, path) in buckets {
+            let opacity = 0.2 + 0.3 * (Double(bucket.level) + 0.5) / Double(levelCount)
+            context.fill(path, with: .color(colorForLayer(bucket.layer).opacity(opacity)))
+        }
+    }
+
+    private struct DensityBucket: Hashable {
+        var layer: LayoutLayerID
+        var level: Int
+    }
+
+    private func projectedRect(_ rect: LayoutRect, size: CGSize, worldRect: CGRect) -> CGRect {
+        let topLeft = worldToMiniMap(CGPoint(x: rect.minX, y: rect.minY), size: size, worldRect: worldRect)
+        let bottomRight = worldToMiniMap(CGPoint(x: rect.maxX, y: rect.maxY), size: size, worldRect: worldRect)
+        return CGRect(
+            x: min(topLeft.x, bottomRight.x),
+            y: min(topLeft.y, bottomRight.y),
+            width: abs(bottomRight.x - topLeft.x),
+            height: abs(bottomRight.y - topLeft.y)
+        )
     }
 
     // MARK: - Drawing: Instances
