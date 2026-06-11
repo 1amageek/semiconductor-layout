@@ -55,7 +55,7 @@ public struct LayoutDRCService {
         return LayoutDRCResult(violations: violations)
     }
 
-    private func resolveCell(document: LayoutDocument, cellID: UUID?) -> LayoutCell? {
+    func resolveCell(document: LayoutDocument, cellID: UUID?) -> LayoutCell? {
         if let id = cellID {
             return document.cell(withID: id)
         }
@@ -65,7 +65,7 @@ public struct LayoutDRCService {
         return document.cells.first
     }
 
-    private func flatten(
+    func flatten(
         cell: LayoutCell,
         document: LayoutDocument,
         tech: LayoutTechDatabase,
@@ -130,7 +130,7 @@ public struct LayoutDRCService {
         var conflicts: [TerminalConnectivityConflict]
     }
 
-    private struct TerminalConnectivityConflict: Sendable {
+    struct TerminalConnectivityConflict: Sendable {
         var netIDs: [UUID]
         var shapeIDs: [UUID]
         var viaIDs: [UUID]
@@ -305,7 +305,7 @@ public struct LayoutDRCService {
             || LayoutGeometryAnalysis.intersects(geometry, .rect(pinRect))
     }
 
-    private func makeTerminalConflictViolation(_ conflict: TerminalConnectivityConflict) -> LayoutViolation {
+    func makeTerminalConflictViolation(_ conflict: TerminalConnectivityConflict) -> LayoutViolation {
         LayoutViolation(
             kind: .overlapShort,
             ruleID: "connectivity.short.terminalComponent",
@@ -335,7 +335,7 @@ public struct LayoutDRCService {
         return current
     }
 
-    private func checkRuleCoverage(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkRuleCoverage(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         return grouped.compactMap { layer, layerShapes in
             guard tech.ruleSet(for: layer) == nil else { return nil }
@@ -351,7 +351,7 @@ public struct LayoutDRCService {
         }
     }
 
-    private func checkWidthAndArea(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkWidthAndArea(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         let dbu = tech.units.dbuPerMicron
@@ -441,7 +441,7 @@ public struct LayoutDRCService {
     /// touching or overlapping shapes never flag (they are one feature), and
     /// any exterior gap narrower than the rule flags regardless of net —
     /// including notches within one feature and diagonal corner gaps.
-    private func checkSpacing(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkSpacing(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         let dbu = tech.units.dbuPerMicron
@@ -547,7 +547,7 @@ public struct LayoutDRCService {
         )
     }
 
-    private func checkViaEnclosure(
+    func checkViaEnclosure(
         shapes: [LayoutShape],
         vias: [LayoutVia],
         tech: LayoutTechDatabase
@@ -630,42 +630,67 @@ public struct LayoutDRCService {
         return violations
     }
 
-    private func checkDensity(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    /// `layerFilter` restricts which layers are evaluated; the density
+    /// windows are always derived from the bounding box of ALL passed
+    /// shapes, so callers must pass the full flattened shape set.
+    func checkDensity(
+        shapes: [LayoutShape],
+        tech: LayoutTechDatabase,
+        layerFilter: Set<LayoutLayerID>? = nil
+    ) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         guard let overall = overallBoundingBox(shapes: shapes) else { return violations }
 
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         for (layer, layerShapes) in grouped {
+            if let layerFilter, !layerFilter.contains(layer) { continue }
             guard let rules = tech.ruleSet(for: layer) else { continue }
             let windows = densityWindows(for: overall, rules: rules)
             for window in windows {
-                let windowArea = window.size.width * window.size.height
-                if windowArea <= 0 { continue }
                 let area = layerShapes.reduce(0.0) {
                     $0 + clippedArea(of: $1.geometry, in: window, dbu: tech.units.dbuPerMicron)
                 }
-                let density = area / windowArea
-                if density < rules.minDensity || density > rules.maxDensity {
-                    violations.append(LayoutViolation(
-                        kind: .density,
-                        ruleID: layerRuleID(layer: layer, rule: density < rules.minDensity ? "minDensity" : "maxDensity"),
-                        severity: .warning,
-                        message: "Density violation on \(layer.name). Range \(rules.minDensity)-\(rules.maxDensity), got \(density)",
-                        layer: layer,
-                        region: window,
-                        measured: density,
-                        required: density < rules.minDensity ? rules.minDensity : rules.maxDensity,
-                        unit: "ratio",
-                        shapeIDs: layerShapes.map(\.id),
-                        suggestedFix: density < rules.minDensity ? "Add fill or enlarge layer coverage in the checked window." : "Remove excess fill or reduce layer coverage in the checked window."
-                    ))
+                if let violation = densityViolation(
+                    layerShapes: layerShapes, layer: layer, rules: rules, window: window, area: area
+                ) {
+                    violations.append(violation)
                 }
             }
         }
         return violations
     }
 
-    private func checkShorts(shapes: [LayoutShape]) -> [LayoutViolation] {
+    /// Emits the density verdict for one window given the precomputed clipped
+    /// area. The area must be the document-order sum of per-shape clipped
+    /// areas so that incremental callers reproduce the full-run float
+    /// bit-exactly.
+    func densityViolation(
+        layerShapes: [LayoutShape],
+        layer: LayoutLayerID,
+        rules: LayoutLayerRuleSet,
+        window: LayoutRect,
+        area: Double
+    ) -> LayoutViolation? {
+        let windowArea = window.size.width * window.size.height
+        guard windowArea > 0 else { return nil }
+        let density = area / windowArea
+        guard density < rules.minDensity || density > rules.maxDensity else { return nil }
+        return LayoutViolation(
+            kind: .density,
+            ruleID: layerRuleID(layer: layer, rule: density < rules.minDensity ? "minDensity" : "maxDensity"),
+            severity: .warning,
+            message: "Density violation on \(layer.name). Range \(rules.minDensity)-\(rules.maxDensity), got \(density)",
+            layer: layer,
+            region: window,
+            measured: density,
+            required: density < rules.minDensity ? rules.minDensity : rules.maxDensity,
+            unit: "ratio",
+            shapeIDs: layerShapes.map(\.id),
+            suggestedFix: density < rules.minDensity ? "Add fill or enlarge layer coverage in the checked window." : "Remove excess fill or reduce layer coverage in the checked window."
+        )
+    }
+
+    func checkShorts(shapes: [LayoutShape]) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         if shapes.count < 2 { return violations }
 
@@ -695,28 +720,37 @@ public struct LayoutDRCService {
                 let j = layerIndices[localIndex]
                 guard j > i else { continue }
                 let b = shapes[j]
-                guard let na = a.netID, let nb = b.netID, na != nb else { continue }
-                if LayoutGeometryAnalysis.intersects(a.geometry, b.geometry) {
-                    let region = LayoutGeometryAnalysis.boundingBox(for: a.geometry).union(
-                        LayoutGeometryAnalysis.boundingBox(for: b.geometry)
-                    )
-                    violations.append(LayoutViolation(
-                        kind: .overlapShort,
-                        ruleID: "connectivity.short.sameLayerOverlap",
-                        message: "Short between shapes on different nets",
-                        layer: a.layer,
-                        region: region,
-                        shapeIDs: [a.id, b.id],
-                        netIDs: [na, nb],
-                        suggestedFix: "Separate the shapes or intentionally assign them to the same net before verification."
-                    ))
+                if let violation = sameLayerShortViolation(first: a, second: b) {
+                    violations.append(violation)
                 }
             }
         }
         return violations
     }
 
-    private func checkOpens(shapes: [LayoutShape], vias: [LayoutVia], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    /// Pair verdict for the same-layer short check; `first` must precede
+    /// `second` in flattened order so the violation payload matches the
+    /// full-scan emission exactly.
+    func sameLayerShortViolation(first: LayoutShape, second: LayoutShape) -> LayoutViolation? {
+        guard first.layer == second.layer else { return nil }
+        guard let na = first.netID, let nb = second.netID, na != nb else { return nil }
+        guard LayoutGeometryAnalysis.intersects(first.geometry, second.geometry) else { return nil }
+        let region = LayoutGeometryAnalysis.boundingBox(for: first.geometry).union(
+            LayoutGeometryAnalysis.boundingBox(for: second.geometry)
+        )
+        return LayoutViolation(
+            kind: .overlapShort,
+            ruleID: "connectivity.short.sameLayerOverlap",
+            message: "Short between shapes on different nets",
+            layer: first.layer,
+            region: region,
+            shapeIDs: [first.id, second.id],
+            netIDs: [na, nb],
+            suggestedFix: "Separate the shapes or intentionally assign them to the same net before verification."
+        )
+    }
+
+    func checkOpens(shapes: [LayoutShape], vias: [LayoutVia], tech: LayoutTechDatabase) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let netShapes = shapes.filter { $0.netID != nil }
         if netShapes.isEmpty { return violations }
@@ -790,7 +824,7 @@ public struct LayoutDRCService {
         return violations
     }
 
-    private func viaCutRect(for via: LayoutVia, tech: LayoutTechDatabase) -> LayoutRect {
+    func viaCutRect(for via: LayoutVia, tech: LayoutTechDatabase) -> LayoutRect {
         if let def = tech.viaDefinition(for: via.viaDefinitionID) {
             return LayoutRect(
                 origin: LayoutPoint(
@@ -852,7 +886,7 @@ public struct LayoutDRCService {
     /// Configuration gaps (underivable stack, rules or gate pins outside
     /// the stack, unknown via definitions) are reported as violations
     /// instead of being skipped.
-    private func checkAntenna(
+    func checkAntenna(
         shapes: [LayoutShape],
         vias: [LayoutVia],
         pins: [LayoutPin],
@@ -1197,12 +1231,19 @@ public struct LayoutDRCService {
     /// active against NWELL). Interacting components must be fully covered with
     /// the required margin unless the rule allows pass-through, in which case
     /// only the covered portion is constrained and the crossing is masked.
-    private func checkEnclosureRules(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    /// `rules` restricts which enclosure rules are evaluated (nil checks
+    /// every rule in the technology database); each rule's verdict depends
+    /// only on the geometry of its own outer and inner layers.
+    func checkEnclosureRules(
+        shapes: [LayoutShape],
+        tech: LayoutTechDatabase,
+        rules: [LayoutEnclosureRule]? = nil
+    ) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let dbu = tech.units.dbuPerMicron
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
 
-        for rule in tech.enclosureRules {
+        for rule in rules ?? tech.enclosureRules {
             guard let outerShapes = grouped[rule.outerLayer], !outerShapes.isEmpty else { continue }
             guard let innerShapes = grouped[rule.innerLayer], !innerShapes.isEmpty else { continue }
 
@@ -1362,7 +1403,7 @@ public struct LayoutDRCService {
         return max(0, best)
     }
 
-    private func densityWindows(for overall: LayoutRect, rules: LayoutLayerRuleSet) -> [LayoutRect] {
+    func densityWindows(for overall: LayoutRect, rules: LayoutLayerRuleSet) -> [LayoutRect] {
         guard let windowSize = rules.densityWindow,
               windowSize.width > 0,
               windowSize.height > 0 else {
@@ -1398,7 +1439,7 @@ public struct LayoutDRCService {
         return starts
     }
 
-    private func clippedArea(of geometry: LayoutGeometry, in window: LayoutRect, dbu: Double) -> Double {
+    func clippedArea(of geometry: LayoutGeometry, in window: LayoutRect, dbu: Double) -> Double {
         guard let boundary = geometryToIRBoundary(geometry, dbu: dbu) else {
             return 0
         }
@@ -1412,7 +1453,7 @@ public struct LayoutDRCService {
         "layer.\(layer.name).\(layer.purpose).\(rule)"
     }
 
-    private func enclosureRuleID(_ rule: LayoutEnclosureRule) -> String {
+    func enclosureRuleID(_ rule: LayoutEnclosureRule) -> String {
         "enclosure.\(rule.outerLayer.name).\(rule.outerLayer.purpose).\(rule.innerLayer.name).\(rule.innerLayer.purpose)"
     }
 
@@ -1428,7 +1469,7 @@ public struct LayoutDRCService {
 
     /// Boolean-merged region of the shapes: abutting and overlapping shapes
     /// become single features, matching what lands on the mask.
-    private func mergedRegion(of shapes: [LayoutShape], dbu: Double) -> Region {
+    func mergedRegion(of shapes: [LayoutShape], dbu: Double) -> Region {
         let region = shapesToRegion(shapes, dbu: dbu)
         return region.or(Region(layer: region.layer))
     }
@@ -1449,7 +1490,7 @@ public struct LayoutDRCService {
         return result
     }
 
-    private func irBoundingBoxToRect(
+    func irBoundingBoxToRect(
         _ bb: (minX: Int32, minY: Int32, maxX: Int32, maxY: Int32),
         dbu: Double
     ) -> LayoutRect {
@@ -1480,7 +1521,7 @@ public struct LayoutDRCService {
         return Region()
     }
 
-    private func geometryToIRBoundary(_ geometry: LayoutGeometry, dbu: Double) -> IRBoundary? {
+    func geometryToIRBoundary(_ geometry: LayoutGeometry, dbu: Double) -> IRBoundary? {
         switch geometry {
         case .rect(let rect):
             let minX = Int32((rect.minX * dbu).rounded())
@@ -1582,7 +1623,7 @@ public struct LayoutDRCService {
         )
     }
 
-    private func overallBoundingBox(shapes: [LayoutShape]) -> LayoutRect? {
+    func overallBoundingBox(shapes: [LayoutShape]) -> LayoutRect? {
         let boxes = shapes.map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
         return overallBoundingBox(rects: boxes)
     }

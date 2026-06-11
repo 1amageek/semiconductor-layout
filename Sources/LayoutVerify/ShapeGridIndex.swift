@@ -20,15 +20,29 @@ struct ShapeGridIndex {
     }
 
     private let cellSize: Double
-    private var cells: [CellKey: [Int32]] = [:]
+    private let cells: [CellKey: [Int32]]
 
     init(boundingBoxes: [LayoutRect], cellSize: Double) {
-        self.cellSize = max(cellSize, 1e-9)
+        let size = max(cellSize, 1e-9)
+        self.cellSize = size
+        // Build into a local table and assign once: inserting through a
+        // self-captured closure denies the optimizer unique ownership of
+        // the stored dictionary, forcing a copy-on-write of the whole
+        // table per insert and turning construction quadratic.
+        var table: [CellKey: [Int32]] = [:]
         for (index, box) in boundingBoxes.enumerated() {
-            forEachCell(minX: box.minX, maxX: box.maxX, minY: box.minY, maxY: box.maxY) { key in
-                cells[key, default: []].append(Int32(index))
+            let cxMin = Int64((box.minX / size).rounded(.down))
+            let cxMax = Int64((box.maxX / size).rounded(.down))
+            let cyMin = Int64((box.minY / size).rounded(.down))
+            let cyMax = Int64((box.maxY / size).rounded(.down))
+            guard cxMin <= cxMax, cyMin <= cyMax else { continue }
+            for cx in cxMin...cxMax {
+                for cy in cyMin...cyMax {
+                    table[CellKey(x: cx, y: cy), default: []].append(Int32(index))
+                }
             }
         }
+        cells = table
     }
 
     /// Mean of the boxes' larger dimension: long wires then span several
@@ -47,12 +61,16 @@ struct ShapeGridIndex {
     /// probe rect expanded by `margin`.
     func candidateIndices(near rect: LayoutRect, margin: Double = 0) -> [Int] {
         var found: [Int32] = []
-        forEachCell(
-            minX: rect.minX - margin, maxX: rect.maxX + margin,
-            minY: rect.minY - margin, maxY: rect.maxY + margin
-        ) { key in
-            if let indices = cells[key] {
-                found.append(contentsOf: indices)
+        let cxMin = Int64(((rect.minX - margin) / cellSize).rounded(.down))
+        let cxMax = Int64(((rect.maxX + margin) / cellSize).rounded(.down))
+        let cyMin = Int64(((rect.minY - margin) / cellSize).rounded(.down))
+        let cyMax = Int64(((rect.maxY + margin) / cellSize).rounded(.down))
+        guard cxMin <= cxMax, cyMin <= cyMax else { return [] }
+        for cx in cxMin...cxMax {
+            for cy in cyMin...cyMax {
+                if let indices = cells[CellKey(x: cx, y: cy)] {
+                    found.append(contentsOf: indices)
+                }
             }
         }
         found.sort()
@@ -64,22 +82,5 @@ struct ShapeGridIndex {
             previous = index
         }
         return result
-    }
-
-    private func forEachCell(
-        minX: Double, maxX: Double,
-        minY: Double, maxY: Double,
-        _ body: (CellKey) -> Void
-    ) {
-        let cxMin = Int64((minX / cellSize).rounded(.down))
-        let cxMax = Int64((maxX / cellSize).rounded(.down))
-        let cyMin = Int64((minY / cellSize).rounded(.down))
-        let cyMax = Int64((maxY / cellSize).rounded(.down))
-        guard cxMin <= cxMax, cyMin <= cyMax else { return }
-        for cx in cxMin...cxMax {
-            for cy in cyMin...cyMax {
-                body(CellKey(x: cx, y: cy))
-            }
-        }
     }
 }

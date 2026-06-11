@@ -1,0 +1,252 @@
+import Foundation
+import Testing
+import LayoutCore
+import LayoutTech
+import LayoutVerify
+
+/// Live-edit latency of `IncrementalDRCSession` on the same synthetic
+/// routed design the full-service benchmark uses (per-net M1 wires with
+/// M2 landing pads and vias). Reports apply() latency for a sparse-layer
+/// edit (M1 wire) and a dense-layer edit (M2 pad) against the full-run
+/// baseline; the interactive target is 10ms, the hard regression cap is
+/// deliberately generous.
+@Suite("IncrementalDRCSession Benchmark", .serialized, .timeLimit(.minutes(10)))
+struct IncrementalDRCSessionBenchmarkTests {
+
+    private let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+    private let m2 = LayoutLayerID(name: "M2", purpose: "drawing")
+    private let via1 = LayoutLayerID(name: "VIA1", purpose: "drawing")
+
+    private func makeTech() -> LayoutTechDatabase {
+        LayoutTechDatabase(
+            units: .defaultUnits,
+            layers: [m1, m2, via1].map { id in
+                LayoutLayerDefinition(
+                    id: id,
+                    displayName: id.name,
+                    gdsLayer: 1,
+                    gdsDatatype: 0,
+                    color: LayoutColor(red: 0.3, green: 0.5, blue: 0.9)
+                )
+            },
+            vias: [
+                LayoutViaDefinition(
+                    id: "VIA1",
+                    cutLayer: via1,
+                    topLayer: m2,
+                    bottomLayer: m1,
+                    cutSize: LayoutSize(width: 0.22, height: 0.22),
+                    enclosure: LayoutViaEnclosure(top: 0.05, bottom: 0.05),
+                    cutSpacing: 0.25
+                )
+            ],
+            layerRules: [
+                LayoutLayerRuleSet(layerID: m1, minWidth: 0.23, minSpacing: 0.23, minArea: 0.1, minDensity: 0, maxDensity: 1),
+                LayoutLayerRuleSet(layerID: m2, minWidth: 0.28, minSpacing: 0.28, minArea: 0.1, minDensity: 0, maxDensity: 1),
+                LayoutLayerRuleSet(layerID: via1, minWidth: 0, minSpacing: 0.25, minArea: 0, minDensity: 0, maxDensity: 1),
+            ]
+        )
+    }
+
+    /// Same construction as the full-service scale benchmark: per row one
+    /// M1 wire on its own net with M2 pads and vias every third column.
+    private func makeDocument(rows: Int, cols: Int) -> LayoutDocument {
+        var shapes: [LayoutShape] = []
+        var vias: [LayoutVia] = []
+        let pitch = 1.0
+
+        for r in 0..<rows {
+            let netID = UUID()
+            let y = Double(r) * pitch
+            shapes.append(LayoutShape(
+                layer: m1,
+                netID: netID,
+                geometry: .rect(LayoutRect(
+                    origin: LayoutPoint(x: 0, y: y),
+                    size: LayoutSize(width: Double(cols) * pitch, height: 0.4)
+                ))
+            ))
+            for c in 0..<cols where (r + c) % 3 == 0 {
+                let x = Double(c) * pitch
+                shapes.append(LayoutShape(
+                    layer: m2,
+                    netID: netID,
+                    geometry: .rect(LayoutRect(
+                        origin: LayoutPoint(x: x + 0.3, y: y),
+                        size: LayoutSize(width: 0.4, height: 0.4)
+                    ))
+                ))
+                vias.append(LayoutVia(
+                    viaDefinitionID: "VIA1",
+                    position: LayoutPoint(x: x + 0.5, y: y + 0.2),
+                    netID: netID
+                ))
+            }
+        }
+
+        let cell = LayoutCell(name: "TOP", shapes: shapes, vias: vias)
+        return LayoutDocument(name: "bench", cells: [cell], topCellID: cell.id)
+    }
+
+    private func milliseconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1000
+            + Double(duration.components.attoseconds) / 1e15
+    }
+
+    /// Applies `move` then its inverse repeatedly and returns the sorted
+    /// per-apply latencies in milliseconds.
+    private func measureMoves(
+        session: IncrementalDRCSession,
+        original: LayoutShape,
+        moved: LayoutShape,
+        rounds: Int
+    ) throws -> [Double] {
+        var samples: [Double] = []
+        for _ in 0..<rounds {
+            let forth = try session.apply(LayoutEditDelta(updatedShapes: [moved]))
+            samples.append(milliseconds(forth.duration))
+            let back = try session.apply(LayoutEditDelta(updatedShapes: [original]))
+            samples.append(milliseconds(back.duration))
+        }
+        return samples.sorted()
+    }
+
+    private func shifted(_ shape: LayoutShape, dy: Double) throws -> LayoutShape {
+        guard case .rect(let rect) = shape.geometry else {
+            throw BenchmarkFixtureError.expectedRectGeometry
+        }
+        var moved = shape
+        moved.geometry = .rect(LayoutRect(
+            origin: LayoutPoint(x: rect.origin.x, y: rect.origin.y + dy),
+            size: rect.size
+        ))
+        return moved
+    }
+
+    private enum BenchmarkFixtureError: Error {
+        case expectedRectGeometry
+        case fixtureShapeNotFound
+    }
+
+    @Test func liveApplyLatencyAtScale() throws {
+        let rows = 80
+        let cols = 80
+        let document = makeDocument(rows: rows, cols: cols)
+        let tech = makeTech()
+        let topCell = try #require(document.cells.first)
+        let clock = ContinuousClock()
+
+        // Full-run baseline: what a non-incremental tool pays per edit.
+        let service = LayoutDRCService()
+        var baseline: LayoutDRCResult? = nil
+        let baselineDuration = clock.measure {
+            baseline = service.run(document: document, tech: tech)
+        }
+        #expect(baseline?.violations.isEmpty == true, "benchmark design is clean by construction")
+
+        var session: IncrementalDRCSession? = nil
+        let initDuration = try clock.measure {
+            session = try IncrementalDRCSession(document: document, tech: tech)
+        }
+        let liveSession = try #require(session)
+        #expect(liveSession.currentResult.violations.isEmpty == true)
+
+        // Sparse-layer edit: nudge one M1 row wire by 0.02um (stays clean:
+        // via enclosure margin 0.09 -> 0.07 against the 0.05 rule).
+        let wire = try #require(
+            topCell.shapes.first {
+                $0.layer == m1 && LayoutGeometryAnalysis.boundingBox(for: $0.geometry).origin.y == 40.0
+            },
+            "row-40 M1 wire must exist"
+        )
+        let wireSamples = try measureMoves(
+            session: liveSession,
+            original: wire,
+            moved: try shifted(wire, dy: 0.02),
+            rounds: 10
+        )
+
+        // Dense-layer edit: nudge one M2 pad by 0.02um (M2 carries ~2100
+        // shapes, so this exposes the per-layer recompute cost).
+        let pad = try #require(
+            topCell.shapes.first {
+                $0.layer == m2 && {
+                    let box = LayoutGeometryAnalysis.boundingBox(for: $0.geometry)
+                    return box.origin.x == 41.3 && box.origin.y == 40.0
+                }($0)
+            },
+            "row-40 col-41 M2 pad must exist"
+        )
+        let padSamples = try measureMoves(
+            session: liveSession,
+            original: pad,
+            moved: try shifted(pad, dy: 0.02),
+            rounds: 10
+        )
+
+        #expect(liveSession.commit().violations.isEmpty == true, "round-trip edits must end clean")
+
+        let shapeCount = topCell.shapes.count
+        let viaCount = topCell.vias.count
+        func report(_ label: String, _ samples: [Double]) {
+            let median = samples[samples.count / 2]
+            let worst = samples.last ?? 0
+            let target = median <= 10 ? "MEETS" : "MISSES"
+            print("[bench] incremental \(label) \(shapeCount)s/\(viaCount)v: median \(String(format: "%.2f", median))ms, max \(String(format: "%.2f", worst))ms (\(target) 10ms live target)")
+        }
+        print("[bench] full run baseline: \(String(format: "%.1f", milliseconds(baselineDuration)))ms, session init: \(String(format: "%.1f", milliseconds(initDuration)))ms")
+        report("m1WireMove", wireSamples)
+        report("m2PadMove", padSamples)
+
+        // Hard caps with ~4x headroom over the observed debug medians
+        // (~25ms wire, ~16ms pad) so regressions fail loudly without
+        // flaking; the honest 10ms verdict is in the printed report.
+        #expect(wireSamples[wireSamples.count / 2] < 100, "sparse-layer live apply regressed")
+        #expect(padSamples[padSamples.count / 2] < 100, "dense-layer live apply regressed")
+    }
+
+    @Test func violationAppearsAndClearsAtScale() throws {
+        let document = makeDocument(rows: 80, cols: 80)
+        let tech = makeTech()
+        let topCell = try #require(document.cells.first)
+        let session = try IncrementalDRCSession(document: document, tech: tech)
+        #expect(session.currentResult.violations.isEmpty == true)
+
+        let pad = try #require(
+            topCell.shapes.first {
+                $0.layer == m2 && {
+                    let box = LayoutGeometryAnalysis.boundingBox(for: $0.geometry)
+                    return box.origin.x == 41.3 && box.origin.y == 40.0
+                }($0)
+            }
+        )
+
+        // 0.05um offset against the 0.05um enclosure margin breaks the via
+        // landing; the violation must appear live and clear on restore.
+        let broken = try session.apply(
+            LayoutEditDelta(updatedShapes: [try shifted(pad, dy: 0.05)])
+        )
+        #expect(!broken.result.violations.isEmpty, "enclosure break must surface immediately")
+
+        let restored = try session.apply(LayoutEditDelta(updatedShapes: [pad]))
+        #expect(restored.result.violations.isEmpty == true, "restore must clear the violation")
+
+        // Cross-check the broken state against the full service once at
+        // scale: same document, same verdict multiset.
+        var mutated = document
+        guard let cellIndex = mutated.cells.firstIndex(where: { $0.id == mutated.topCellID }),
+              let shapeIndex = mutated.cells[cellIndex].shapes.firstIndex(where: { $0.id == pad.id }) else {
+            throw BenchmarkFixtureError.fixtureShapeNotFound
+        }
+        mutated.cells[cellIndex].shapes[shapeIndex] = try shifted(pad, dy: 0.05)
+        let rebroken = try session.apply(
+            LayoutEditDelta(updatedShapes: [try shifted(pad, dy: 0.05)])
+        )
+        let reference = LayoutDRCService().run(document: mutated, tech: tech)
+        #expect(
+            IncrementalDRCEquivalenceHarness.canonicalCounts(rebroken.result.violations, excludingAntenna: true)
+                == IncrementalDRCEquivalenceHarness.canonicalCounts(reference.violations, excludingAntenna: true),
+            "scale spot-check: incremental snapshot must match the full run"
+        )
+    }
+}
