@@ -27,8 +27,10 @@ public struct LayoutCanvasView: View {
 
     private enum DragMode {
         case drawing       // Rectangle, subtract, split (drag-based)
-        case panningCanvas // Select tool drag on empty area
+        case panningCanvas // Multi-click tool drag (pan; select-tool pan lives on the scroll overlay)
         case movingShape   // Select tool drag on selected shape
+        case marquee       // Select tool drag on empty area (box selection)
+        case handle        // Select tool drag on a vertex/edge handle (stretch)
     }
 
     public var body: some View {
@@ -121,6 +123,10 @@ public struct LayoutCanvasView: View {
             viewModel.deleteSelectedShapes()
             return .handled
         case .escape:
+            if viewModel.isDraggingHandle {
+                viewModel.cancelHandleDrag()
+                return .handled
+            }
             if viewModel.isDraggingShapes {
                 viewModel.cancelShapeDrag()
                 return .handled
@@ -153,6 +159,30 @@ public struct LayoutCanvasView: View {
 
         guard !hasCmd else { return .ignored }
 
+        // Editing verbs on the selection (case-sensitive: Shift reverses
+        // rotation direction and flips the mirror axis).
+        switch keyPress.characters {
+        case "t":
+            viewModel.rotateSelectedShapes(clockwise: true)
+            return .handled
+        case "T":
+            viewModel.rotateSelectedShapes(clockwise: false)
+            return .handled
+        case "f":
+            viewModel.mirrorSelectedShapes(across: .vertical)
+            return .handled
+        case "F":
+            viewModel.mirrorSelectedShapes(across: .horizontal)
+            return .handled
+        case "d":
+            viewModel.duplicateSelectedShapes(
+                by: LayoutPoint(x: viewModel.gridSize, y: viewModel.gridSize)
+            )
+            return .handled
+        default:
+            break
+        }
+
         // Tool shortcut keys
         for tool in LayoutTool.allCases {
             if let key = tool.shortcutKey,
@@ -178,15 +208,23 @@ public struct LayoutCanvasView: View {
                 if dragMode == nil {
                     switch viewModel.tool {
                     case .select:
-                        // Check if dragging on a selected shape → move
+                        // Handle grab beats move beats marquee: a drag
+                        // starting on a vertex/edge handle stretches, on
+                        // a selected shape moves (Option duplicates), on
+                        // empty area box-selects.
                         let layoutPt = toLayout(value.startLocation)
-                        if !viewModel.selectedShapeIDs.isEmpty,
-                           shapeHitTest(at: layoutPt, in: viewModel.selectedShapeIDs) {
+                        if let hit = handleHitTest(at: value.startLocation) {
+                            dragMode = .handle
+                            viewModel.beginHandleDrag(shapeID: hit.shapeID, handle: hit.handle)
+                        } else if !viewModel.selectedShapeIDs.isEmpty,
+                                  shapeHitTest(at: layoutPt, in: viewModel.selectedShapeIDs) {
                             dragMode = .movingShape
-                            viewModel.beginShapeDrag()
+                            viewModel.beginShapeDrag(
+                                duplicating: NSEvent.modifierFlags.contains(.option)
+                            )
                         } else {
-                            dragMode = .panningCanvas
-                            panStartOffset = viewModel.offset
+                            dragMode = .marquee
+                            dragStart = value.startLocation
                         }
                     case .polygon, .path, .ruler, .merge:
                         // Multi-click tools don't use drag for drawing
@@ -206,7 +244,7 @@ public struct LayoutCanvasView: View {
                             y: startOffset.y + value.translation.height
                         )
                     }
-                case .drawing:
+                case .drawing, .marquee:
                     dragCurrent = value.location
                 case .movingShape:
                     // Cumulative offset from the drag origin in layout
@@ -217,6 +255,12 @@ public struct LayoutCanvasView: View {
                         y: Double(value.translation.height / viewModel.zoom)
                     )
                     viewModel.updateShapeDrag(to: offset)
+                case .handle:
+                    let offset = LayoutPoint(
+                        x: Double(value.translation.width / viewModel.zoom),
+                        y: Double(value.translation.height / viewModel.zoom)
+                    )
+                    viewModel.updateHandleDrag(to: offset)
                 case .none:
                     break
                 }
@@ -229,6 +273,11 @@ public struct LayoutCanvasView: View {
                         handleDrawingEnd(start: start, end: value.location)
                     case .movingShape:
                         viewModel.endShapeDrag()
+                    case .marquee:
+                        let start = dragStart ?? value.startLocation
+                        handleMarqueeEnd(start: start, end: value.location)
+                    case .handle:
+                        viewModel.endHandleDrag()
                     case .panningCanvas, .none:
                         break
                     }
@@ -251,6 +300,69 @@ public struct LayoutCanvasView: View {
             }
         }
         return false
+    }
+
+    // MARK: - Handle Hit Test
+
+    /// The handle under a screen point when exactly one shape is selected.
+    /// Vertex handles take priority over edge handles; tolerances are in
+    /// screen pixels so grabbing feels the same at any zoom.
+    private func handleHitTest(at screenPoint: CGPoint) -> (shapeID: UUID, handle: LayoutShapeHandle)? {
+        guard viewModel.selectedShapeIDs.count == 1,
+              let shapeID = viewModel.selectedShapeIDs.first,
+              let shape = viewModel.documentShapes().first(where: { $0.id == shapeID }),
+              viewModel.isLayerVisible(shape.layer) else {
+            return nil
+        }
+        let vertexTolerance: CGFloat = 8
+        let edgeTolerance: CGFloat = 6
+
+        for (index, vertex) in LayoutHandleEditor.vertices(of: shape.geometry).enumerated() {
+            let p = toView(vertex)
+            if hypot(screenPoint.x - p.x, screenPoint.y - p.y) <= vertexTolerance {
+                return (shapeID, .vertex(index))
+            }
+        }
+        for (index, edge) in LayoutHandleEditor.edges(of: shape.geometry).enumerated() {
+            let distance = distanceToSegment(
+                screenPoint, from: toView(edge.start), to: toView(edge.end)
+            )
+            if distance <= edgeTolerance {
+                return (shapeID, .edge(index))
+            }
+        }
+        return nil
+    }
+
+    private func distanceToSegment(_ p: CGPoint, from a: CGPoint, to b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(p.x - a.x, p.y - a.y) }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared))
+        let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+        return hypot(p.x - projection.x, p.y - projection.y)
+    }
+
+    // MARK: - Marquee End
+
+    /// Resolves a finished marquee drag into a selection. Drag direction
+    /// picks the semantics — left-to-right is a window (containment)
+    /// selection, right-to-left a crossing (intersection) selection — and
+    /// Shift adds to the existing selection.
+    private func handleMarqueeEnd(start: CGPoint, end: CGPoint) {
+        let a = toLayout(start)
+        let b = toLayout(end)
+        let box = LayoutRect(
+            origin: LayoutPoint(x: min(a.x, b.x), y: min(a.y, b.y)),
+            size: LayoutSize(width: abs(a.x - b.x), height: abs(a.y - b.y))
+        )
+        let mode: LayoutMarqueeMode = end.x >= start.x ? .window : .crossing
+        viewModel.selectShapes(
+            in: box,
+            mode: mode,
+            additive: NSEvent.modifierFlags.contains(.shift)
+        )
     }
 
     // MARK: - Tap (single click)
@@ -674,6 +786,38 @@ public struct LayoutCanvasView: View {
             let path = pathForShape(shape)
             context.stroke(path, with: .color(color), lineWidth: 2 / viewModel.zoom)
         }
+        drawHandles(context: &context)
+    }
+
+    /// Vertex and edge handles for a single selected shape — filled
+    /// squares on vertices, hollow squares on edge midpoints. Drawn from
+    /// the current document geometry so they follow a live handle drag.
+    private func drawHandles(context: inout GraphicsContext) {
+        guard viewModel.tool == .select,
+              viewModel.selectedShapeIDs.count == 1,
+              let shapeID = viewModel.selectedShapeIDs.first,
+              let shape = viewModel.documentShapes().first(where: { $0.id == shapeID }),
+              viewModel.isLayerVisible(shape.layer) else { return }
+
+        let size = 6.0 / viewModel.zoom
+        let stroke = 1.0 / viewModel.zoom
+
+        for edge in LayoutHandleEditor.edges(of: shape.geometry) {
+            let mid = CGPoint(
+                x: (edge.start.x + edge.end.x) / 2,
+                y: (edge.start.y + edge.end.y) / 2
+            )
+            let rect = CGRect(x: mid.x - size / 2, y: mid.y - size / 2, width: size, height: size)
+            context.fill(Path(rect), with: .color(Color(nsColor: .controlBackgroundColor)))
+            context.stroke(Path(rect), with: .color(.yellow), lineWidth: stroke)
+        }
+        for vertex in LayoutHandleEditor.vertices(of: shape.geometry) {
+            let rect = CGRect(
+                x: vertex.x - size / 2, y: vertex.y - size / 2,
+                width: size, height: size
+            )
+            context.fill(Path(rect), with: .color(.yellow))
+        }
     }
 
     // MARK: - Drawing: Instances
@@ -914,6 +1058,11 @@ public struct LayoutCanvasView: View {
         guard let start = dragStart,
               let current = dragCurrent else { return }
 
+        if dragMode == .marquee {
+            drawMarqueePreview(context: &context, start: start, current: current)
+            return
+        }
+
         switch viewModel.tool {
         case .rectangle:
             let rect = CGRect(
@@ -955,6 +1104,28 @@ public struct LayoutCanvasView: View {
 
         default:
             break
+        }
+    }
+
+    /// Window (left-to-right) drags preview solid blue; crossing
+    /// (right-to-left) drags preview dashed green — the convention that
+    /// tells the user which selection semantics will apply on release.
+    private func drawMarqueePreview(
+        context: inout GraphicsContext, start: CGPoint, current: CGPoint
+    ) {
+        let rect = CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(start.x - current.x),
+            height: abs(start.y - current.y)
+        )
+        if current.x >= start.x {
+            context.fill(Path(rect), with: .color(.blue.opacity(0.08)))
+            context.stroke(Path(rect), with: .color(.blue.opacity(0.8)), lineWidth: 1)
+        } else {
+            context.fill(Path(rect), with: .color(.green.opacity(0.08)))
+            let dash = StrokeStyle(lineWidth: 1, dash: [4, 3])
+            context.stroke(Path(rect), with: .color(.green.opacity(0.8)), style: dash)
         }
     }
 

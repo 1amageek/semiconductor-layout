@@ -70,6 +70,67 @@ public extension LayoutGeometry {
         }
     }
 
+    /// The geometry rotated a quarter turn about a pivot, preserving its
+    /// kind: an axis-aligned rect stays a rect (width and height swap), a
+    /// path keeps its width and end cap. Unlike ``transformed(by:)``,
+    /// which canonicalizes to polygons, a 90-degree turn never needs that
+    /// loss of form.
+    func rotated90(around pivot: LayoutPoint, clockwise: Bool) -> LayoutGeometry {
+        func rotate(_ p: LayoutPoint) -> LayoutPoint {
+            let dx = p.x - pivot.x
+            let dy = p.y - pivot.y
+            return clockwise
+                ? LayoutPoint(x: pivot.x + dy, y: pivot.y - dx)
+                : LayoutPoint(x: pivot.x - dy, y: pivot.y + dx)
+        }
+        switch self {
+        case .rect(let rect):
+            let a = rotate(LayoutPoint(x: rect.minX, y: rect.minY))
+            let b = rotate(LayoutPoint(x: rect.maxX, y: rect.maxY))
+            return .rect(LayoutRect(
+                origin: LayoutPoint(x: min(a.x, b.x), y: min(a.y, b.y)),
+                size: LayoutSize(width: abs(a.x - b.x), height: abs(a.y - b.y))
+            ))
+        case .polygon(let polygon):
+            return .polygon(LayoutPolygon(points: polygon.points.map(rotate)))
+        case .path(let path):
+            return .path(LayoutPath(
+                points: path.points.map(rotate),
+                width: path.width,
+                endCap: path.endCap
+            ))
+        }
+    }
+
+    /// The geometry mirrored across an axis line through a point,
+    /// preserving its kind. Polygon point order is reversed so the
+    /// winding orientation survives the reflection.
+    func mirrored(across axis: LayoutMirrorAxis, through center: LayoutPoint) -> LayoutGeometry {
+        func mirror(_ p: LayoutPoint) -> LayoutPoint {
+            switch axis {
+            case .vertical: return LayoutPoint(x: 2 * center.x - p.x, y: p.y)
+            case .horizontal: return LayoutPoint(x: p.x, y: 2 * center.y - p.y)
+            }
+        }
+        switch self {
+        case .rect(let rect):
+            let a = mirror(LayoutPoint(x: rect.minX, y: rect.minY))
+            let b = mirror(LayoutPoint(x: rect.maxX, y: rect.maxY))
+            return .rect(LayoutRect(
+                origin: LayoutPoint(x: min(a.x, b.x), y: min(a.y, b.y)),
+                size: rect.size
+            ))
+        case .polygon(let polygon):
+            return .polygon(LayoutPolygon(points: polygon.points.map(mirror).reversed()))
+        case .path(let path):
+            return .path(LayoutPath(
+                points: path.points.map(mirror),
+                width: path.width,
+                endCap: path.endCap
+            ))
+        }
+    }
+
     /// The geometry shifted by a vector, preserving its kind: a rect stays
     /// a rect, a path keeps its width and end cap. Unlike
     /// ``transformed(by:)``, which canonicalizes to polygons for general

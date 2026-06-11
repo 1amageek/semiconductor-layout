@@ -56,6 +56,17 @@ public final class LayoutEditorViewModel {
     private var liveDRC: IncrementalDRCSession?
     private var dragSession: DRDDragSession?
     private var dragOriginShapes: [LayoutShape]?
+    /// Whether the active drag moves freshly added copies (Option-drag
+    /// duplicate); cancel then removes the copies instead of restoring
+    /// their positions.
+    private var dragIsDuplicating = false
+
+    // MARK: - Handle Editing State
+
+    /// The handle currently being dragged, with the shape it belongs to,
+    /// for canvas feedback. Non-nil exactly while a handle drag is active.
+    public private(set) var activeHandleDrag: (shapeID: UUID, handle: LayoutShapeHandle)?
+    private var handleOriginShape: LayoutShape?
 
     // MARK: - Live Connectivity
 
@@ -514,6 +525,41 @@ public final class LayoutEditorViewModel {
         selectedInstanceID = nil
     }
 
+    /// Selects shapes by marquee box. Window mode selects shapes whose
+    /// bounding box lies entirely inside the box; crossing mode selects
+    /// shapes whose bounding box intersects it. Hidden layers never
+    /// participate. With `additive`, hits join the current selection
+    /// instead of replacing it.
+    public func selectShapes(in box: LayoutRect, mode: LayoutMarqueeMode, additive: Bool = false) {
+        guard let cellID = activeCellID, let cell = editor.document.cell(withID: cellID) else {
+            return
+        }
+        var hits: Set<UUID> = []
+        for shape in cell.shapes {
+            guard isLayerVisible(shape.layer) else { continue }
+            let bounds = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
+            let matched: Bool
+            switch mode {
+            case .window:
+                matched = box.minX <= bounds.minX && box.minY <= bounds.minY
+                    && box.maxX >= bounds.maxX && box.maxY >= bounds.maxY
+            case .crossing:
+                matched = box.intersects(bounds)
+            }
+            if matched {
+                hits.insert(shape.id)
+            }
+        }
+        if additive {
+            selectedShapeIDs.formUnion(hits)
+        } else {
+            selectedShapeIDs = hits
+        }
+        if !additive || !hits.isEmpty {
+            selectedInstanceID = nil
+        }
+    }
+
     public func selectInstance(at point: LayoutPoint) -> UUID? {
         for (inst, bounds) in instanceBoundingBoxes() {
             if bounds.contains(point) {
@@ -614,6 +660,67 @@ public final class LayoutEditorViewModel {
         return cell.shapes.filter { selectedShapeIDs.contains($0.id) }
     }
 
+    // MARK: - Duplicate / Rotate / Mirror
+
+    /// Copies the selection, offset by a vector, as one discrete edit.
+    /// The copies get fresh identities but keep their net assignment, so
+    /// a copied labeled wire honestly reports as an open until it is
+    /// wired up. Selection moves to the copies that landed.
+    public func duplicateSelectedShapes(by offset: LayoutPoint) {
+        let copies = selectedShapes().map { shape in
+            LayoutShape(
+                layer: shape.layer,
+                netID: shape.netID,
+                geometry: shape.geometry.translated(by: offset),
+                properties: shape.properties
+            )
+        }
+        guard !copies.isEmpty else { return }
+        commitDelta(LayoutEditDelta(addedShapes: copies))
+        // commitDelta reports failures through handleError without
+        // applying — intersect with the document so the selection only
+        // ever names shapes that actually exist.
+        let landed = Set(documentShapes().map(\.id))
+        selectedShapeIDs = Set(copies.map(\.id)).intersection(landed)
+        selectedInstanceID = nil
+    }
+
+    /// Rotates the selection a quarter turn about the grid-snapped center
+    /// of its combined bounding box, preserving shape identity.
+    public func rotateSelectedShapes(clockwise: Bool = true) {
+        transformSelectedShapes { geometry, pivot in
+            geometry.rotated90(around: pivot, clockwise: clockwise)
+        }
+    }
+
+    /// Mirrors the selection across an axis through the grid-snapped
+    /// center of its combined bounding box, preserving shape identity.
+    public func mirrorSelectedShapes(across axis: LayoutMirrorAxis) {
+        transformSelectedShapes { geometry, pivot in
+            geometry.mirrored(across: axis, through: pivot)
+        }
+    }
+
+    /// Applies an ID-preserving geometric transform about the selection's
+    /// grid-snapped bounding-box center as one discrete edit.
+    private func transformSelectedShapes(
+        _ transform: (LayoutGeometry, LayoutPoint) -> LayoutGeometry
+    ) {
+        let shapes = selectedShapes()
+        guard let first = shapes.first else { return }
+        var combined = LayoutGeometryAnalysis.boundingBox(for: first.geometry)
+        for shape in shapes.dropFirst() {
+            combined = combined.union(LayoutGeometryAnalysis.boundingBox(for: shape.geometry))
+        }
+        let pivot = snapToGrid(combined.center)
+        let updated = shapes.map { shape in
+            var copy = shape
+            copy.geometry = transform(shape.geometry, pivot)
+            return copy
+        }
+        commitDelta(LayoutEditDelta(updatedShapes: updated))
+    }
+
     // MARK: - Interactive Drag (DRD)
 
     /// Whether an interactive shape drag is in progress.
@@ -622,14 +729,38 @@ public final class LayoutEditorViewModel {
     /// Starts an interactive drag of the selected shapes. The whole drag
     /// collapses into one undo step; in `observe`/`enforce` mode every
     /// tick re-verifies through the live session.
-    public func beginShapeDrag() {
-        guard dragOriginShapes == nil else { return }
+    ///
+    /// With `duplicating` (Option-drag), fresh copies of the selection are
+    /// added in place and the drag moves the copies while the originals
+    /// stay put. Copies keep their net assignment, so a copied labeled
+    /// wire honestly reports as an open until it is wired up.
+    public func beginShapeDrag(duplicating: Bool = false) {
+        guard dragOriginShapes == nil, activeHandleDrag == nil else { return }
         let shapes = selectedShapes()
         guard !shapes.isEmpty else { return }
         editor.recordUndoBoundary()
-        dragOriginShapes = shapes
+        var dragged = shapes
+        if duplicating {
+            let copies = shapes.map { shape in
+                LayoutShape(
+                    layer: shape.layer,
+                    netID: shape.netID,
+                    geometry: shape.geometry,
+                    properties: shape.properties
+                )
+            }
+            commitDelta(LayoutEditDelta(addedShapes: copies), transient: true)
+            // commitDelta reports failures through handleError without
+            // applying — only start the drag if the copies actually landed.
+            let copyIDs = Set(copies.map(\.id))
+            guard copyIDs.isSubset(of: Set(documentShapes().map(\.id))) else { return }
+            selectedShapeIDs = copyIDs
+            dragged = copies
+            dragIsDuplicating = true
+        }
+        dragOriginShapes = dragged
         if let liveDRC {
-            dragSession = DRDDragSession(session: liveDRC, shapes: shapes, grid: gridSize)
+            dragSession = DRDDragSession(session: liveDRC, shapes: dragged, grid: gridSize)
         }
     }
 
@@ -667,13 +798,15 @@ public final class LayoutEditorViewModel {
         dragOriginShapes = nil
         dragSession = nil
         dragOutcome = nil
+        dragIsDuplicating = false
         if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
         }
     }
 
-    /// Aborts the drag and restores the dragged shapes to their origin.
+    /// Aborts the drag. A move drag restores the dragged shapes to their
+    /// origin; a duplicating drag removes the copies it added.
     public func cancelShapeDrag() {
         guard let origin = dragOriginShapes else { return }
         if let dragSession {
@@ -685,10 +818,16 @@ public final class LayoutEditorViewModel {
                 resyncLiveDRC()
             }
         }
-        mirrorDragOffset(.zero, origin: origin)
+        if dragIsDuplicating {
+            commitDelta(LayoutEditDelta(removedShapeIDs: origin.map(\.id)), transient: true)
+            selectedShapeIDs.subtract(origin.map(\.id))
+        } else {
+            mirrorDragOffset(.zero, origin: origin)
+        }
         dragOriginShapes = nil
         dragSession = nil
         dragOutcome = nil
+        dragIsDuplicating = false
         if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
@@ -716,6 +855,72 @@ public final class LayoutEditorViewModel {
         // connectivity session follows the document directly so flylines
         // and short/open verdicts stay live during the gesture.
         applyConnectivityDelta(LayoutEditDelta(updatedShapes: moved))
+    }
+
+    // MARK: - Handle Editing (Stretch / Vertex)
+
+    /// Whether a handle drag is in progress.
+    public var isDraggingHandle: Bool { activeHandleDrag != nil }
+
+    /// Starts dragging one handle of a shape — the stretch/vertex-edit
+    /// gesture. The whole drag collapses into one undo step and every
+    /// tick verifies through the live sessions. Returns false when the
+    /// handle does not exist on that shape's geometry.
+    @discardableResult
+    public func beginHandleDrag(shapeID: UUID, handle: LayoutShapeHandle) -> Bool {
+        guard activeHandleDrag == nil, dragOriginShapes == nil else { return false }
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID),
+              let shape = cell.shapes.first(where: { $0.id == shapeID }) else { return false }
+        // Validate the handle against the geometry before recording any
+        // gesture state.
+        guard LayoutHandleEditor.apply(
+            handle, offset: .zero, to: shape.geometry, minimumSize: gridSize
+        ) != nil else { return false }
+        editor.recordUndoBoundary()
+        activeHandleDrag = (shapeID: shapeID, handle: handle)
+        handleOriginShape = shape
+        return true
+    }
+
+    /// Moves the dragged handle to a cumulative offset from the gesture
+    /// origin. The geometry is recomputed from the origin shape each tick
+    /// so the drag is replayable and cancel restores exactly.
+    public func updateHandleDrag(to offset: LayoutPoint) {
+        guard let drag = activeHandleDrag, let origin = handleOriginShape else { return }
+        guard let geometry = LayoutHandleEditor.apply(
+            drag.handle,
+            offset: snapToGrid(offset),
+            to: origin.geometry,
+            minimumSize: gridSize
+        ) else { return }
+        var moved = origin
+        moved.geometry = geometry
+        commitDelta(LayoutEditDelta(updatedShapes: [moved]), transient: true)
+    }
+
+    /// Ends the handle drag at its current geometry and re-verifies the
+    /// deferred tier so the snapshot is exact again.
+    public func endHandleDrag() {
+        guard activeHandleDrag != nil else { return }
+        activeHandleDrag = nil
+        handleOriginShape = nil
+        if let liveDRC {
+            violations = liveDRC.commit().violations
+            staleViolationKinds = []
+        }
+    }
+
+    /// Aborts the handle drag and restores the shape's origin geometry.
+    public func cancelHandleDrag() {
+        guard activeHandleDrag != nil, let origin = handleOriginShape else { return }
+        activeHandleDrag = nil
+        handleOriginShape = nil
+        commitDelta(LayoutEditDelta(updatedShapes: [origin]), transient: true)
+        if let liveDRC {
+            violations = liveDRC.commit().violations
+            staleViolationKinds = []
+        }
     }
 
     // MARK: - Merge
