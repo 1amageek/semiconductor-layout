@@ -5,6 +5,7 @@ public enum LayoutConstraint: Hashable, Sendable, Codable {
     case matching(LayoutMatchingConstraint)
     case commonCentroid(LayoutCommonCentroidConstraint)
     case interdigitated(LayoutInterdigitatedConstraint)
+    case alignment(LayoutAlignmentConstraint)
 
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -12,6 +13,7 @@ public enum LayoutConstraint: Hashable, Sendable, Codable {
         case matching
         case commonCentroid
         case interdigitated
+        case alignment
     }
 
     private enum Kind: String, Codable {
@@ -19,6 +21,7 @@ public enum LayoutConstraint: Hashable, Sendable, Codable {
         case matching
         case commonCentroid
         case interdigitated
+        case alignment
     }
 
     public init(from decoder: Decoder) throws {
@@ -37,6 +40,9 @@ public enum LayoutConstraint: Hashable, Sendable, Codable {
         case .interdigitated:
             let value = try container.decode(LayoutInterdigitatedConstraint.self, forKey: .interdigitated)
             self = .interdigitated(value)
+        case .alignment:
+            let value = try container.decode(LayoutAlignmentConstraint.self, forKey: .alignment)
+            self = .alignment(value)
         }
     }
 
@@ -55,6 +61,9 @@ public enum LayoutConstraint: Hashable, Sendable, Codable {
         case .interdigitated(let value):
             try container.encode(Kind.interdigitated, forKey: .kind)
             try container.encode(value, forKey: .interdigitated)
+        case .alignment(let value):
+            try container.encode(Kind.alignment, forKey: .kind)
+            try container.encode(value, forKey: .alignment)
         }
     }
 }

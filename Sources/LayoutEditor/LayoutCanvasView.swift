@@ -43,6 +43,7 @@ public struct LayoutCanvasView: View {
             drawShapes(context: &context)
             drawInstances(context: &context)
             drawViolations(context: &context)
+            drawConstraintViolations(context: &context)
             drawConnectivity(context: &context)
             drawSelection(context: &context)
             drawInstanceHighlights(context: &context)
@@ -678,6 +679,52 @@ public struct LayoutCanvasView: View {
             let path = Path(rect)
             context.fill(path, with: .color(color.opacity(0.18)))
             context.stroke(path, with: .color(color), style: dash)
+        }
+    }
+
+    // MARK: - Drawing: Constraint Violations
+
+    /// Broken design-intent constraints (symmetry, matching, alignment, ...).
+    /// Purple, long-dashed, with a diagonal cross so they read apart from
+    /// DRC markers even when regions overlap.
+    private func drawConstraintViolations(context: inout GraphicsContext) {
+        guard !viewModel.constraintViolations.isEmpty else { return }
+        let minMarkerSize = 8.0 / viewModel.zoom
+        let lineWidth = 1.5 / viewModel.zoom
+        let dash = StrokeStyle(
+            lineWidth: lineWidth,
+            dash: [6 / viewModel.zoom, 3 / viewModel.zoom]
+        )
+
+        for violation in viewModel.constraintViolations {
+            let color: Color = violation.severity == .error
+                ? .purple
+                : .purple.opacity(0.55)
+
+            let region = violation.region
+            var rect = CGRect(
+                x: region.origin.x,
+                y: region.origin.y,
+                width: region.size.width,
+                height: region.size.height
+            )
+            if rect.width < minMarkerSize {
+                rect = rect.insetBy(dx: (rect.width - minMarkerSize) / 2, dy: 0)
+            }
+            if rect.height < minMarkerSize {
+                rect = rect.insetBy(dx: 0, dy: (rect.height - minMarkerSize) / 2)
+            }
+
+            let path = Path(rect)
+            context.fill(path, with: .color(color.opacity(0.10)))
+            context.stroke(path, with: .color(color), style: dash)
+
+            var cross = Path()
+            cross.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            cross.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            cross.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+            cross.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            context.stroke(cross, with: .color(color.opacity(0.6)), lineWidth: lineWidth)
         }
     }
 

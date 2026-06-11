@@ -114,6 +114,14 @@ public final class LayoutEditorViewModel {
     private var liveConnectivity: LiveConnectivitySession?
     private var netHighlightAnchor: NetHighlightAnchor?
 
+    // MARK: - Live Constraints
+
+    /// Broken design-intent constraints (symmetry, matching, alignment,
+    /// common centroid, interdigitation) of the active cell, re-evaluated
+    /// on every edit — a third verdict channel beside design rules and
+    /// connectivity.
+    public private(set) var constraintViolations: [LayoutConstraintViolation] = []
+
     // MARK: - Tool Options
 
     /// Path width for the path tool. Defaults to minimum width of active layer or tech grid.
@@ -146,6 +154,7 @@ public final class LayoutEditorViewModel {
         self.cellNavigationPath = [cell.id]
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     public init(document: LayoutDocument, tech: LayoutTechDatabase) {
@@ -159,6 +168,7 @@ public final class LayoutEditorViewModel {
         self.cellNavigationPath = Self.initialNavigationPath(document: document, activeCellID: self.activeCellID)
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     /// Full verification on demand: re-verifies the live session's
@@ -266,6 +276,74 @@ public final class LayoutEditorViewModel {
         }
     }
 
+    // MARK: - Constraint Plumbing
+
+    /// The active cell's persisted design-intent constraints.
+    public var activeCellConstraints: [LayoutConstraint] {
+        activeCell?.constraints ?? []
+    }
+
+    /// Re-evaluates the active cell's constraints against the current
+    /// geometry. Constraint sets are small, so a full check per edit is
+    /// exact and cheap — there is no incremental tier to go stale.
+    private func refreshConstraintViolations() {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID),
+              !cell.constraints.isEmpty else {
+            constraintViolations = []
+            return
+        }
+        do {
+            constraintViolations = try LayoutConstraintChecker()
+                .check(document: editor.document, cellID: cellID)
+        } catch {
+            // Only reachable if the active cell vanished mid-call; surface
+            // it and report no verdict rather than a stale one.
+            handleError(error)
+            constraintViolations = []
+        }
+    }
+
+    /// Adds a persisted constraint to the active cell (undoable) and
+    /// re-evaluates immediately.
+    public func addConstraint(_ constraint: LayoutConstraint) {
+        guard let cellID = activeCellID else { return }
+        do {
+            try editor.perform { doc in
+                guard var cell = doc.cell(withID: cellID) else {
+                    throw LayoutCoreError.cellNotFound(cellID)
+                }
+                cell.constraints.append(constraint)
+                doc.updateCell(cell)
+            }
+        } catch {
+            handleError(error)
+            return
+        }
+        refreshConstraintViolations()
+    }
+
+    /// Removes the active cell's constraint at `index` (undoable) and
+    /// re-evaluates immediately.
+    public func removeConstraint(at index: Int) {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID),
+              cell.constraints.indices.contains(index) else { return }
+        do {
+            try editor.perform { doc in
+                guard var cell = doc.cell(withID: cellID) else {
+                    throw LayoutCoreError.cellNotFound(cellID)
+                }
+                cell.constraints.remove(at: index)
+                doc.updateCell(cell)
+            }
+        } catch {
+            handleError(error)
+            return
+        }
+        refreshConstraintViolations()
+    }
+
     /// Anchors the net highlight to a shape; the highlighted net follows
     /// the conductor that shape belongs to as the layout changes.
     public func highlightNet(ofShape id: UUID) {
@@ -323,6 +401,7 @@ public final class LayoutEditorViewModel {
             }
         }
         applyConnectivityDelta(delta)
+        refreshConstraintViolations()
     }
 
     /// Applies a delta to the cell with the session's ordering semantics:
@@ -374,12 +453,14 @@ public final class LayoutEditorViewModel {
         editor.undo()
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     public func redo() {
         editor.redo()
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     // MARK: - Cell Navigation
@@ -490,6 +571,7 @@ public final class LayoutEditorViewModel {
         // the live sessions, so they require a rebuild rather than a delta.
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     // MARK: - Rulers
@@ -852,9 +934,10 @@ public final class LayoutEditorViewModel {
             return
         }
         // The DRC side of the drag verifies through DRDDragSession; the
-        // connectivity session follows the document directly so flylines
-        // and short/open verdicts stay live during the gesture.
+        // connectivity and constraint verdicts follow the document
+        // directly so they stay live during the gesture.
         applyConnectivityDelta(LayoutEditDelta(updatedShapes: moved))
+        refreshConstraintViolations()
     }
 
     // MARK: - Handle Editing (Stretch / Vertex)
@@ -1266,6 +1349,7 @@ public final class LayoutEditorViewModel {
         clearNetHighlight()
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     private func restoreNavigationState(_ state: CellNavigationState) {
@@ -1282,6 +1366,7 @@ public final class LayoutEditorViewModel {
         clearNetHighlight()
         resyncLiveDRC()
         resyncLiveConnectivity()
+        refreshConstraintViolations()
     }
 
     private static func initialNavigationPath(document: LayoutDocument, activeCellID: UUID?) -> [UUID] {

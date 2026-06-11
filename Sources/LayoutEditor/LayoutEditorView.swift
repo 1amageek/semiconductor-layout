@@ -49,7 +49,8 @@ public struct LayoutEditorView: View {
                 LayoutDiagnosticsBar(
                     violations: viewModel.violations,
                     staleKinds: viewModel.staleViolationKinds,
-                    connectivity: viewModel.connectivityAnalysis
+                    connectivity: viewModel.connectivityAnalysis,
+                    constraintViolations: viewModel.constraintViolations
                 )
             }
         }

@@ -56,7 +56,8 @@ struct ConstraintIndex: Sendable {
                 for memberID in match.members {
                     matchingGroups[memberID] = match.members.filter { $0 != memberID }
                 }
-            case .commonCentroid, .interdigitated:
+            case .commonCentroid, .interdigitated, .alignment:
+                // Handled by the cost function only; no paired-move coupling.
                 break
             }
         }

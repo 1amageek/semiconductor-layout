@@ -291,6 +291,11 @@ public struct LayoutQualityEvaluator: Sendable {
                 if isInterdigitatedSatisfied(idg, placements: placements) {
                     satisfied += 1
                 }
+            case .alignment(let align):
+                total += 1
+                if isAlignmentSatisfied(align, placements: placements, tolerance: tolerance) {
+                    satisfied += 1
+                }
             }
         }
         return total > 0 ? Double(satisfied) / Double(total) : 1.0
@@ -366,6 +371,33 @@ public struct LayoutQualityEvaluator: Sendable {
         for id in match.members.dropFirst() {
             guard let t = placements[id] else { return false }
             if abs(t.translation.y - firstTransform.translation.y) > tolerance {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Placement-level alignment check, consistent with this evaluator's
+    /// translation-based model: X modes compare translation.x, Y modes
+    /// translation.y. Edge-vs-center distinctions need placed bounding
+    /// boxes and are the geometric checker's job.
+    private func isAlignmentSatisfied(
+        _ align: LayoutAlignmentConstraint,
+        placements: [UUID: LayoutTransform],
+        tolerance: Double
+    ) -> Bool {
+        guard align.members.count >= 2 else { return true }
+        guard let first = placements[align.members[0]] else { return false }
+        let coordinate: (LayoutTransform) -> Double
+        switch align.mode {
+        case .minX, .centerX, .maxX:
+            coordinate = { $0.translation.x }
+        case .minY, .centerY, .maxY:
+            coordinate = { $0.translation.y }
+        }
+        for id in align.members.dropFirst() {
+            guard let t = placements[id] else { return false }
+            if abs(coordinate(t) - coordinate(first)) > max(align.tolerance, tolerance) {
                 return false
             }
         }

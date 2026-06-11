@@ -10,16 +10,19 @@ public struct LayoutDiagnosticsBar: View {
     let violations: [LayoutViolation]
     let staleKinds: Set<LayoutViolationKind>
     let connectivity: ConnectivityAnalysis?
+    let constraintViolations: [LayoutConstraintViolation]
     @State private var isExpanded = false
 
     public init(
         violations: [LayoutViolation],
         staleKinds: Set<LayoutViolationKind> = [],
-        connectivity: ConnectivityAnalysis? = nil
+        connectivity: ConnectivityAnalysis? = nil,
+        constraintViolations: [LayoutConstraintViolation] = []
     ) {
         self.violations = violations
         self.staleKinds = staleKinds
         self.connectivity = connectivity
+        self.constraintViolations = constraintViolations
     }
 
     public var body: some View {
@@ -41,6 +44,7 @@ public struct LayoutDiagnosticsBar: View {
                             .help("These checks have not re-verified since the last edit; run DRC to refresh them.")
                     }
                     connectivityChip
+                    constraintChip
                     Spacer()
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
@@ -57,6 +61,7 @@ public struct LayoutDiagnosticsBar: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         connectivityRows
+                        constraintRows
                         ForEach(violations.prefix(50)) { violation in
                             HStack(spacing: 8) {
                                 Image(systemName: "exclamationmark.triangle.fill")
@@ -148,6 +153,43 @@ public struct LayoutDiagnosticsBar: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
             }
+        }
+    }
+
+    /// Design-intent verdict: broken constraints (symmetry, matching,
+    /// alignment, ...) — purple, apart from DRC orange.
+    @ViewBuilder
+    private var constraintChip: some View {
+        if !constraintViolations.isEmpty {
+            Label(
+                "\(constraintViolations.count) constraint\(constraintViolations.count == 1 ? "" : "s")",
+                systemImage: "ruler"
+            )
+            .foregroundStyle(.purple)
+            .help("Design-intent constraints (symmetry, matching, alignment) that the current geometry breaks.")
+        }
+    }
+
+    /// Expanded rows for each broken constraint.
+    @ViewBuilder
+    private var constraintRows: some View {
+        ForEach(constraintViolations.prefix(50)) { violation in
+            HStack(spacing: 8) {
+                Image(systemName: "ruler")
+                    .foregroundStyle(.purple)
+                    .font(.caption)
+                    .frame(width: 16)
+                Text(violation.message)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer()
+                Text(violation.kind.rawValue)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
         }
     }
 
