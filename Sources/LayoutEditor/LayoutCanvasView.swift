@@ -18,6 +18,11 @@ public struct LayoutCanvasView: View {
     @State private var dragMode: DragMode?
     @State private var panStartOffset: CGPoint?
 
+    /// Key focus must be claimed explicitly: the drag gesture consumes the
+    /// mouse-down, so macOS never moves focus to the canvas on click, and
+    /// `onKeyPress` (Delete, Escape, editing verbs) would otherwise never fire.
+    @FocusState private var isFocused: Bool
+
     private let dragThreshold: CGFloat = 3
     private let polygonCloseThreshold: CGFloat = 10
 
@@ -88,6 +93,9 @@ public struct LayoutCanvasView: View {
             viewModel.cancelRoute()
         }
         .focusable()
+        .focusEffectDisabled()
+        .focused($isFocused)
+        .onAppear { isFocused = true }
     }
 
     // MARK: - Drag Detection
@@ -243,6 +251,9 @@ public struct LayoutCanvasView: View {
     private var unifiedDragGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                // The gesture swallows the mouse-down, so claim key focus
+                // here — clicking the canvas must make keyboard editing work.
+                if !isFocused { isFocused = true }
                 guard isDrag(value) else { return }
 
                 if dragMode == nil {
