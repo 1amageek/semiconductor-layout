@@ -23,7 +23,19 @@ public final class LayoutEditorViewModel {
     public var activeViaID: String
     public var zoom: CGFloat = 1.0
     public var offset: CGPoint = .zero
-    public var canvasSize: CGSize = .zero
+    public var canvasSize: CGSize = .zero {
+        didSet {
+            guard pendingFitAll, canvasSize.width > 0, canvasSize.height > 0 else { return }
+            pendingFitAll = false
+            fitAll()
+        }
+    }
+
+    /// Set when ``fitAll()`` is requested before the canvas has been laid out
+    /// (e.g. layout generated while the editor view is off screen). The fit is
+    /// applied as soon as the canvas reports a non-zero size.
+    @ObservationIgnored
+    private var pendingFitAll = false
     public var gridSize: Double
     public var selectedShapeIDs: Set<UUID> = []
     public var selectedInstanceID: UUID?
@@ -2678,8 +2690,15 @@ public final class LayoutEditorViewModel {
     }
 
     public func fitAll() {
-        guard canvasSize.width > 0, canvasSize.height > 0,
-              let bounds = contentBounds(),
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            // The canvas has not been laid out yet; defer via canvasSize.didSet
+            // so the fit is not silently lost while the editor is off screen.
+            pendingFitAll = true
+            zoom = 1.0
+            offset = .zero
+            return
+        }
+        guard let bounds = contentBounds(),
               bounds.size.width > 0, bounds.size.height > 0 else {
             zoom = 1.0
             offset = .zero
@@ -2729,11 +2748,24 @@ public final class LayoutEditorViewModel {
         let converter = MaskDataFormatConverter(tech: resolvedTech)
         let document = try converter.importFromData(data)
 
-        self.tech = resolvedTech
-        self.gridSize = resolvedTech.grid
-        self.activeLayer = resolvedTech.layers.first?.id ?? LayoutLayerID(name: "M1", purpose: "drawing")
-        self.activeViaID = resolvedTech.vias.first?.id ?? "VIA1"
-        self.pathWidth = defaultPathWidth(for: resolvedTech)
+        loadDocument(document, tech: resolvedTech)
+    }
+
+    /// Replaces the edited document (and optionally the technology) and
+    /// re-syncs all document-derived state: active cell, navigation,
+    /// selection, render index, and live verification sessions.
+    ///
+    /// Assigning ``editor`` directly leaves that state pointing at the old
+    /// document (a stale ``activeCellID`` makes the canvas draw nothing) —
+    /// always go through this method to swap documents.
+    public func loadDocument(_ document: LayoutDocument, tech newTech: LayoutTechDatabase? = nil) {
+        if let newTech {
+            self.tech = newTech
+            self.gridSize = newTech.grid
+            self.activeLayer = newTech.layers.first?.id ?? LayoutLayerID(name: "M1", purpose: "drawing")
+            self.activeViaID = newTech.vias.first?.id ?? "VIA1"
+            self.pathWidth = defaultPathWidth(for: newTech)
+        }
         self.editor = LayoutDocumentEditor(document: document)
         self.activeCellID = document.topCellID ?? document.cells.first?.id
         self.cellNavigationPath = Self.initialNavigationPath(document: document, activeCellID: self.activeCellID)
