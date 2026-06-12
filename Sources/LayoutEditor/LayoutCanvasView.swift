@@ -114,6 +114,16 @@ public struct LayoutCanvasView: View {
 
         if hasCmd {
             switch keyPress.characters.lowercased() {
+            case "z":
+                if hasShift {
+                    viewModel.redo()
+                } else {
+                    viewModel.undo()
+                }
+                return .handled
+            case "a":
+                viewModel.selectAllShapes()
+                return .handled
             case "=", "+":
                 viewModel.zoomInStep()
                 return .handled
@@ -223,9 +233,7 @@ public struct LayoutCanvasView: View {
             viewModel.mirrorSelectedShapes(across: .horizontal)
             return .handled
         case "d":
-            viewModel.duplicateSelectedShapes(
-                by: LayoutPoint(x: viewModel.gridSize, y: viewModel.gridSize)
-            )
+            viewModel.duplicateSelectedShapesByGridStep()
             return .handled
         default:
             break

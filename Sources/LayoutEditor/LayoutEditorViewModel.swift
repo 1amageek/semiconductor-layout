@@ -2330,6 +2330,12 @@ public final class LayoutEditorViewModel {
 
     // MARK: - Duplicate / Rotate / Mirror
 
+    /// Duplicates the selection offset by one grid step on each axis —
+    /// the default placement for the keyboard and menu duplicate commands.
+    public func duplicateSelectedShapesByGridStep() {
+        duplicateSelectedShapes(by: LayoutPoint(x: gridSize, y: gridSize))
+    }
+
     /// Copies the selection, offset by a vector, as one discrete edit.
     /// The copies get fresh identities but keep their net assignment, so
     /// a copied labeled wire honestly reports as an open until it is
@@ -2794,6 +2800,15 @@ public final class LayoutEditorViewModel {
     public func clearSelection() {
         selectedShapeIDs.removeAll()
         selectedInstanceID = nil
+    }
+
+    /// Selects every shape on a visible layer in the active cell.
+    public func selectAllShapes() {
+        selectedShapeIDs = Set(
+            documentShapes()
+                .filter { !hiddenLayers.contains($0.layer) }
+                .map(\.id)
+        )
     }
 
     // MARK: - Layer Visibility
