@@ -10,6 +10,16 @@ public struct LayoutLayerDefinition: Hashable, Sendable, Codable {
     public var fillPattern: LayoutFillPattern
     public var preferredDirection: LayoutPreferredDirection
     public var visibleByDefault: Bool
+    /// Sheet resistance in ohms per square; nil means the layer's
+    /// resistance is not modeled (estimates report it as unavailable,
+    /// never as zero).
+    public var sheetResistance: Double?
+    /// Capacitance to substrate per area, fF/um^2.
+    public var areaCapacitance: Double?
+    /// Fringe capacitance per perimeter length, fF/um.
+    public var fringeCapacitance: Double?
+    /// Electromigration current-density limit, mA per um of wire width.
+    public var maxCurrentDensity: Double?
 
     public init(
         id: LayoutLayerID,
@@ -19,7 +29,11 @@ public struct LayoutLayerDefinition: Hashable, Sendable, Codable {
         color: LayoutColor,
         fillPattern: LayoutFillPattern = .solid,
         preferredDirection: LayoutPreferredDirection = .none,
-        visibleByDefault: Bool = true
+        visibleByDefault: Bool = true,
+        sheetResistance: Double? = nil,
+        areaCapacitance: Double? = nil,
+        fringeCapacitance: Double? = nil,
+        maxCurrentDensity: Double? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -29,5 +43,9 @@ public struct LayoutLayerDefinition: Hashable, Sendable, Codable {
         self.fillPattern = fillPattern
         self.preferredDirection = preferredDirection
         self.visibleByDefault = visibleByDefault
+        self.sheetResistance = sheetResistance
+        self.areaCapacitance = areaCapacitance
+        self.fringeCapacitance = fringeCapacitance
+        self.maxCurrentDensity = maxCurrentDensity
     }
 }

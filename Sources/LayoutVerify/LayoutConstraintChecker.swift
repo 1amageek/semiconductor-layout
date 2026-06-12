@@ -29,11 +29,30 @@ public struct LayoutConstraintChecker: Sendable {
     }
 
     public func check(document: LayoutDocument, cellID: UUID) throws -> [LayoutConstraintViolation] {
+        try check(document: document, cellID: cellID, constraintIndices: nil)
+    }
+
+    public func check(
+        document: LayoutDocument,
+        cellID: UUID,
+        constraintIndices: Set<Int>
+    ) throws -> [LayoutConstraintViolation] {
+        try check(document: document, cellID: cellID, constraintIndices: Optional(constraintIndices))
+    }
+
+    private func check(
+        document: LayoutDocument,
+        cellID: UUID,
+        constraintIndices: Set<Int>?
+    ) throws -> [LayoutConstraintViolation] {
         guard let cell = document.cell(withID: cellID) else {
             throw LayoutCoreError.cellNotFound(cellID)
         }
         var violations: [LayoutConstraintViolation] = []
         for (index, constraint) in cell.constraints.enumerated() {
+            if let constraintIndices, !constraintIndices.contains(index) {
+                continue
+            }
             switch constraint {
             case .symmetry(let symmetry):
                 checkSymmetry(symmetry, index: index, cell: cell, document: document, into: &violations)
@@ -408,16 +427,29 @@ public struct LayoutConstraintChecker: Sendable {
             localBounds = localBounds.map { $0.union(box) } ?? box
         }
         guard let localBounds else { return nil }
-        let corners = [
-            LayoutPoint(x: localBounds.minX, y: localBounds.minY),
-            LayoutPoint(x: localBounds.maxX, y: localBounds.minY),
-            LayoutPoint(x: localBounds.maxX, y: localBounds.maxY),
-            LayoutPoint(x: localBounds.minX, y: localBounds.maxY),
-        ].map { instance.transform.apply(to: $0) }
-        let xs = corners.map(\.x)
-        let ys = corners.map(\.y)
-        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else {
-            return nil
+        return instance.occurrenceTransforms()
+            .map { transformRect(localBounds, by: $0) }
+            .reduce(nil as LayoutRect?) { partial, box in
+                partial.map { $0.union(box) } ?? box
+            }
+    }
+
+    private func transformRect(_ rect: LayoutRect, by transform: LayoutTransform) -> LayoutRect {
+        let first = transform.apply(to: LayoutPoint(x: rect.minX, y: rect.minY))
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for corner in [
+            LayoutPoint(x: rect.maxX, y: rect.minY),
+            LayoutPoint(x: rect.maxX, y: rect.maxY),
+            LayoutPoint(x: rect.minX, y: rect.maxY),
+        ] {
+            let mapped = transform.apply(to: corner)
+            minX = min(minX, mapped.x)
+            maxX = max(maxX, mapped.x)
+            minY = min(minY, mapped.y)
+            maxY = max(maxY, mapped.y)
         }
         return LayoutRect(
             origin: LayoutPoint(x: minX, y: minY),

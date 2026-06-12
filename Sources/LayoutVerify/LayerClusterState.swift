@@ -17,6 +17,10 @@ struct LayerClusterState {
     /// lookup.
     var clusterOfShape: [FlatShapeKey: FlatShapeKey] = [:]
 
+    /// Spatial index over cluster bounding boxes for dirty-geometry closure.
+    /// Keys are cluster keys, not shape keys.
+    var clusterGrid: MutableFlatShapeGridIndex?
+
     /// Width/area violations per cluster; clusters with none hold no entry.
     var widthAreaByCluster: [FlatShapeKey: [LayoutViolation]] = [:]
 

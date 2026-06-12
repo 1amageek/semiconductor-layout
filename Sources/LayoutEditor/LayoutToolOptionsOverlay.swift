@@ -17,10 +17,19 @@ struct LayoutToolOptionsOverlay: View {
                 angleConstraintPicker
             }
 
-            // Path width (shown for path tool)
-            if viewModel.tool == .path {
+            // Path width (shown for path-like tools). Routes are rectangle
+            // segments, so the end-cap option applies to paths only.
+            if viewModel.tool == .path || viewModel.tool == .route {
                 pathWidthField
+            }
+            if viewModel.tool == .path {
                 endCapPicker
+            }
+            if viewModel.tool == .route {
+                Toggle("Shove", isOn: $viewModel.routeShoveEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Push same-layer neighbours out of the way instead of stopping at them")
             }
         }
         .padding(.horizontal, 10)
@@ -30,6 +39,8 @@ struct LayoutToolOptionsOverlay: View {
     }
 
     private var showsAngleConstraint: Bool {
+        // Routes are always axis-aligned L-segments; showing the angle
+        // picker for them would be an inert control.
         switch viewModel.tool {
         case .polygon, .path, .ruler:
             return true

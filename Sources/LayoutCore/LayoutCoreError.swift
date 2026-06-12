@@ -9,6 +9,7 @@ public enum LayoutCoreError: Error, Sendable {
     case instanceNotFound(UUID)
     case netNotFound(UUID)
     case invalidGeometry(String)
+    case instanceCycle(parentCellID: UUID, childCellID: UUID)
 }
 
 extension LayoutCoreError: LocalizedError {
@@ -22,6 +23,8 @@ extension LayoutCoreError: LocalizedError {
         case .instanceNotFound(let id): return "Instance not found: \(id)"
         case .netNotFound(let id): return "Net not found: \(id)"
         case .invalidGeometry(let msg): return "Invalid geometry: \(msg)"
+        case .instanceCycle(let parent, let child):
+            return "Placing cell \(child) into cell \(parent) would create an instance cycle"
         }
     }
 }

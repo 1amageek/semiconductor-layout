@@ -1,4 +1,5 @@
 import SwiftUI
+import LayoutAutoGen
 import LayoutCore
 import LayoutTech
 import LayoutVerify
@@ -13,7 +14,12 @@ public final class LayoutEditorViewModel {
     public var tech: LayoutTechDatabase
     public var tool: LayoutTool = .select
     public var activeCellID: UUID?
-    public var activeLayer: LayoutLayerID
+    public var activeLayer: LayoutLayerID {
+        didSet {
+            guard oldValue != activeLayer else { return }
+            routeFollowActiveLayer()
+        }
+    }
     public var activeViaID: String
     public var zoom: CGFloat = 1.0
     public var offset: CGPoint = .zero
@@ -121,6 +127,15 @@ public final class LayoutEditorViewModel {
     /// on every edit — a third verdict channel beside design rules and
     /// connectivity.
     public private(set) var constraintViolations: [LayoutConstraintViolation] = []
+    private var liveConstraints: LiveConstraintSession?
+
+    // MARK: - Live LVS
+
+    public private(set) var lvsExtraction: DeviceExtractionResult?
+    public private(set) var lvsComparison: NetlistComparison?
+
+    private var lvsReference: ComparisonNetlist?
+    private var liveLVS: LiveLVSSession?
 
     // MARK: - Scale Rendering
 
@@ -163,6 +178,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
     }
 
@@ -293,25 +309,806 @@ public final class LayoutEditorViewModel {
         activeCell?.constraints ?? []
     }
 
-    /// Re-evaluates the active cell's constraints against the current
-    /// geometry. Constraint sets are small, so a full check per edit is
-    /// exact and cheap — there is no incremental tier to go stale.
+    /// Rebuilds the live constraint session after structural changes such
+    /// as constraint CRUD, cell navigation, undo/redo, or document loads.
     private func refreshConstraintViolations() {
         guard let cellID = activeCellID,
               let cell = editor.document.cell(withID: cellID),
               !cell.constraints.isEmpty else {
+            liveConstraints = nil
             constraintViolations = []
             return
         }
         do {
-            constraintViolations = try LayoutConstraintChecker()
-                .check(document: editor.document, cellID: cellID)
+            if let liveConstraints {
+                constraintViolations = try liveConstraints.rebuild(
+                    document: editor.document,
+                    cellID: cellID
+                )
+            } else {
+                let session = try LiveConstraintSession(
+                    document: editor.document,
+                    cellID: cellID
+                )
+                liveConstraints = session
+                constraintViolations = session.currentViolations
+            }
         } catch {
             // Only reachable if the active cell vanished mid-call; surface
             // it and report no verdict rather than a stale one.
+            liveConstraints = nil
             handleError(error)
             constraintViolations = []
         }
+    }
+
+    /// Applies a geometry delta to the live constraint session. A rejected
+    /// delta is treated like the other live-session failures: surface it and
+    /// rebuild from the document so the displayed verdict remains truthful.
+    private func applyConstraintDelta(_ delta: LayoutEditDelta) {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID),
+              !cell.constraints.isEmpty else {
+            liveConstraints = nil
+            constraintViolations = []
+            return
+        }
+        guard let liveConstraints else {
+            refreshConstraintViolations()
+            return
+        }
+        do {
+            constraintViolations = try liveConstraints.apply(delta).violations
+        } catch {
+            handleError(error)
+            refreshConstraintViolations()
+        }
+    }
+
+    // MARK: - LVS Plumbing
+
+    public var liveLVSPassed: Bool? {
+        guard let extraction = lvsExtraction, let comparison = lvsComparison else { return nil }
+        return extraction.issues.isEmpty && comparison.passed
+    }
+
+    public func setLVSReference(_ reference: ComparisonNetlist?) {
+        lvsReference = reference
+        liveLVS = nil
+        resyncLiveLVS()
+    }
+
+    /// Loads the LVS reference from SPICE `.subckt` text. Parse failures
+    /// are surfaced and leave the previous reference untouched.
+    public func loadLVSReference(fromSubckt text: String, subcircuit: String? = nil) {
+        do {
+            setLVSReference(try SPICESubcktReader().read(text, subcircuit: subcircuit))
+        } catch {
+            handleError(error)
+        }
+    }
+
+    private func resyncLiveLVS() {
+        guard let reference = lvsReference, let cellID = activeCellID else {
+            liveLVS = nil
+            lvsExtraction = nil
+            lvsComparison = nil
+            return
+        }
+        do {
+            if let liveLVS {
+                let update = try liveLVS.rebuild(document: editor.document, cellID: cellID)
+                lvsExtraction = update.extraction
+                lvsComparison = update.comparison
+            } else {
+                let session = try LiveLVSSession(
+                    document: editor.document,
+                    tech: tech,
+                    reference: reference,
+                    cellID: cellID
+                )
+                liveLVS = session
+                lvsExtraction = session.currentExtraction
+                lvsComparison = session.currentComparison
+            }
+        } catch {
+            liveLVS = nil
+            lvsExtraction = nil
+            lvsComparison = nil
+            handleError(error)
+        }
+    }
+
+    private func applyLVSDelta(_ delta: LayoutEditDelta) {
+        guard let liveLVS else { return }
+        do {
+            let update = try liveLVS.apply(delta)
+            lvsExtraction = update.extraction
+            lvsComparison = update.comparison
+        } catch {
+            handleError(error)
+            resyncLiveLVS()
+        }
+    }
+
+    // MARK: - Electrical (N4)
+
+    /// Lumped R/C/tau estimate for a declared net's top-level geometry.
+    /// nil when the net has no geometry; unavailable quantities inside
+    /// the estimate stay nil (never zero).
+    public func electricalEstimate(forNet netID: UUID) -> LayoutElectricalEstimate? {
+        guard let cellID = editTargetCellID,
+              let cell = editor.document.cell(withID: cellID) else { return nil }
+        let shapes = cell.shapes.filter { $0.netID == netID }
+        let vias = cell.vias.filter { $0.netID == netID }
+        guard !shapes.isEmpty || !vias.isEmpty else { return nil }
+        return LayoutElectricalEstimator(tech: tech).estimate(shapes: shapes, vias: vias)
+    }
+
+    /// Electromigration advisories: nets with a declared current spec
+    /// whose narrowest modeled wire is under the layer's EM width
+    /// requirement.
+    public var electricalAdvisories: [String] {
+        guard let cellID = editTargetCellID,
+              let cell = editor.document.cell(withID: cellID) else { return [] }
+        let estimator = LayoutElectricalEstimator(tech: tech)
+        var advisories: [String] = []
+        for net in cell.nets.sorted(by: { $0.name < $1.name }) {
+            guard let current = net.currentSpec else { continue }
+            let shapes = cell.shapes.filter { $0.netID == net.id }
+            guard !shapes.isEmpty else { continue }
+            let estimate = estimator.estimate(shapes: shapes, vias: [])
+            guard let minimumWidth = estimate.minimumWireWidth else { continue }
+            for layer in Set(shapes.map(\.layer)).sorted(by: { $0.name < $1.name }) {
+                if let required = estimator.requiredWidth(forCurrent: current, layer: layer),
+                   minimumWidth < required {
+                    advisories.append(String(
+                        format: "Net %@: %.3f um wire under the %.3f um EM width for %.1f mA on %@",
+                        net.name, minimumWidth, required, current, layer.name
+                    ))
+                    break
+                }
+            }
+        }
+        return advisories
+    }
+
+    /// Live estimate of the route being drawn: the preview geometry plus
+    /// the anchor net's existing conductors. nil when not routing or the
+    /// tech models nothing.
+    public func routeElectricalEstimate() -> LayoutElectricalEstimate? {
+        guard techModelsElectrical,
+              let preview = routePreview,
+              !preview.delta.addedShapes.isEmpty else { return nil }
+        var shapes = preview.delta.addedShapes
+        var vias = preview.delta.addedVias
+        if let netID = routeSession?.currentAnchor.netID,
+           let cellID = editTargetCellID,
+           let cell = editor.document.cell(withID: cellID) {
+            shapes += cell.shapes.filter { $0.netID == netID }
+            vias += cell.vias.filter { $0.netID == netID }
+        }
+        return LayoutElectricalEstimator(tech: tech).estimate(shapes: shapes, vias: vias)
+    }
+
+    /// Whether the technology models any electrical constants at all.
+    private var techModelsElectrical: Bool {
+        tech.layers.contains {
+            $0.sheetResistance != nil || $0.areaCapacitance != nil
+                || $0.fringeCapacitance != nil || $0.maxCurrentDensity != nil
+        }
+    }
+
+    // MARK: - Trust report (N6)
+
+    /// The live whole-picture verdict: per axis, clean / findings /
+    /// explicitly unavailable — absence of verification is stated, never
+    /// implied as clean.
+    public var trustReport: LayoutTrustReport {
+        let drc: LayoutTrustReport.AxisVerdict =
+            violations.isEmpty ? .clean : .findings(violations.count)
+
+        let connectivity: LayoutTrustReport.AxisVerdict
+        if let analysis = connectivityAnalysis {
+            let count = analysis.shorts.count + analysis.opens.count
+            connectivity = count == 0 ? .clean : .findings(count)
+        } else {
+            connectivity = .unavailable("live connectivity is off")
+        }
+
+        let constraints: LayoutTrustReport.AxisVerdict
+        if activeCellConstraints.isEmpty {
+            constraints = .unavailable("no constraints declared")
+        } else {
+            constraints = constraintViolations.isEmpty
+                ? .clean
+                : .findings(constraintViolations.count)
+        }
+
+        let lvs: LayoutTrustReport.AxisVerdict
+        if let comparison = lvsComparison {
+            let count = comparison.unmatchedExtractedDevices.count
+                + comparison.unmatchedReferenceDevices.count
+                + comparison.parameterMismatches.count
+                + (lvsExtraction?.issues.count ?? 0)
+            lvs = count == 0 ? .clean : .findings(count)
+        } else {
+            lvs = .unavailable("no reference netlist loaded")
+        }
+
+        let electrical: LayoutTrustReport.AxisVerdict
+        if techModelsElectrical {
+            let advisories = electricalAdvisories
+            electrical = advisories.isEmpty ? .clean : .findings(advisories.count)
+        } else {
+            electrical = .unavailable("no electrical constants in tech")
+        }
+
+        return LayoutTrustReport(
+            drc: drc,
+            staleDRCKinds: staleViolationKinds.map(\.rawValue).sorted(),
+            connectivity: connectivity,
+            constraints: constraints,
+            lvs: lvs,
+            electrical: electrical,
+            verificationPending: inPlaceVerificationPending
+        )
+    }
+
+    // MARK: - Goal commands (N5)
+
+    /// Audit log of executed goal commands with their surrounding
+    /// verdicts; replaying the same commands on the same document
+    /// reproduces the same records.
+    public private(set) var goalLog: [LayoutGoalRecord] = []
+
+    /// Executes one goal command through the same implementations the
+    /// keymap uses — the human/agent parity surface.
+    @discardableResult
+    public func execute(_ command: LayoutGoalCommand) -> Bool {
+        let violationsBefore = violations.count
+        let opensBefore = connectivityAnalysis?.opens.count ?? 0
+        let lvsBefore = lvsComparison?.matchedReferenceDeviceCount ?? 0
+
+        let succeeded: Bool
+        switch command {
+        case .fixAllViolations:
+            let sweep = fixAllViolations()
+            succeeded = sweep?.reachedFixedPoint ?? false
+        case .finishNet(let netID):
+            succeeded = finishNet(netID)
+        case .finishAllNets:
+            succeeded = finishAllNets() > 0 || connectivityAnalysis?.flylines.isEmpty == true
+        case .annotateNetsFromLabels:
+            succeeded = annotateNetsFromLabels() != nil
+        case .placeIntentDevice(let deviceID, let point):
+            if let device = unplacedIntentDevices.first(where: { $0.id == deviceID }) {
+                armIntentPlacement(device)
+                placeArmedIntentDevice(at: point)
+                succeeded = unplacedIntentDevices.allSatisfy { $0.id != deviceID }
+            } else {
+                handleError(LayoutEditorError.intentDeviceNotFound(deviceID))
+                succeeded = false
+            }
+        }
+
+        goalLog.append(LayoutGoalRecord(
+            command: command,
+            succeeded: succeeded,
+            violationsBefore: violationsBefore,
+            violationsAfter: violations.count,
+            opensBefore: opensBefore,
+            opensAfter: connectivityAnalysis?.opens.count ?? 0,
+            lvsMatchedBefore: lvsBefore,
+            lvsMatchedAfter: lvsComparison?.matchedReferenceDeviceCount ?? 0
+        ))
+        return succeeded
+    }
+
+    /// Replays a command sequence in order; stops at the first failure
+    /// and reports whether every command succeeded.
+    @discardableResult
+    public func replay(_ commands: [LayoutGoalCommand]) -> Bool {
+        for command in commands {
+            guard execute(command) else { return false }
+        }
+        return true
+    }
+
+    // MARK: - SDL (N2)
+
+    /// Outcome of the label→net annotation pass.
+    public struct NetAnnotationSummary: Sendable, Equatable {
+        public var netsCreated: Int
+        public var shapesAnnotated: Int
+        public var viasAnnotated: Int
+        /// Labels whose position touches no conductor on their layer.
+        public var unmatchedLabels: [String]
+        /// Child-occurrence conductors in annotated islands that a
+        /// document edit cannot reach (counted, never silently skipped).
+        public var unreachableChildElements: Int
+    }
+
+    /// Derives net assignments from text labels — the bridge that makes
+    /// an imported GDS (where every netID is nil) engage connectivity,
+    /// opens/shorts and LVS. Each label names a net; the whole connected
+    /// island under the label takes it. One undo unit.
+    @discardableResult
+    public func annotateNetsFromLabels() -> NetAnnotationSummary? {
+        guard let cellID = editTargetCellID,
+              let cell = editor.document.cell(withID: cellID) else { return nil }
+        guard !cell.labels.isEmpty else {
+            return NetAnnotationSummary(
+                netsCreated: 0,
+                shapesAnnotated: 0,
+                viasAnnotated: 0,
+                unmatchedLabels: [],
+                unreachableChildElements: 0
+            )
+        }
+        do {
+            let analysis = try LayoutConnectivityExtractor().extract(
+                document: editor.document,
+                tech: tech,
+                cellID: cellID
+            )
+            var summary = NetAnnotationSummary(
+                netsCreated: 0,
+                shapesAnnotated: 0,
+                viasAnnotated: 0,
+                unmatchedLabels: [],
+                unreachableChildElements: 0
+            )
+            try editor.perform { doc in
+                guard var cell = doc.cell(withID: cellID) else {
+                    throw LayoutCoreError.cellNotFound(cellID)
+                }
+                var netIDByName = Dictionary(
+                    cell.nets.map { ($0.name, $0.id) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                let topShapeIDs = Set(cell.shapes.map(\.id))
+                let topViaIDs = Set(cell.vias.map(\.id))
+
+                for label in cell.labels.sorted(by: { $0.text < $1.text }) {
+                    // The island under the label: any net whose member
+                    // shape on the label's layer contains the position.
+                    let island = analysis.nets.first { net in
+                        net.shapeIDs.contains { shapeID in
+                            guard let shape = cell.shapes.first(where: { $0.id == shapeID }),
+                                  shape.layer == label.layer else { return false }
+                            return LayoutGeometryAnalysis.contains(label.position, in: shape.geometry)
+                        }
+                    }
+                    guard let island else {
+                        summary.unmatchedLabels.append(label.text)
+                        continue
+                    }
+                    let netID: UUID
+                    if let existing = netIDByName[label.text] {
+                        netID = existing
+                    } else {
+                        let net = LayoutNet(name: label.text)
+                        cell.nets.append(net)
+                        netIDByName[label.text] = net.id
+                        netID = net.id
+                        summary.netsCreated += 1
+                    }
+                    for shapeID in island.shapeIDs {
+                        if topShapeIDs.contains(shapeID),
+                           let index = cell.shapes.firstIndex(where: { $0.id == shapeID }) {
+                            if cell.shapes[index].netID != netID {
+                                cell.shapes[index].netID = netID
+                                summary.shapesAnnotated += 1
+                            }
+                        } else {
+                            summary.unreachableChildElements += 1
+                        }
+                    }
+                    for viaID in island.viaIDs {
+                        if topViaIDs.contains(viaID),
+                           let index = cell.vias.firstIndex(where: { $0.id == viaID }) {
+                            if cell.vias[index].netID != netID {
+                                cell.vias[index].netID = netID
+                                summary.viasAnnotated += 1
+                            }
+                        } else {
+                            summary.unreachableChildElements += 1
+                        }
+                    }
+                }
+                doc.updateCell(cell)
+            }
+            resyncAfterInstanceEdit()
+            return summary
+        } catch {
+            handleError(error)
+            return nil
+        }
+    }
+
+    /// The intent device armed for ghost placement; the next canvas click
+    /// places it.
+    public private(set) var pendingIntentDevice: ComparisonNetlist.Device?
+
+    /// Reference devices the layout does not realize yet — the SDL
+    /// "unplaced" list (empty when no reference is loaded).
+    public var unplacedIntentDevices: [ComparisonNetlist.Device] {
+        lvsComparison?.unmatchedReferenceDevices ?? []
+    }
+
+    public func armIntentPlacement(_ device: ComparisonNetlist.Device) {
+        pendingIntentDevice = device
+    }
+
+    public func disarmIntentPlacement() {
+        pendingIntentDevice = nil
+    }
+
+    /// Places the armed intent device at `point`: generates (or reuses) a
+    /// parameter-exact device cell and instantiates it through the normal
+    /// instance verb, so every live session follows.
+    public func placeArmedIntentDevice(at point: LayoutPoint) {
+        guard let device = pendingIntentDevice else { return }
+        pendingIntentDevice = nil
+        do {
+            let kindID: String
+            switch device.kind {
+            case .nmos: kindID = "nmos"
+            case .pmos: kindID = "pmos"
+            }
+            let cellName = String(
+                format: "%@_w%.3f_l%.3f_nf%d",
+                kindID, device.parameters.width, device.parameters.length,
+                device.parameters.multiplier
+            )
+            let deviceCellID: UUID
+            if let existing = editor.document.cells.first(where: { $0.name == cellName }) {
+                deviceCellID = existing.id
+            } else {
+                var generated = try MOSFETCellGenerator().generateCell(
+                    deviceKindID: kindID,
+                    instanceName: cellName,
+                    parameters: [
+                        "w": device.parameters.width,
+                        "l": device.parameters.length,
+                        "nf": Double(device.parameters.multiplier),
+                    ],
+                    tech: tech
+                )
+                generated.name = cellName
+                let cell = generated
+                try editor.perform { doc in
+                    doc.cells.append(cell)
+                }
+                deviceCellID = cell.id
+            }
+            placeInstance(cellID: deviceCellID, name: device.id, at: point)
+        } catch {
+            handleError(error)
+        }
+    }
+
+    // MARK: - finish-net (N3)
+
+    /// Completes one open of `netID` with the auto-route machinery,
+    /// gated: the net's open count must shrink and DRC must not regress,
+    /// else the commit is rolled back bit-exact. Surfaced errors carry
+    /// the blocking reason; the document is never left half-routed.
+    @discardableResult
+    public func finishNet(_ netID: UUID) -> Bool {
+        guard !isEditingInPlace else {
+            handleError(LayoutEditorError.routingUnavailableInPlace)
+            return false
+        }
+        guard let analysis = connectivityAnalysis,
+              let flyline = analysis.flylines.first(where: { $0.netID == netID }) else {
+            handleError(LayoutEditorError.netAlreadyConnected(netID))
+            return false
+        }
+        let flylinesBefore = analysis.flylines.count { $0.netID == netID }
+        let violationsBefore = violations.count
+
+        cancelRoute()
+        beginRoute(at: flyline.start)
+        guard isRouting else { return false }
+        completeRoute(to: flyline.end)
+        guard let preview = routePreview, preview.isLegal else {
+            let reason: String
+            if case .blockedByViolations(let blocking)? = routePreview?.stopReason,
+               let first = blocking.first {
+                reason = first.message
+            } else {
+                reason = "no clear path inside the search window"
+            }
+            cancelRoute()
+            handleError(LayoutEditorError.finishNetBlocked(reason))
+            return false
+        }
+        commitRoute()
+
+        let flylinesAfter = connectivityAnalysis?.flylines.count { $0.netID == netID } ?? 0
+        if flylinesAfter >= flylinesBefore || violations.count > violationsBefore {
+            undo()
+            handleError(LayoutEditorError.finishNetRegressed)
+            return false
+        }
+        return true
+    }
+
+    /// Finishes every finishable open net to a fixed point. Nets that
+    /// fail keep their surfaced reason and are skipped; the return value
+    /// is the number of completed connections.
+    @discardableResult
+    public func finishAllNets(budget: Int = 64) -> Int {
+        var completed = 0
+        var failed: Set<UUID> = []
+        for _ in 0..<budget {
+            guard let flyline = connectivityAnalysis?.flylines.first(where: {
+                !failed.contains($0.netID)
+            }) else { break }
+            if finishNet(flyline.netID) {
+                completed += 1
+            } else {
+                failed.insert(flyline.netID)
+            }
+        }
+        return completed
+    }
+
+    // MARK: - Repairs (N1)
+
+    /// Computes a verified repair (or the typed reason none exists) for
+    /// one current violation. Runs batch DRC mirrors internally — a
+    /// user-initiated query, not a per-frame call.
+    public func repairOutcome(for violation: LayoutViolation) -> LayoutRepairOutcome? {
+        guard let cellID = editTargetCellID else { return nil }
+        do {
+            return try LayoutRepairEngine(
+                document: editor.document,
+                tech: tech,
+                cellID: cellID
+            ).repair(for: violation)
+        } catch {
+            handleError(error)
+            return nil
+        }
+    }
+
+    /// Applies a computed repair through the single edit stream (one undo
+    /// unit; every live session follows).
+    public func applyRepair(_ repair: LayoutRepair) {
+        commitDelta(repair.delta)
+    }
+
+    /// Repairs every repairable violation to a fixed point and reports
+    /// what was applied and what remains (with reasons). Each repair is
+    /// one undo step, in application order.
+    @discardableResult
+    public func fixAllViolations(budget: Int = 64) -> LayoutRepairSweep? {
+        guard let cellID = editTargetCellID else { return nil }
+        do {
+            let engine = LayoutRepairEngine(
+                document: editor.document,
+                tech: tech,
+                cellID: cellID
+            )
+            let (repairs, sweep) = try engine.sweep(budget: budget)
+            for repair in repairs {
+                commitDelta(repair.delta)
+            }
+            return sweep
+        } catch {
+            handleError(error)
+            return nil
+        }
+    }
+
+    // MARK: - Focus / Navigation (N1 surfacing)
+
+    /// Frames a micron-space rect in the canvas with padding.
+    public func zoom(to rect: LayoutRect, padding: Double = 1.0) {
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+        let width = rect.size.width + 2 * padding
+        let height = rect.size.height + 2 * padding
+        guard width > 0, height > 0 else { return }
+        let scale = min(
+            Double(canvasSize.width) / width,
+            Double(canvasSize.height) / height
+        )
+        zoom = CGFloat(min(max(scale, 0.01), 10_000))
+        offset = CGPoint(
+            x: -CGFloat(rect.minX - padding) * zoom
+                + (canvasSize.width - CGFloat(width) * zoom) / 2,
+            y: -CGFloat(rect.minY - padding) * zoom
+                + (canvasSize.height - CGFloat(height) * zoom) / 2
+        )
+    }
+
+    /// The violation currently focused by n/N cycling, highlighted on
+    /// the canvas.
+    public private(set) var focusedViolationID: UUID?
+
+    /// Cycles canvas focus through the current violations (forward or
+    /// backward), zooming to each — the triage loop.
+    public func focusNextViolation(forward: Bool = true) {
+        let all = violations
+        guard !all.isEmpty else {
+            focusedViolationID = nil
+            return
+        }
+        let currentIndex = focusedViolationID.flatMap { id in
+            all.firstIndex(where: { $0.id == id })
+        }
+        let nextIndex: Int
+        if let currentIndex {
+            nextIndex = (currentIndex + (forward ? 1 : all.count - 1)) % all.count
+        } else {
+            nextIndex = forward ? 0 : all.count - 1
+        }
+        let target = all[nextIndex]
+        focusedViolationID = target.id
+        zoom(to: target.region)
+    }
+
+    public func focusViolation(_ violation: LayoutViolation) {
+        focusedViolationID = violation.id
+        zoom(to: violation.region)
+    }
+
+    // MARK: - Interactive Routing
+
+    /// DRC-enforced route drawing on the active layer. The session previews
+    /// against its own incremental-DRC mirror; the document is untouched
+    /// until ``commitRoute()`` pushes the legal shapes through the single
+    /// edit stream.
+    private var routeSession: InteractiveRouteSession?
+
+    /// When enabled, a blocked route tick pushes same-layer neighbours
+    /// out of the way (bounded, atomic) instead of stopping short.
+    public var routeShoveEnabled = false
+
+    /// Last route tick, for the canvas preview: legal geometry, the legal
+    /// end, and the stop reason when the requested point was blocked.
+    public private(set) var routePreview: RoutePreview?
+
+    public var isRouting: Bool { routeSession != nil }
+
+    /// Starts a route at `point` on the active layer. The net is inherited
+    /// from the topmost shape under the start point so same-net proximity
+    /// is legal while foreign nets still block.
+    public func beginRoute(at point: LayoutPoint) {
+        guard let cellID = activeCellID else { return }
+        guard !isEditingInPlace else {
+            handleError(LayoutEditorError.routingUnavailableInPlace)
+            return
+        }
+        cancelRoute()
+        do {
+            routeSession = try InteractiveRouteSession(
+                document: editor.document,
+                cellID: cellID,
+                tech: tech,
+                start: RouteAnchor(
+                    point: snapToGrid(point),
+                    layer: activeLayer,
+                    netID: netID(at: point, on: activeLayer)
+                ),
+                mode: routeShoveEnabled ? .shove : .manual,
+                width: pathWidth > 0 ? pathWidth : nil
+            )
+            routePreview = nil
+        } catch {
+            handleError(error)
+        }
+    }
+
+    /// Completes the current route to `target` with a window-local path
+    /// search. The search is confined to the bounding window of the route
+    /// anchor and the target (plus a margin); no path inside that window
+    /// is an explicit error, never a silent detour.
+    public func completeRoute(to target: LayoutPoint, windowMargin: Double = 2.0) {
+        guard let session = routeSession else { return }
+        let anchor = session.currentAnchor
+        let snappedTarget = snapToGrid(target)
+        let width = pathWidth > 0 ? pathWidth : (tech.ruleSet(for: anchor.layer)?.minWidth ?? 0.1)
+        let spacing = tech.ruleSet(for: anchor.layer)?.minSpacing ?? 0
+        let window = LayoutRect(
+            origin: LayoutPoint(
+                x: min(anchor.point.x, snappedTarget.x) - windowMargin,
+                y: min(anchor.point.y, snappedTarget.y) - windowMargin
+            ),
+            size: LayoutSize(
+                width: abs(anchor.point.x - snappedTarget.x) + 2 * windowMargin,
+                height: abs(anchor.point.y - snappedTarget.y) + 2 * windowMargin
+            )
+        )
+        let obstacles = flattenedDocumentShapes()
+            .filter { $0.layer == anchor.layer && (anchor.netID == nil || $0.netID != anchor.netID) }
+            .map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
+            .filter { $0.intersects(window) }
+        let path = RouteAutoCompleter().findPath(RouteAutoCompleter.Request(
+            start: anchor.point,
+            target: snappedTarget,
+            window: window,
+            obstacles: obstacles,
+            clearance: width / 2 + spacing,
+            step: max(gridSize, 0.01)
+        ))
+        guard let path else {
+            handleError(LayoutEditorError.routeWindowMiss)
+            return
+        }
+        do {
+            routePreview = try routeSession?.proposePath(Array(path.dropFirst()))
+        } catch {
+            handleError(error)
+        }
+    }
+
+    /// Keeps the route session's layer in lockstep with the palette: a
+    /// layer change during routing freezes the current leg and drops a
+    /// via at its legal end. A failed switch (no via, blocked landing)
+    /// is surfaced and the route stays on the previous layer.
+    private func routeFollowActiveLayer() {
+        guard routeSession != nil,
+              routeSession?.currentAnchor.layer != activeLayer else { return }
+        do {
+            routePreview = try routeSession?.switchLayer(to: activeLayer)
+        } catch {
+            handleError(error)
+        }
+    }
+
+    public func updateRoute(to point: LayoutPoint) {
+        guard routeSession != nil else { return }
+        do {
+            routePreview = try routeSession?.tick(to: point)
+        } catch {
+            handleError(error)
+            cancelRoute()
+        }
+    }
+
+    /// Commits the legal part of the current route through `commitDelta`
+    /// (one undo unit, all live systems follow) and ends the session.
+    /// Returns the committed route's legal end so callers can chain the
+    /// next segment from there.
+    @discardableResult
+    public func commitRoute() -> LayoutPoint? {
+        guard routeSession != nil else { return nil }
+        let legalEnd = routePreview?.legalEnd
+        let delta = routeSession?.commit() ?? LayoutEditDelta()
+        routeSession = nil
+        routePreview = nil
+        guard !delta.isEmpty else { return nil }
+        commitDelta(delta)
+        return legalEnd
+    }
+
+    public func cancelRoute() {
+        guard routeSession != nil else { return }
+        // The session only mutates its own DRC mirror, so a failed cancel
+        // cannot corrupt the document; dropping the session is safe either
+        // way, but the error is still surfaced.
+        do {
+            try routeSession?.cancel()
+        } catch {
+            handleError(error)
+        }
+        routeSession = nil
+        routePreview = nil
+    }
+
+    private func netID(at point: LayoutPoint, on layer: LayoutLayerID) -> UUID? {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID) else { return nil }
+        for shape in cell.shapes.reversed() where shape.layer == layer {
+            if LayoutGeometryAnalysis.contains(point, in: shape.geometry) {
+                return shape.netID
+            }
+        }
+        return nil
     }
 
     /// Adds a persisted constraint to the active cell (undoable) and
@@ -360,12 +1157,92 @@ public final class LayoutEditorViewModel {
     /// Structural changes (instances, cell navigation, undo/redo,
     /// document loads) land here; geometry deltas instead go through
     /// `LayoutRenderIndex.apply` in lockstep with the document.
+    ///
+    /// The active-element index shares exactly these boundaries, so it is
+    /// rebuilt here too: both are derived state over the active cell that
+    /// follows geometry deltas in O(delta) between structural rebuilds.
     private func rebuildRenderIndex() {
+        rebuildActiveElementIndex()
         guard activeCellID != nil else {
             renderIndex = nil
             return
         }
         renderIndex = LayoutRenderIndex(shapes: flattenedDocumentShapes())
+    }
+
+    // MARK: - Active-Element Index
+
+    /// Current top-level shapes of the active cell by ID plus the array
+    /// positions of shapes and vias, maintained O(delta) through the two
+    /// document-mutation funnels (`commitDelta` and the mirror-drag path).
+    /// Per-tick verbs and delta application never rescan the cell.
+    private var activeShapesByID: [UUID: LayoutShape] = [:]
+    private var activeShapeIndexByID: [UUID: Int] = [:]
+    private var activeViaIndexByID: [UUID: Int] = [:]
+    private var activeShapeCount = 0
+    private var activeViaCount = 0
+
+    private func rebuildActiveElementIndex() {
+        // A structural change (undo, navigation, load) can invalidate the
+        // entered in-place path; dropping it is the truthful reaction, not
+        // editing through a dangling context.
+        if !inPlaceInstancePath.isEmpty, resolveInPlacePath() == nil {
+            inPlaceInstancePath = []
+            inPlaceVerificationPending = false
+            selectedShapeIDs.removeAll()
+        }
+        activeShapesByID = [:]
+        activeShapeIndexByID = [:]
+        activeViaIndexByID = [:]
+        activeShapeCount = 0
+        activeViaCount = 0
+        guard let cellID = editTargetCellID,
+              let cell = editor.document.cell(withID: cellID) else { return }
+        activeShapeCount = cell.shapes.count
+        activeViaCount = cell.vias.count
+        activeShapesByID.reserveCapacity(cell.shapes.count)
+        activeShapeIndexByID.reserveCapacity(cell.shapes.count)
+        for (index, shape) in cell.shapes.enumerated() {
+            activeShapesByID[shape.id] = shape
+            activeShapeIndexByID[shape.id] = index
+        }
+        for (index, via) in cell.vias.enumerated() {
+            activeViaIndexByID[via.id] = index
+        }
+    }
+
+    /// Applies the delta to the document and keeps the active-element
+    /// index in lockstep. Every document mutation that is expressible as
+    /// a delta must go through here.
+    private func mutateDocument(_ delta: LayoutEditDelta, transient: Bool) throws {
+        guard let cellID = editTargetCellID else { return }
+        if transient {
+            try editor.performTransient { doc in
+                try applyDelta(delta, to: &doc, cellID: cellID)
+            }
+        } else {
+            try editor.perform { doc in
+                try applyDelta(delta, to: &doc, cellID: cellID)
+            }
+        }
+        for shape in delta.updatedShapes {
+            activeShapesByID[shape.id] = shape
+        }
+        if delta.removedShapeIDs.isEmpty && delta.removedViaIDs.isEmpty {
+            for (offset, shape) in delta.addedShapes.enumerated() {
+                activeShapesByID[shape.id] = shape
+                activeShapeIndexByID[shape.id] = activeShapeCount + offset
+            }
+            activeShapeCount += delta.addedShapes.count
+            for (offset, via) in delta.addedVias.enumerated() {
+                activeViaIndexByID[via.id] = activeViaCount + offset
+            }
+            activeViaCount += delta.addedVias.count
+        } else {
+            // Removals shift later array positions; rebuild the index in
+            // one pass instead of tracking the shifts.
+            rebuildActiveElementIndex()
+        }
     }
 
     /// The level-of-detail draw plan for the current viewport, or `nil`
@@ -438,19 +1315,25 @@ public final class LayoutEditorViewModel {
     /// antenna tier immediately; transient (gesture) edits defer it and
     /// report it via ``staleViolationKinds``.
     private func commitDelta(_ delta: LayoutEditDelta, transient: Bool = false) {
-        guard let cellID = activeCellID else { return }
+        guard editTargetCellID != nil else { return }
         do {
-            if transient {
-                try editor.performTransient { doc in
-                    try Self.applyDelta(delta, to: &doc, cellID: cellID)
-                }
-            } else {
-                try editor.perform { doc in
-                    try Self.applyDelta(delta, to: &doc, cellID: cellID)
-                }
-            }
+            try mutateDocument(delta, transient: transient)
         } catch {
             handleError(error)
+            return
+        }
+
+        if isEditingInPlace {
+            // Child-space deltas cannot feed the top-context sessions.
+            // Discrete edits re-verify exactly (full resync, fan-out to
+            // all occurrences included); gesture ticks redraw immediately
+            // and declare the verdicts stale until the gesture ends.
+            if transient {
+                inPlaceVerificationPending = true
+                rebuildRenderIndex()
+            } else {
+                resyncAfterInPlaceEdit()
+            }
             return
         }
 
@@ -474,14 +1357,16 @@ public final class LayoutEditorViewModel {
             }
         }
         applyConnectivityDelta(delta)
-        refreshConstraintViolations()
+        applyConstraintDelta(delta)
+        applyLVSDelta(delta)
         renderIndex?.apply(delta)
     }
 
     /// Applies a delta to the cell with the session's ordering semantics:
     /// updated elements keep their position, removed elements drop out,
-    /// added elements append in delta order.
-    private static func applyDelta(
+    /// added elements append in delta order. Positions resolve through
+    /// the active-element index — O(delta), no cell rescans.
+    private func applyDelta(
         _ delta: LayoutEditDelta,
         to doc: inout LayoutDocument,
         cellID: UUID
@@ -490,29 +1375,39 @@ public final class LayoutEditorViewModel {
             throw LayoutCoreError.cellNotFound(cellID)
         }
         for shape in delta.updatedShapes {
-            guard let index = cell.shapes.firstIndex(where: { $0.id == shape.id }) else {
+            guard let index = activeShapeIndexByID[shape.id],
+                  cell.shapes.indices.contains(index),
+                  cell.shapes[index].id == shape.id else {
                 throw LayoutCoreError.shapeNotFound(shape.id)
             }
             cell.shapes[index] = shape
         }
-        for id in delta.removedShapeIDs {
-            guard let index = cell.shapes.firstIndex(where: { $0.id == id }) else {
-                throw LayoutCoreError.shapeNotFound(id)
+        if !delta.removedShapeIDs.isEmpty {
+            for id in delta.removedShapeIDs {
+                guard activeShapeIndexByID[id] != nil else {
+                    throw LayoutCoreError.shapeNotFound(id)
+                }
             }
-            cell.shapes.remove(at: index)
+            let removed = Set(delta.removedShapeIDs)
+            cell.shapes.removeAll { removed.contains($0.id) }
         }
         cell.shapes.append(contentsOf: delta.addedShapes)
         for via in delta.updatedVias {
-            guard let index = cell.vias.firstIndex(where: { $0.id == via.id }) else {
+            guard let index = activeViaIndexByID[via.id],
+                  cell.vias.indices.contains(index),
+                  cell.vias[index].id == via.id else {
                 throw LayoutCoreError.viaNotFound(via.id)
             }
             cell.vias[index] = via
         }
-        for id in delta.removedViaIDs {
-            guard let index = cell.vias.firstIndex(where: { $0.id == id }) else {
-                throw LayoutCoreError.viaNotFound(id)
+        if !delta.removedViaIDs.isEmpty {
+            for id in delta.removedViaIDs {
+                guard activeViaIndexByID[id] != nil else {
+                    throw LayoutCoreError.viaNotFound(id)
+                }
             }
-            cell.vias.remove(at: index)
+            let removed = Set(delta.removedViaIDs)
+            cell.vias.removeAll { removed.contains($0.id) }
         }
         cell.vias.append(contentsOf: delta.addedVias)
         doc.updateCell(cell)
@@ -528,6 +1423,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
     }
 
@@ -536,6 +1432,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
     }
 
@@ -578,6 +1475,240 @@ public final class LayoutEditorViewModel {
         navigate(to: selectedTargetCellID, path: nextPath, recordBack: true)
     }
 
+    public func placeInstance(cellID childCellID: UUID, name: String, at point: LayoutPoint) {
+        guard let parentCellID = editTargetCellID else { return }
+        guard canPlaceInstance(childCellID: childCellID, in: parentCellID) else {
+            handleError(LayoutCoreError.instanceCycle(
+                parentCellID: parentCellID,
+                childCellID: childCellID
+            ))
+            return
+        }
+        let instance = LayoutInstance(
+            cellID: childCellID,
+            name: name,
+            transform: LayoutTransform(
+                translation: isEditingInPlace ? editPoint(point) : snapToGrid(point)
+            )
+        )
+        do {
+            try editor.addInstance(instance, to: parentCellID)
+            selectedInstanceID = instance.id
+            resyncAfterInstanceEdit()
+        } catch {
+            handleError(error)
+        }
+    }
+
+    public func moveSelectedInstance(by delta: LayoutPoint) {
+        let delta = editVector(delta)
+        transformSelectedInstance { transform in
+            transform.translation = transform.translation.translated(by: snapToGrid(delta))
+        }
+    }
+
+    public func rotateSelectedInstance(by degrees: Double = 90) {
+        transformSelectedInstance { transform in
+            transform.rotationDegrees += degrees
+        }
+    }
+
+    public func mirrorSelectedInstance(x: Bool = true, y: Bool = false) {
+        transformSelectedInstance { transform in
+            if x { transform.mirrorX.toggle() }
+            if y { transform.mirrorY.toggle() }
+        }
+    }
+
+    public func explodeSelectedInstanceArray() {
+        guard let hostCellID = editTargetCellID,
+              let selectedInstanceID else { return }
+        do {
+            try editor.perform { doc in
+                guard var cell = doc.cell(withID: hostCellID) else {
+                    throw LayoutCoreError.cellNotFound(hostCellID)
+                }
+                guard let index = cell.instances.firstIndex(where: { $0.id == selectedInstanceID }) else {
+                    throw LayoutCoreError.instanceNotFound(selectedInstanceID)
+                }
+                let instance = cell.instances[index]
+                guard instance.repetition != nil else { return }
+                let exploded = instance.occurrenceTransforms().enumerated().map { offset, transform in
+                    LayoutInstance(
+                        cellID: instance.cellID,
+                        name: "\(instance.name)_\(offset)",
+                        transform: transform,
+                        terminalNetIDs: instance.terminalNetIDs
+                    )
+                }
+                cell.instances.remove(at: index)
+                cell.instances.insert(contentsOf: exploded, at: index)
+                doc.updateCell(cell)
+            }
+            self.selectedInstanceID = nil
+            resyncAfterInstanceEdit()
+        } catch {
+            handleError(error)
+        }
+    }
+
+    /// Materializes the selected instance into its host cell: the
+    /// instance's entire subtree (shapes, vias, labels, pins; arrays
+    /// expanded) lands as plain host content with FRESH identities —
+    /// multi-instanced children share UUIDs that would collide once
+    /// materialized side by side, so minting new IDs is explicit policy.
+    /// One undo unit; the flattened document geometry is unchanged.
+    public func flattenSelectedInstance() {
+        guard let hostCellID = editTargetCellID, let selectedInstanceID else { return }
+        do {
+            try editor.perform { doc in
+                guard var host = doc.cell(withID: hostCellID) else {
+                    throw LayoutCoreError.cellNotFound(hostCellID)
+                }
+                guard let index = host.instances.firstIndex(where: { $0.id == selectedInstanceID }) else {
+                    throw LayoutCoreError.instanceNotFound(selectedInstanceID)
+                }
+                let instance = host.instances[index]
+                guard let child = doc.cell(withID: instance.cellID) else {
+                    throw LayoutCoreError.cellNotFound(instance.cellID)
+                }
+                var content = FlattenedContent()
+                for transform in instance.occurrenceTransforms() {
+                    Self.collectFlattenedContent(
+                        of: child,
+                        in: doc,
+                        transforms: [transform],
+                        depth: 0,
+                        into: &content
+                    )
+                }
+                host.shapes.append(contentsOf: content.shapes)
+                host.vias.append(contentsOf: content.vias)
+                host.labels.append(contentsOf: content.labels)
+                host.pins.append(contentsOf: content.pins)
+                host.instances.remove(at: index)
+                doc.updateCell(host)
+            }
+            self.selectedInstanceID = nil
+            resyncAfterInstanceEdit()
+        } catch {
+            handleError(error)
+        }
+    }
+
+    /// Replaces the selected shapes with a new cell plus an
+    /// identity-transform instance of it — the inverse of flatten for a
+    /// same-cell selection. The shapes keep their geometry and identities
+    /// inside the new cell, so the flattened document is unchanged.
+    @discardableResult
+    public func makeCellFromSelection(name: String) -> UUID? {
+        guard let hostCellID = editTargetCellID else { return nil }
+        let shapes = selectedShapes()
+        guard !shapes.isEmpty else { return nil }
+        var newInstanceID: UUID?
+        var newCellID: UUID?
+        do {
+            try editor.perform { doc in
+                guard var host = doc.cell(withID: hostCellID) else {
+                    throw LayoutCoreError.cellNotFound(hostCellID)
+                }
+                let ids = Set(shapes.map(\.id))
+                let newCell = LayoutCell(name: name, shapes: shapes)
+                let instance = LayoutInstance(cellID: newCell.id, name: name)
+                host.shapes.removeAll { ids.contains($0.id) }
+                host.instances.append(instance)
+                doc.cells.append(newCell)
+                doc.updateCell(host)
+                newInstanceID = instance.id
+                newCellID = newCell.id
+            }
+        } catch {
+            handleError(error)
+            return nil
+        }
+        selectedShapeIDs.removeAll()
+        selectedInstanceID = newInstanceID
+        resyncAfterInstanceEdit()
+        return newCellID
+    }
+
+    private struct FlattenedContent {
+        var shapes: [LayoutShape] = []
+        var vias: [LayoutVia] = []
+        var labels: [LayoutLabel] = []
+        var pins: [LayoutPin] = []
+    }
+
+    /// Deep flatten of one cell subtree with fresh identities. Transform
+    /// composition matches the verification flatten: geometry through the
+    /// chain innermost-first; via/label/pin positions point-transformed
+    /// (a via's cut is its definition's, so only its anchor moves — the
+    /// same convention every verification flatten in this package uses).
+    private static func collectFlattenedContent(
+        of cell: LayoutCell,
+        in document: LayoutDocument,
+        transforms: [LayoutTransform],
+        depth: Int,
+        into content: inout FlattenedContent
+    ) {
+        guard depth < 10 else { return }
+        func mapPoint(_ point: LayoutPoint) -> LayoutPoint {
+            var mapped = point
+            for transform in transforms.reversed() {
+                mapped = transform.apply(to: mapped)
+            }
+            return mapped
+        }
+        for shape in cell.shapes {
+            var geometry = shape.geometry
+            for transform in transforms.reversed() {
+                geometry = geometry.transformed(by: transform)
+            }
+            content.shapes.append(LayoutShape(
+                layer: shape.layer,
+                netID: shape.netID,
+                geometry: geometry,
+                properties: shape.properties
+            ))
+        }
+        for via in cell.vias {
+            content.vias.append(LayoutVia(
+                viaDefinitionID: via.viaDefinitionID,
+                position: mapPoint(via.position),
+                netID: via.netID
+            ))
+        }
+        for label in cell.labels {
+            content.labels.append(LayoutLabel(
+                text: label.text,
+                position: mapPoint(label.position),
+                layer: label.layer
+            ))
+        }
+        for pin in cell.pins {
+            content.pins.append(LayoutPin(
+                name: pin.name,
+                position: mapPoint(pin.position),
+                size: pin.size,
+                layer: pin.layer,
+                netID: pin.netID,
+                role: pin.role
+            ))
+        }
+        for instance in cell.instances {
+            guard let child = document.cell(withID: instance.cellID) else { continue }
+            for occurrence in instance.occurrenceTransforms() {
+                collectFlattenedContent(
+                    of: child,
+                    in: document,
+                    transforms: transforms + [occurrence],
+                    depth: depth + 1,
+                    into: &content
+                )
+            }
+        }
+    }
+
     public func navigateToBreadcrumb(index: Int) {
         guard index >= 0, index < cellNavigationPath.count else { return }
         let nextPath = Array(cellNavigationPath.prefix(index + 1))
@@ -593,6 +1724,8 @@ public final class LayoutEditorViewModel {
     // MARK: - Shape Creation
 
     public func addRectangle(from start: LayoutPoint, to end: LayoutPoint) {
+        let start = editPoint(start)
+        let end = editPoint(end)
         let minX = min(start.x, end.x)
         let minY = min(start.y, end.y)
         let maxX = max(start.x, end.x)
@@ -606,6 +1739,7 @@ public final class LayoutEditorViewModel {
     }
 
     public func addPolygon(points: [LayoutPoint]) {
+        let points = points.map(editPoint)
         let polygon = LayoutPolygon(points: points)
         guard polygon.isValid else { return }
         let shape = LayoutShape(layer: activeLayer, geometry: .polygon(polygon))
@@ -613,6 +1747,7 @@ public final class LayoutEditorViewModel {
     }
 
     public func addPath(points: [LayoutPoint]) {
+        let points = points.map(editPoint)
         let path = LayoutPath(points: points, width: pathWidth, endCap: pathEndCap)
         guard path.isValid else { return }
         let shape = LayoutShape(layer: activeLayer, geometry: .path(path))
@@ -620,13 +1755,13 @@ public final class LayoutEditorViewModel {
     }
 
     public func addVia(at point: LayoutPoint) {
-        let via = LayoutVia(viaDefinitionID: activeViaID, position: point)
+        let via = LayoutVia(viaDefinitionID: activeViaID, position: editPoint(point))
         commitDelta(LayoutEditDelta(addedVias: [via]))
     }
 
     public func addLabel(text: String, at point: LayoutPoint) {
-        guard let cellID = activeCellID else { return }
-        let label = LayoutLabel(text: text, position: point, layer: activeLayer)
+        guard let cellID = editTargetCellID else { return }
+        let label = LayoutLabel(text: text, position: editPoint(point), layer: activeLayer)
         do {
             try editor.addLabel(label, to: cellID)
         } catch {
@@ -635,8 +1770,8 @@ public final class LayoutEditorViewModel {
     }
 
     public func addPin(name: String, at point: LayoutPoint, size: LayoutSize) {
-        guard let cellID = activeCellID else { return }
-        let pin = LayoutPin(name: name, position: point, size: size, layer: activeLayer)
+        guard let cellID = editTargetCellID else { return }
+        let pin = LayoutPin(name: name, position: editPoint(point), size: size, layer: activeLayer)
         do {
             try editor.addPin(pin, to: cellID)
         } catch {
@@ -661,15 +1796,145 @@ public final class LayoutEditorViewModel {
         rulers.removeAll()
     }
 
+    // MARK: - Edit In Place
+
+    /// Instance path from the viewed (active) cell down to the in-place
+    /// edit target; empty when editing the active cell itself. Editing
+    /// verbs target the resolved child cell while the canvas keeps the
+    /// parent context on screen.
+    public private(set) var inPlaceInstancePath: [UUID] = []
+
+    public var isEditingInPlace: Bool { !inPlaceInstancePath.isEmpty }
+
+    /// True while an in-place gesture has redrawn the canvas but the
+    /// verification verdicts on screen still describe the pre-gesture
+    /// geometry. Cleared by the full resync at gesture end.
+    public private(set) var inPlaceVerificationPending = false
+
+    /// The cell that editing verbs and selection operate on: the in-place
+    /// child when a context is entered, otherwise the active cell.
+    public var editTargetCellID: UUID? {
+        resolveInPlacePath()?.targetCellID ?? activeCellID
+    }
+
+    private struct InPlaceResolution {
+        var targetCellID: UUID
+        /// Outermost-first transforms of the entered occurrence chain.
+        var transforms: [LayoutTransform]
+    }
+
+    private func resolveInPlacePath() -> InPlaceResolution? {
+        guard !inPlaceInstancePath.isEmpty, var cellID = activeCellID else { return nil }
+        var transforms: [LayoutTransform] = []
+        for instanceID in inPlaceInstancePath {
+            guard let cell = editor.document.cell(withID: cellID),
+                  let instance = cell.instances.first(where: { $0.id == instanceID }) else {
+                return nil
+            }
+            transforms.append(instance.transform)
+            cellID = instance.cellID
+        }
+        return InPlaceResolution(targetCellID: cellID, transforms: transforms)
+    }
+
+    /// Descends the edit context into one instance of the current edit
+    /// target. The viewed cell stays on screen; pointer input is mapped
+    /// through the occurrence chain into the child's coordinate space.
+    public func enterInPlaceEdit(instanceID: UUID) {
+        guard let hostCellID = editTargetCellID,
+              let host = editor.document.cell(withID: hostCellID),
+              let instance = host.instances.first(where: { $0.id == instanceID }) else {
+            handleError(LayoutCoreError.instanceNotFound(instanceID))
+            return
+        }
+        guard instance.repetition == nil else {
+            handleError(LayoutEditorError.arrayedInstanceEditInPlace(instanceID))
+            return
+        }
+        guard instance.transform.magnification != 0 else {
+            handleError(LayoutEditorError.degenerateInstanceTransform(instanceID))
+            return
+        }
+        cancelRoute()
+        inPlaceInstancePath.append(instanceID)
+        clearSelection()
+        rebuildActiveElementIndex()
+    }
+
+    /// Ascends one level of the in-place context.
+    public func exitInPlaceEdit() {
+        guard isEditingInPlace else { return }
+        inPlaceInstancePath.removeLast()
+        clearSelection()
+        rebuildActiveElementIndex()
+        if inPlaceVerificationPending {
+            resyncAfterInPlaceEdit()
+        }
+    }
+
+    /// View-space point → edit-target local space, through the inverse of
+    /// the occurrence chain. Identity outside an in-place context.
+    public func mapToEditSpace(_ point: LayoutPoint) -> LayoutPoint {
+        guard let resolution = resolveInPlacePath() else { return point }
+        var mapped = point
+        for transform in resolution.transforms {
+            mapped = transform.inverseApply(to: mapped)
+        }
+        return mapped
+    }
+
+    /// Edit-target local point → view space, for selection overlays.
+    public func mapFromEditSpace(_ point: LayoutPoint) -> LayoutPoint {
+        guard let resolution = resolveInPlacePath() else { return point }
+        var mapped = point
+        for transform in resolution.transforms.reversed() {
+            mapped = transform.apply(to: mapped)
+        }
+        return mapped
+    }
+
+    /// View-space direction → edit-target direction (linear part only).
+    public func mapVectorToEditSpace(_ vector: LayoutPoint) -> LayoutPoint {
+        let origin = mapToEditSpace(.zero)
+        let tip = mapToEditSpace(vector)
+        return LayoutPoint(x: tip.x - origin.x, y: tip.y - origin.y)
+    }
+
+    /// Canvas input point in the space editing verbs operate in. Inside
+    /// an in-place context the point is mapped first and snapped on the
+    /// CHILD's grid — one composed transform per point, so there is no
+    /// view-then-child double rounding.
+    private func editPoint(_ point: LayoutPoint) -> LayoutPoint {
+        isEditingInPlace ? snapToGrid(mapToEditSpace(point)) : point
+    }
+
+    private func editVector(_ vector: LayoutPoint) -> LayoutPoint {
+        isEditingInPlace ? mapVectorToEditSpace(vector) : vector
+    }
+
+    /// Child-space deltas are not expressible to the top-context live
+    /// sessions, so an in-place edit re-derives them from the document.
+    /// The fan-out to every occurrence of the edited cell is exact: the
+    /// sessions flatten the viewed cell, which contains them all.
+    private func resyncAfterInPlaceEdit() {
+        resyncLiveDRC()
+        resyncLiveConnectivity()
+        refreshConstraintViolations()
+        resyncLiveLVS()
+        rebuildRenderIndex()
+        inPlaceVerificationPending = false
+    }
+
     // MARK: - Selection
 
     public func selectShape(at point: LayoutPoint) {
-        guard let cellID = activeCellID, let cell = editor.document.cell(withID: cellID) else {
+        guard let cellID = editTargetCellID, let cell = editor.document.cell(withID: cellID) else {
             return
         }
+        let local = isEditingInPlace ? mapToEditSpace(point) : point
         for shape in cell.shapes.reversed() {
             guard isLayerVisible(shape.layer) else { continue }
-            if LayoutGeometryAnalysis.contains(point, in: shape.geometry) {
+            if LayoutGeometryAnalysis.contains(local, in: shape.geometry) {
                 selectedShapeIDs = [shape.id]
                 selectedInstanceID = nil
                 return
@@ -690,9 +1955,20 @@ public final class LayoutEditorViewModel {
     /// participate. With `additive`, hits join the current selection
     /// instead of replacing it.
     public func selectShapes(in box: LayoutRect, mode: LayoutMarqueeMode, additive: Bool = false) {
-        guard let cellID = activeCellID, let cell = editor.document.cell(withID: cellID) else {
+        guard let cellID = editTargetCellID, let cell = editor.document.cell(withID: cellID) else {
             return
         }
+        // Inside an in-place context the marquee corners are mapped into
+        // the child space; under a rotated occurrence the box becomes the
+        // bounding box of the mapped corners.
+        let box = isEditingInPlace ? Self.boundingBox(
+            of: [
+                mapToEditSpace(LayoutPoint(x: box.minX, y: box.minY)),
+                mapToEditSpace(LayoutPoint(x: box.maxX, y: box.minY)),
+                mapToEditSpace(LayoutPoint(x: box.maxX, y: box.maxY)),
+                mapToEditSpace(LayoutPoint(x: box.minX, y: box.maxY)),
+            ]
+        ) : box
         var hits: Set<UUID> = []
         for shape in cell.shapes {
             guard isLayerVisible(shape.layer) else { continue }
@@ -720,8 +1996,9 @@ public final class LayoutEditorViewModel {
     }
 
     public func selectInstance(at point: LayoutPoint) -> UUID? {
-        for (inst, bounds) in instanceBoundingBoxes() {
-            if bounds.contains(point) {
+        let local = isEditingInPlace ? mapToEditSpace(point) : point
+        for (inst, bounds) in instanceBoundingBoxes(in: editTargetCellID) {
+            if bounds.contains(local) {
                 return inst.id
             }
         }
@@ -729,18 +2006,46 @@ public final class LayoutEditorViewModel {
     }
 
     public func instanceBoundingBoxes() -> [(instance: LayoutInstance, bounds: LayoutRect)] {
-        guard let cellID = activeCellID,
+        instanceBoundingBoxes(in: activeCellID)
+    }
+
+    private func instanceBoundingBoxes(
+        in cellID: UUID?
+    ) -> [(instance: LayoutInstance, bounds: LayoutRect)] {
+        guard let cellID,
               let cell = editor.document.cell(withID: cellID) else { return [] }
         return cell.instances.compactMap { inst in
             guard let refCell = editor.document.cell(withID: inst.cellID) else { return nil }
             let localBounds = Self.cellBoundingBox(refCell)
             guard localBounds.size.width > 0, localBounds.size.height > 0 else { return nil }
-            let transformedBounds = Self.transformRect(localBounds, by: inst.transform)
+            let transformedBounds = inst.occurrenceTransforms()
+                .map { Self.transformRect(localBounds, by: $0) }
+                .reduce(nil as LayoutRect?) { partial, box in
+                    partial.map { $0.union(box) } ?? box
+                }
+            guard let transformedBounds else { return nil }
             return (inst, transformedBounds)
         }
     }
 
+    /// The shapes editing and selection operate on. Inside an in-place
+    /// context these are the EDIT TARGET cell's shapes with their geometry
+    /// mapped into view space through the entered occurrence chain, so the
+    /// canvas's selection drawing, handle hit-testing and drag pickup work
+    /// unchanged; the IDs stay the child cell's real shape IDs.
     public func documentShapes() -> [LayoutShape] {
+        if let resolution = resolveInPlacePath() {
+            guard let cell = editor.document.cell(withID: resolution.targetCellID) else {
+                return []
+            }
+            return cell.shapes.map { shape in
+                var mapped = shape
+                for transform in resolution.transforms.reversed() {
+                    mapped.geometry = mapped.geometry.transformed(by: transform)
+                }
+                return mapped
+            }
+        }
         guard let cellID = activeCellID, let cell = editor.document.cell(withID: cellID) else {
             return []
         }
@@ -786,11 +2091,13 @@ public final class LayoutEditorViewModel {
 
         for inst in cell.instances {
             guard let refCell = editor.document.cell(withID: inst.cellID) else { continue }
-            result.append(contentsOf: flattenShapes(
-                cell: refCell,
-                transforms: [inst.transform] + transforms,
-                depth: depth + 1
-            ))
+            for occurrenceTransform in inst.occurrenceTransforms() {
+                result.append(contentsOf: flattenShapes(
+                    cell: refCell,
+                    transforms: [occurrenceTransform] + transforms,
+                    depth: depth + 1
+                ))
+            }
         }
 
         return result
@@ -803,6 +2110,7 @@ public final class LayoutEditorViewModel {
     /// Interactive drags go through ``beginShapeDrag()`` /
     /// ``updateShapeDrag(to:)`` / ``endShapeDrag()`` instead.
     public func moveSelectedShapes(by delta: LayoutPoint) {
+        let delta = editVector(delta)
         let moved = selectedShapes().map { shape in
             var copy = shape
             copy.geometry = shape.geometry.translated(by: delta)
@@ -813,10 +2121,13 @@ public final class LayoutEditorViewModel {
     }
 
     private func selectedShapes() -> [LayoutShape] {
-        guard let cellID = activeCellID,
-              let cell = editor.document.cell(withID: cellID),
-              !selectedShapeIDs.isEmpty else { return [] }
-        return cell.shapes.filter { selectedShapeIDs.contains($0.id) }
+        guard !selectedShapeIDs.isEmpty else { return [] }
+        // Resolved through the active-element index instead of scanning
+        // the cell; canonical ID order keeps multi-select verbs
+        // deterministic (sessions treat delta arrays as sets).
+        return selectedShapeIDs
+            .sorted { $0.uuidString < $1.uuidString }
+            .compactMap { activeShapesByID[$0] }
     }
 
     // MARK: - Duplicate / Rotate / Mirror
@@ -826,6 +2137,7 @@ public final class LayoutEditorViewModel {
     /// a copied labeled wire honestly reports as an open until it is
     /// wired up. Selection moves to the copies that landed.
     public func duplicateSelectedShapes(by offset: LayoutPoint) {
+        let offset = editVector(offset)
         let copies = selectedShapes().map { shape in
             LayoutShape(
                 layer: shape.layer,
@@ -918,7 +2230,10 @@ public final class LayoutEditorViewModel {
             dragIsDuplicating = true
         }
         dragOriginShapes = dragged
-        if let liveDRC {
+        // The DRD session verifies against the top-context DRC mirror,
+        // which cannot take child-space deltas; in-place drags fall back
+        // to the plain path with verification deferred to the gesture end.
+        if !isEditingInPlace, let liveDRC {
             dragSession = DRDDragSession(session: liveDRC, shapes: dragged, grid: gridSize)
         }
     }
@@ -945,7 +2260,7 @@ public final class LayoutEditorViewModel {
                 return
             }
         } else {
-            applied = snapToGrid(offset)
+            applied = snapToGrid(editVector(offset))
         }
         mirrorDragOffset(applied, origin: origin)
     }
@@ -958,7 +2273,9 @@ public final class LayoutEditorViewModel {
         dragSession = nil
         dragOutcome = nil
         dragIsDuplicating = false
-        if let liveDRC {
+        if isEditingInPlace {
+            resyncAfterInPlaceEdit()
+        } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
         }
@@ -987,7 +2304,9 @@ public final class LayoutEditorViewModel {
         dragSession = nil
         dragOutcome = nil
         dragIsDuplicating = false
-        if let liveDRC {
+        if isEditingInPlace {
+            resyncAfterInPlaceEdit()
+        } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
         }
@@ -996,7 +2315,7 @@ public final class LayoutEditorViewModel {
     /// Mirrors the drag position into the document as a transient edit so
     /// the canvas renders from the same state the live session verified.
     private func mirrorDragOffset(_ offset: LayoutPoint, origin: [LayoutShape]) {
-        guard let cellID = activeCellID else { return }
+        guard let cellID = editTargetCellID else { return }
         let moved = origin.map { shape in
             var copy = shape
             copy.geometry = shape.geometry.translated(by: offset)
@@ -1004,17 +2323,28 @@ public final class LayoutEditorViewModel {
         }
         do {
             try editor.performTransient { doc in
-                try Self.applyDelta(LayoutEditDelta(updatedShapes: moved), to: &doc, cellID: cellID)
+                try applyDelta(LayoutEditDelta(updatedShapes: moved), to: &doc, cellID: cellID)
+            }
+            for shape in moved {
+                activeShapesByID[shape.id] = shape
             }
         } catch {
             handleError(error)
+            return
+        }
+        if isEditingInPlace {
+            // Child-space ticks redraw the fan-out immediately; the
+            // verdicts are declared stale until the gesture ends.
+            inPlaceVerificationPending = true
+            rebuildRenderIndex()
             return
         }
         // The DRC side of the drag verifies through DRDDragSession; the
         // connectivity, constraint, and render-index views follow the
         // document directly so they stay live during the gesture.
         applyConnectivityDelta(LayoutEditDelta(updatedShapes: moved))
-        refreshConstraintViolations()
+        applyConstraintDelta(LayoutEditDelta(updatedShapes: moved))
+        applyLVSDelta(LayoutEditDelta(updatedShapes: moved))
         renderIndex?.apply(LayoutEditDelta(updatedShapes: moved))
     }
 
@@ -1030,7 +2360,7 @@ public final class LayoutEditorViewModel {
     @discardableResult
     public func beginHandleDrag(shapeID: UUID, handle: LayoutShapeHandle) -> Bool {
         guard activeHandleDrag == nil, dragOriginShapes == nil else { return false }
-        guard let cellID = activeCellID,
+        guard let cellID = editTargetCellID,
               let cell = editor.document.cell(withID: cellID),
               let shape = cell.shapes.first(where: { $0.id == shapeID }) else { return false }
         // Validate the handle against the geometry before recording any
@@ -1051,7 +2381,7 @@ public final class LayoutEditorViewModel {
         guard let drag = activeHandleDrag, let origin = handleOriginShape else { return }
         guard let geometry = LayoutHandleEditor.apply(
             drag.handle,
-            offset: snapToGrid(offset),
+            offset: snapToGrid(editVector(offset)),
             to: origin.geometry,
             minimumSize: gridSize
         ) else { return }
@@ -1066,7 +2396,9 @@ public final class LayoutEditorViewModel {
         guard activeHandleDrag != nil else { return }
         activeHandleDrag = nil
         handleOriginShape = nil
-        if let liveDRC {
+        if isEditingInPlace {
+            resyncAfterInPlaceEdit()
+        } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
         }
@@ -1078,7 +2410,9 @@ public final class LayoutEditorViewModel {
         activeHandleDrag = nil
         handleOriginShape = nil
         commitDelta(LayoutEditDelta(updatedShapes: [origin]), transient: true)
-        if let liveDRC {
+        if isEditingInPlace {
+            resyncAfterInPlaceEdit()
+        } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
         }
@@ -1227,6 +2561,7 @@ public final class LayoutEditorViewModel {
         restartLiveDRC()
         restartLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
         clearNetHighlight()
     }
@@ -1396,6 +2731,70 @@ public final class LayoutEditorViewModel {
 
     // MARK: - Private Helpers
 
+    private func transformSelectedInstance(_ update: (inout LayoutTransform) -> Void) {
+        guard let hostCellID = editTargetCellID,
+              let selectedInstanceID else { return }
+        do {
+            try editor.perform { doc in
+                guard var cell = doc.cell(withID: hostCellID) else {
+                    throw LayoutCoreError.cellNotFound(hostCellID)
+                }
+                guard let index = cell.instances.firstIndex(where: { $0.id == selectedInstanceID }) else {
+                    throw LayoutCoreError.instanceNotFound(selectedInstanceID)
+                }
+                update(&cell.instances[index].transform)
+                doc.updateCell(cell)
+            }
+            resyncAfterInstanceEdit()
+        } catch {
+            handleError(error)
+        }
+    }
+
+    private static func boundingBox(of points: [LayoutPoint]) -> LayoutRect {
+        var minX = points[0].x
+        var maxX = points[0].x
+        var minY = points[0].y
+        var maxY = points[0].y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        return LayoutRect(
+            origin: LayoutPoint(x: minX, y: minY),
+            size: LayoutSize(width: maxX - minX, height: maxY - minY)
+        )
+    }
+
+    private func resyncAfterInstanceEdit() {
+        inPlaceVerificationPending = false
+        resyncLiveDRC()
+        resyncLiveConnectivity()
+        refreshConstraintViolations()
+        resyncLiveLVS()
+        rebuildRenderIndex()
+    }
+
+    private func canPlaceInstance(childCellID: UUID, in parentCellID: UUID) -> Bool {
+        guard childCellID != parentCellID else { return false }
+        return !cellCanReach(childCellID, target: parentCellID, visited: [])
+    }
+
+    private func cellCanReach(_ source: UUID, target: UUID, visited: Set<UUID>) -> Bool {
+        guard !visited.contains(source),
+              let cell = editor.document.cell(withID: source) else { return false }
+        if cell.instances.contains(where: { $0.cellID == target }) {
+            return true
+        }
+        var nextVisited = visited
+        nextVisited.insert(source)
+        return cell.instances.contains { instance in
+            cellCanReach(instance.cellID, target: target, visited: nextVisited)
+        }
+    }
+
     private func selectedInstanceTargetCellID() -> UUID? {
         guard let selectedInstanceID,
               let activeCellID,
@@ -1430,6 +2829,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
     }
 
@@ -1448,6 +2848,7 @@ public final class LayoutEditorViewModel {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
     }
 
@@ -1540,6 +2941,10 @@ public final class LayoutEditorViewModel {
             return ruleSet.minWidth
         }
         return tech.grid * 10
+    }
+
+    public func clearError() {
+        lastError = nil
     }
 
     private func handleError(_ error: Error) {

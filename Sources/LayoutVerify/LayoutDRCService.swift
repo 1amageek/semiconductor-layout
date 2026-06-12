@@ -110,17 +110,19 @@ public struct LayoutDRCService {
 
         for instance in cell.instances {
             guard let child = document.cell(withID: instance.cellID) else { continue }
-            flatten(
-                cell: child,
-                document: document,
-                tech: tech,
-                transforms: transforms + [instance.transform],
-                terminalNetIDs: instance.terminalNetIDs,
-                shapes: &shapes,
-                vias: &vias,
-                pins: &pins,
-                terminalConflicts: &terminalConflicts
-            )
+            for occurrenceTransform in instance.occurrenceTransforms() {
+                flatten(
+                    cell: child,
+                    document: document,
+                    tech: tech,
+                    transforms: transforms + [occurrenceTransform],
+                    terminalNetIDs: instance.terminalNetIDs,
+                    shapes: &shapes,
+                    vias: &vias,
+                    pins: &pins,
+                    terminalConflicts: &terminalConflicts
+                )
+            }
         }
     }
 
@@ -607,27 +609,47 @@ public struct LayoutDRCService {
                 dbu: dbu
             )
 
-            if !topCheck.passed || !bottomCheck.passed {
-                let missing = [
-                    topCheck.passed ? nil : "top \(def.topLayer.name)",
-                    bottomCheck.passed ? nil : "bottom \(def.bottomLayer.name)"
-                ].compactMap { $0 }.joined(separator: ", ")
-                violations.append(LayoutViolation(
-                    kind: .enclosure,
-                    ruleID: "via.\(via.viaDefinitionID).enclosure",
-                    message: "Via enclosure violation for \(via.viaDefinitionID): missing \(missing)",
-                    layer: def.cutLayer,
-                    region: cutRect,
-                    measured: min(topCheck.measured, bottomCheck.measured),
-                    required: max(def.enclosure.top, def.enclosure.bottom),
-                    unit: "um",
-                    viaIDs: [via.id],
-                    netIDs: [via.netID].compactMap { $0 },
-                    suggestedFix: "Add top and bottom metal coverage around the via cut."
-                ))
+            if let violation = viaEnclosureViolation(
+                via: via,
+                definition: def,
+                cutRect: cutRect,
+                topCheck: topCheck,
+                bottomCheck: bottomCheck
+            ) {
+                violations.append(violation)
             }
         }
         return violations
+    }
+
+    func viaEnclosureViolation(
+        for via: LayoutVia,
+        topCandidates: [LayoutShape],
+        bottomCandidates: [LayoutShape],
+        tech: LayoutTechDatabase
+    ) -> LayoutViolation? {
+        guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return nil }
+        let cutRect = viaCutRect(for: via, tech: tech)
+        let dbu = tech.units.dbuPerMicron
+        let topCheck = viaEnclosureCheck(
+            cutRect: cutRect,
+            enclosure: def.enclosure.top,
+            candidates: topCandidates,
+            dbu: dbu
+        )
+        let bottomCheck = viaEnclosureCheck(
+            cutRect: cutRect,
+            enclosure: def.enclosure.bottom,
+            candidates: bottomCandidates,
+            dbu: dbu
+        )
+        return viaEnclosureViolation(
+            via: via,
+            definition: def,
+            cutRect: cutRect,
+            topCheck: topCheck,
+            bottomCheck: bottomCheck
+        )
     }
 
     /// `layerFilter` restricts which layers are evaluated; the density
@@ -1353,6 +1375,33 @@ public struct LayoutDRCService {
     private struct ViaEnclosureCheck: Sendable {
         let passed: Bool
         let measured: Double
+    }
+
+    private func viaEnclosureViolation(
+        via: LayoutVia,
+        definition: LayoutViaDefinition,
+        cutRect: LayoutRect,
+        topCheck: ViaEnclosureCheck,
+        bottomCheck: ViaEnclosureCheck
+    ) -> LayoutViolation? {
+        guard !topCheck.passed || !bottomCheck.passed else { return nil }
+        let missing = [
+            topCheck.passed ? nil : "top \(definition.topLayer.name)",
+            bottomCheck.passed ? nil : "bottom \(definition.bottomLayer.name)"
+        ].compactMap { $0 }.joined(separator: ", ")
+        return LayoutViolation(
+            kind: .enclosure,
+            ruleID: "via.\(via.viaDefinitionID).enclosure",
+            message: "Via enclosure violation for \(via.viaDefinitionID): missing \(missing)",
+            layer: definition.cutLayer,
+            region: cutRect,
+            measured: min(topCheck.measured, bottomCheck.measured),
+            required: max(definition.enclosure.top, definition.enclosure.bottom),
+            unit: "um",
+            viaIDs: [via.id],
+            netIDs: [via.netID].compactMap { $0 },
+            suggestedFix: "Add top and bottom metal coverage around the via cut."
+        )
     }
 
     /// `candidates` must contain every same-layer shape whose bounding box

@@ -41,7 +41,7 @@ public struct IRLayoutBridge: Sendable {
 
     // MARK: - Export: LayoutDocument → IRLibrary
 
-    public func exportLibrary(_ document: LayoutDocument, tech: LayoutTechDatabase) -> IRLibrary {
+    public func exportLibrary(_ document: LayoutDocument, tech: LayoutTechDatabase) throws -> IRLibrary {
         let dbu = document.units.dbuPerMicron
         let reverseLayerMap = buildReverseLayerMap(tech: tech)
 
@@ -53,7 +53,7 @@ public struct IRLayoutBridge: Sendable {
 
         var irCells: [IRCell] = []
         for cell in document.cells {
-            let irCell = convertToIRCell(cell, dbu: dbu, reverseLayerMap: reverseLayerMap, cellIDToName: cellIDToName)
+            let irCell = try convertToIRCell(cell, dbu: dbu, reverseLayerMap: reverseLayerMap, cellIDToName: cellIDToName)
             irCells.append(irCell)
         }
 
@@ -99,7 +99,9 @@ public struct IRLayoutBridge: Sendable {
                     instances.append(inst)
                 }
             case .arrayRef(let a):
-                instances.append(contentsOf: convertArrayRef(a, dbu: dbu, cellNameToID: cellNameToID))
+                if let inst = convertArrayRef(a, dbu: dbu, cellNameToID: cellNameToID) {
+                    instances.append(inst)
+                }
             }
         }
 
@@ -162,44 +164,39 @@ public struct IRLayoutBridge: Sendable {
         return LayoutInstance(cellID: cellID, name: r.cellName, transform: transform)
     }
 
-    private func convertArrayRef(_ a: IRArrayRef, dbu: Double, cellNameToID: [String: UUID]) -> [LayoutInstance] {
-        guard let cellID = cellNameToID[a.cellName] else { return [] }
-        guard a.referencePoints.count >= 3 else { return [] }
+    private func convertArrayRef(_ a: IRArrayRef, dbu: Double, cellNameToID: [String: UUID]) -> LayoutInstance? {
+        guard let cellID = cellNameToID[a.cellName] else { return nil }
+        guard a.referencePoints.count >= 3 else { return nil }
         let cols = Int(a.columns)
         let rows = Int(a.rows)
-        guard cols > 0, rows > 0 else { return [] }
+        guard cols > 0, rows > 0 else { return nil }
 
         let origin = a.referencePoints[0]
         let colEnd = a.referencePoints[1]
         let rowEnd = a.referencePoints[2]
 
-        // Column/row spacing vectors in DBU
         let colDX = Double(colEnd.x - origin.x) / Double(cols)
         let colDY = Double(colEnd.y - origin.y) / Double(cols)
         let rowDX = Double(rowEnd.x - origin.x) / Double(rows)
         let rowDY = Double(rowEnd.y - origin.y) / Double(rows)
 
-        var instances: [LayoutInstance] = []
-
-        for r in 0..<rows {
-            for c in 0..<cols {
-                let px = Double(origin.x) + Double(c) * colDX + Double(r) * rowDX
-                let py = Double(origin.y) + Double(c) * colDY + Double(r) * rowDY
-                let pos = LayoutPoint(x: px / dbu, y: py / dbu)
-                let transform = LayoutTransform(
-                    translation: pos,
-                    rotationDegrees: a.transform.angle,
-                    magnification: a.transform.magnification,
-                    mirrorX: a.transform.mirrorX
-                )
-                instances.append(LayoutInstance(
-                    cellID: cellID,
-                    name: "\(a.cellName)[\(r),\(c)]",
-                    transform: transform
-                ))
-            }
-        }
-        return instances
+        let transform = LayoutTransform(
+            translation: dbuToMicron(origin, dbu: dbu),
+            rotationDegrees: a.transform.angle,
+            magnification: a.transform.magnification,
+            mirrorX: a.transform.mirrorX
+        )
+        return LayoutInstance(
+            cellID: cellID,
+            name: a.cellName,
+            transform: transform,
+            repetition: LayoutRepetition(
+                columns: cols,
+                rows: rows,
+                columnStep: LayoutPoint(x: colDX / dbu, y: colDY / dbu),
+                rowStep: LayoutPoint(x: rowDX / dbu, y: rowDY / dbu)
+            )
+        )
     }
 
     private func convertViaBoundary(_ boundary: IRBoundary, dbu: Double, layerMap: LayerMap) -> LayoutVia? {
@@ -229,7 +226,7 @@ public struct IRLayoutBridge: Sendable {
         dbu: Double,
         reverseLayerMap: ReverseLayerMap,
         cellIDToName: [UUID: String]
-    ) -> IRCell {
+    ) throws -> IRCell {
         var elements: [IRElement] = []
 
         for shape in cell.shapes {
@@ -309,16 +306,55 @@ public struct IRLayoutBridge: Sendable {
                 instance.transform.translation,
                 dbu: dbu
             )
-            elements.append(.cellRef(IRCellRef(
-                cellName: cellName,
-                origin: origin,
-                transform: IRTransform(
-                    mirrorX: instance.transform.mirrorX,
-                    magnification: instance.transform.magnification,
-                    angle: instance.transform.rotationDegrees
-                ),
-                properties: []
-            )))
+            let transform = IRTransform(
+                mirrorX: instance.transform.mirrorX,
+                magnification: instance.transform.magnification,
+                angle: instance.transform.rotationDegrees
+            )
+            if let repetition = instance.repetition,
+               repetition.columns > 1 || repetition.rows > 1 {
+                // GDSII COLROW is a signed 16-bit record; a wider count
+                // cannot be represented, so refuse the export instead of
+                // trapping or silently truncating the array.
+                guard repetition.columns <= Int(Int16.max),
+                      repetition.rows <= Int(Int16.max) else {
+                    throw LayoutIOError.conversionFailed(
+                        "Instance '\(instance.name)' in cell '\(cell.name)' repeats "
+                            + "\(repetition.columns)x\(repetition.rows); GDSII AREF "
+                            + "supports at most \(Int16.max) columns/rows. "
+                            + "Explode the array before exporting."
+                    )
+                }
+                let colEnd = micronToDBU(
+                    LayoutPoint(
+                        x: instance.transform.translation.x + repetition.columnStep.x * Double(repetition.columns),
+                        y: instance.transform.translation.y + repetition.columnStep.y * Double(repetition.columns)
+                    ),
+                    dbu: dbu
+                )
+                let rowEnd = micronToDBU(
+                    LayoutPoint(
+                        x: instance.transform.translation.x + repetition.rowStep.x * Double(repetition.rows),
+                        y: instance.transform.translation.y + repetition.rowStep.y * Double(repetition.rows)
+                    ),
+                    dbu: dbu
+                )
+                elements.append(.arrayRef(IRArrayRef(
+                    cellName: cellName,
+                    transform: transform,
+                    columns: Int16(repetition.columns),
+                    rows: Int16(repetition.rows),
+                    referencePoints: [origin, colEnd, rowEnd],
+                    properties: []
+                )))
+            } else {
+                elements.append(.cellRef(IRCellRef(
+                    cellName: cellName,
+                    origin: origin,
+                    transform: transform,
+                    properties: []
+                )))
+            }
         }
 
         return IRCell(name: cell.name, elements: elements)

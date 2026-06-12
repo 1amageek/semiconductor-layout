@@ -42,8 +42,11 @@ public struct LayoutCanvasView: View {
 
             drawShapes(context: &context)
             drawInstances(context: &context)
+            drawInPlaceFocus(context: &context)
             drawViolations(context: &context)
+            drawFocusedViolation(context: &context)
             drawConstraintViolations(context: &context)
+            drawLVSFindings(context: &context)
             drawConnectivity(context: &context)
             drawSelection(context: &context)
             drawInstanceHighlights(context: &context)
@@ -69,6 +72,9 @@ public struct LayoutCanvasView: View {
             switch phase {
             case .active(let location):
                 hoverLocation = location
+                if viewModel.tool == .route, viewModel.isRouting {
+                    viewModel.updateRoute(to: toLayout(location))
+                }
             case .ended:
                 hoverLocation = nil
             }
@@ -79,6 +85,7 @@ public struct LayoutCanvasView: View {
         }
         .onChange(of: viewModel.tool) { _, _ in
             drawingVertices.removeAll()
+            viewModel.cancelRoute()
         }
         .focusable()
     }
@@ -132,8 +139,20 @@ public struct LayoutCanvasView: View {
                 viewModel.cancelShapeDrag()
                 return .handled
             }
+            if viewModel.pendingIntentDevice != nil {
+                viewModel.disarmIntentPlacement()
+                return .handled
+            }
+            if viewModel.isRouting {
+                viewModel.cancelRoute()
+                return .handled
+            }
             if !drawingVertices.isEmpty {
                 drawingVertices.removeAll()
+                return .handled
+            }
+            if viewModel.isEditingInPlace {
+                viewModel.exitInPlaceEdit()
                 return .handled
             }
             viewModel.tool = .select
@@ -163,6 +182,26 @@ public struct LayoutCanvasView: View {
         // Editing verbs on the selection (case-sensitive: Shift reverses
         // rotation direction and flips the mirror axis).
         switch keyPress.characters {
+        case "i":
+            // Descend into the selected instance in place; Escape ascends.
+            if let instanceID = viewModel.selectedInstanceID {
+                viewModel.enterInPlaceEdit(instanceID: instanceID)
+                return .handled
+            }
+            return .ignored
+        case "a":
+            // Auto-complete the active route to the cursor.
+            if viewModel.isRouting, let hover = hoverLocation {
+                viewModel.completeRoute(to: toLayout(hover))
+                return .handled
+            }
+            return .ignored
+        case "n":
+            viewModel.focusNextViolation(forward: true)
+            return .handled
+        case "N":
+            viewModel.focusNextViolation(forward: false)
+            return .handled
         case "t":
             viewModel.rotateSelectedShapes(clockwise: true)
             return .handled
@@ -227,7 +266,7 @@ public struct LayoutCanvasView: View {
                             dragMode = .marquee
                             dragStart = value.startLocation
                         }
-                    case .polygon, .path, .ruler, .merge:
+                    case .polygon, .path, .route, .ruler, .merge:
                         // Multi-click tools don't use drag for drawing
                         dragMode = .panningCanvas
                         panStartOffset = viewModel.offset
@@ -371,6 +410,12 @@ public struct LayoutCanvasView: View {
     private func handleTap(at location: CGPoint) {
         let raw = toLayout(location)
 
+        // An armed intent device captures the next click as its placement.
+        if viewModel.pendingIntentDevice != nil {
+            viewModel.placeArmedIntentDevice(at: raw)
+            return
+        }
+
         switch viewModel.tool {
         case .select:
             viewModel.selectShape(at: raw)
@@ -383,6 +428,19 @@ public struct LayoutCanvasView: View {
             let anchor = drawingVertices.last
             let snapped = viewModel.constrainedSnap(raw, from: anchor)
             drawingVertices.append(snapped)
+
+        case .route:
+            // Session-driven DRC-enforced routing: the first click anchors
+            // the route, each further click commits the legal segment and
+            // chains the next one from its legal end.
+            if viewModel.isRouting {
+                viewModel.updateRoute(to: raw)
+                if let end = viewModel.commitRoute() {
+                    viewModel.beginRoute(at: end)
+                }
+            } else {
+                viewModel.beginRoute(at: raw)
+            }
 
         case .ruler:
             let snapped = viewModel.snapToGrid(raw)
@@ -429,6 +487,10 @@ public struct LayoutCanvasView: View {
 
     /// Finishes the current multi-click drawing operation.
     private func finishMultiClickDrawing() {
+        if viewModel.tool == .route {
+            viewModel.commitRoute()
+            return
+        }
         guard !drawingVertices.isEmpty else { return }
 
         switch viewModel.tool {
@@ -874,6 +936,82 @@ public struct LayoutCanvasView: View {
         }
     }
 
+    /// Pulsing focus ring around the violation selected by n/N cycling
+    /// or a diagnostics-row click.
+    private func drawFocusedViolation(context: inout GraphicsContext) {
+        guard let focusedID = viewModel.focusedViolationID,
+              let violation = viewModel.violations.first(where: { $0.id == focusedID }) else {
+            return
+        }
+        let rect = violation.region
+        let inset = -4.0 / viewModel.zoom
+        let path = Path(CGRect(
+            x: rect.minX, y: rect.minY,
+            width: rect.size.width, height: rect.size.height
+        ).insetBy(dx: inset, dy: inset))
+        context.stroke(
+            path,
+            with: .color(.yellow),
+            style: StrokeStyle(lineWidth: 3 / viewModel.zoom)
+        )
+    }
+
+    /// Live LVS findings: extracted devices with no reference counterpart
+    /// or mismatched parameters, marked at their channel regions, plus
+    /// extraction issues at their regions.
+    private func drawLVSFindings(context: inout GraphicsContext) {
+        guard let comparison = viewModel.lvsComparison else { return }
+        let stroke = 2.0 / viewModel.zoom
+        func mark(_ rect: LayoutRect, color: Color) {
+            guard rect.size.width > 0 || rect.size.height > 0 else { return }
+            let path = Path(CGRect(
+                x: rect.minX, y: rect.minY,
+                width: rect.size.width, height: rect.size.height
+            ).insetBy(dx: -2 / viewModel.zoom, dy: -2 / viewModel.zoom))
+            context.stroke(path, with: .color(color), style: StrokeStyle(
+                lineWidth: stroke,
+                dash: [5 / viewModel.zoom, 3 / viewModel.zoom]
+            ))
+        }
+        for device in comparison.unmatchedExtractedDevices {
+            mark(device.region, color: .red)
+        }
+        for mismatch in comparison.parameterMismatches {
+            mark(mismatch.region, color: .orange)
+        }
+        if let extraction = viewModel.lvsExtraction {
+            for issue in extraction.issues {
+                mark(issue.region, color: .pink)
+            }
+        }
+    }
+
+    /// In-place editing focus: everything outside the entered context is
+    /// dimmed, then the edit target's shapes (already mapped to view space
+    /// by `documentShapes()`) are redrawn at full strength on top.
+    private func drawInPlaceFocus(context: inout GraphicsContext) {
+        guard viewModel.isEditingInPlace else { return }
+        let viewportOrigin = toLayout(.zero)
+        let viewportCorner = toLayout(CGPoint(
+            x: viewModel.canvasSize.width,
+            y: viewModel.canvasSize.height
+        ))
+        let dimRect = CGRect(
+            x: min(viewportOrigin.x, viewportCorner.x),
+            y: min(viewportOrigin.y, viewportCorner.y),
+            width: abs(viewportCorner.x - viewportOrigin.x),
+            height: abs(viewportCorner.y - viewportOrigin.y)
+        )
+        context.fill(
+            Path(dimRect),
+            with: .color(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        )
+        for shape in viewModel.documentShapes() where viewModel.isLayerVisible(shape.layer) {
+            let path = pathForShape(shape)
+            context.fill(path, with: .color(colorForLayer(shape.layer).opacity(0.85)))
+        }
+    }
+
     private func drawSelection(context: inout GraphicsContext) {
         let color = selectionColor
         for shape in viewModel.documentShapes() where viewModel.selectedShapeIDs.contains(shape.id) {
@@ -1004,13 +1142,16 @@ public struct LayoutCanvasView: View {
     // MARK: - Drawing: Multi-Click Preview (polygon, path, ruler — in layout coords)
 
     private func drawMultiClickPreview(context: inout GraphicsContext) {
-        guard !drawingVertices.isEmpty else { return }
+        // The route preview lives in the session, not in drawingVertices.
+        guard !drawingVertices.isEmpty || viewModel.tool == .route else { return }
 
         switch viewModel.tool {
         case .polygon:
             drawPolygonPreview(context: &context)
         case .path:
             drawPathPreview(context: &context)
+        case .route:
+            drawRoutePreview(context: &context)
         case .ruler:
             drawRulerPreview(context: &context)
         default:
@@ -1066,6 +1207,87 @@ public struct LayoutCanvasView: View {
                     )),
                     with: .color(.green),
                     lineWidth: lineWidth
+                )
+            }
+        }
+    }
+
+    /// Session-driven route preview: the legal geometry the session would
+    /// commit, plus a dashed blocked segment from the legal end to the
+    /// cursor when DRC stopped the route short.
+    private func drawRoutePreview(context: inout GraphicsContext) {
+        guard let preview = viewModel.routePreview else { return }
+        let color = colorForLayer(viewModel.activeLayer)
+
+        for shape in preview.delta.addedShapes {
+            if case .rect(let rect) = shape.geometry {
+                context.fill(
+                    Path(CGRect(x: rect.minX, y: rect.minY, width: rect.size.width, height: rect.size.height)),
+                    with: .color(color.opacity(0.45))
+                )
+            }
+        }
+
+        // Live electrical estimate of the wire being drawn (plus its
+        // net's existing geometry) — the editor reads circuits, not just
+        // rectangles. Shown only when the tech models the constants.
+        if let estimate = viewModel.routeElectricalEstimate(),
+           let resistance = estimate.resistance,
+           let capacitance = estimate.capacitance {
+            var hud = String(format: "R %.1f ohm  C %.1f fF", resistance, capacitance)
+            if let tau = estimate.timeConstantPS {
+                hud += String(format: "  tau %.2f ps", tau)
+            }
+            let fontSize = 10.0 / viewModel.zoom
+            context.draw(
+                Text(hud)
+                    .font(.system(size: fontSize, weight: .medium))
+                    .foregroundColor(.cyan),
+                at: CGPoint(
+                    x: preview.legalEnd.x,
+                    y: preview.legalEnd.y + 16 / viewModel.zoom
+                )
+            )
+        }
+
+        // Neighbours displaced by shove, at their preview positions.
+        for shape in preview.pushedShapes {
+            if case .rect(let rect) = shape.geometry {
+                let path = Path(CGRect(
+                    x: rect.minX, y: rect.minY,
+                    width: rect.size.width, height: rect.size.height
+                ))
+                context.fill(path, with: .color(.orange.opacity(0.35)))
+                context.stroke(path, with: .color(.orange), lineWidth: 1.5 / viewModel.zoom)
+            }
+        }
+
+        if preview.stopReason != nil {
+            var blocked = Path()
+            blocked.move(to: CGPoint(x: preview.legalEnd.x, y: preview.legalEnd.y))
+            blocked.addLine(to: CGPoint(x: preview.requestedEnd.x, y: preview.requestedEnd.y))
+            let dash = StrokeStyle(
+                lineWidth: 1.5 / viewModel.zoom,
+                dash: [4 / viewModel.zoom, 3 / viewModel.zoom]
+            )
+            context.stroke(blocked, with: .color(.red), style: dash)
+
+            // WHY the route stopped, right at the cursor — the engine
+            // knows; the user should not have to guess.
+            if let first = preview.violations.first {
+                var reason = first.kind.rawValue
+                if let required = first.required {
+                    reason += String(format: " (needs %.3f um)", required)
+                }
+                let fontSize = 11.0 / viewModel.zoom
+                context.draw(
+                    Text(reason)
+                        .font(.system(size: fontSize, weight: .semibold))
+                        .foregroundColor(.red),
+                    at: CGPoint(
+                        x: preview.requestedEnd.x,
+                        y: preview.requestedEnd.y - 14 / viewModel.zoom
+                    )
                 )
             }
         }

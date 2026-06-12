@@ -46,6 +46,12 @@ public final class IncrementalDRCSession {
     private var childShapeIDs: Set<UUID> = []
     private var childViaIDs: Set<UUID> = []
 
+    // Editable element positions, maintained across deltas so apply()
+    // does not rebuild ID dictionaries on every edit. Updates keep
+    // positions, adds append, and removals rebuild the shifted index.
+    private var shapeIndexByID: [UUID: Int] = [:]
+    private var viaIndexByID: [UUID: Int] = [:]
+
     // Violation buckets, keyed by check unit.
     private var terminalConflictViolations: [LayoutViolation] = []
     private var coverageByLayer: [LayoutLayerID: [LayoutViolation]] = [:]
@@ -57,6 +63,28 @@ public final class IncrementalDRCSession {
     private var openByNet: [UUID: [LayoutViolation]] = [:]
     private var antennaViolations: [LayoutViolation] = []
     private var antennaIsStale = false
+
+    // Current flattened shape occurrences, fully incremental: the shape
+    // table, per-layer key sets, per-layer spatial grids, and the per-layer
+    // non-Manhattan census are all maintained per delta so apply() never
+    // rescans the whole design. Per-layer pair ARRAYS (flatten order) are
+    // materialized on demand only for the rare paths that need them.
+    private var shapeByKey: [FlatShapeKey: LayoutShape] = [:]
+    private var shapeKeysByLayer: [LayoutLayerID: Set<FlatShapeKey>] = [:]
+    private var shapeGridByLayer: [LayoutLayerID: MutableFlatShapeGridIndex] = [:]
+    private var shapeKeysByNet: [UUID: Set<FlatShapeKey>] = [:]
+    private var nonManhattanKeys: Set<FlatShapeKey> = []
+    private var nonManhattanCountByLayer: [LayoutLayerID: Int] = [:]
+    private var viaByKey: [FlatViaKey: LayoutVia] = [:]
+    private var viaKeysByID: [UUID: Set<FlatViaKey>] = [:]
+    private var viaKeysByNet: [UUID: Set<FlatViaKey>] = [:]
+    private var viaHaloGridByLayer: [LayoutLayerID: MutableFlatViaGridIndex] = [:]
+
+    /// Whether any layer rule set actually constrains density. When false,
+    /// density windows can never produce a violation, so the per-apply
+    /// overall-bounding-box scan and window bookkeeping are skipped — the
+    /// verdict is identical either way.
+    private var densityIsTracked = false
 
     /// Bounding box of all flattened shapes; density windows depend on it,
     /// so a change forces density re-evaluation on every layer.
@@ -90,12 +118,6 @@ public final class IncrementalDRCSession {
         let clock = ContinuousClock()
         let start = clock.now
 
-        let shapeIndexByID = Dictionary(
-            uniqueKeysWithValues: topShapes.enumerated().map { ($0.element.id, $0.offset) }
-        )
-        let viaIndexByID = Dictionary(
-            uniqueKeysWithValues: topVias.enumerated().map { ($0.element.id, $0.offset) }
-        )
         try validate(delta, shapeIndexByID: shapeIndexByID, viaIndexByID: viaIndexByID)
 
         // Dirty analysis against the pre-edit state.
@@ -152,98 +174,167 @@ public final class IncrementalDRCSession {
         }
 
         // Mutate: updates keep their position, removals drop, adds append.
+        for shape in delta.updatedShapes {
+            let old = topShapes[shapeIndexByID[shape.id]!]
+            removeShapeFromGrid(key: .top(shape.id), shape: old)
+        }
+        for id in delta.removedShapeIDs {
+            let old = topShapes[shapeIndexByID[id]!]
+            removeShapeFromGrid(key: .top(id), shape: old)
+        }
         for shape in delta.updatedShapes { topShapes[shapeIndexByID[shape.id]!] = shape }
         if !delta.removedShapeIDs.isEmpty {
             let removed = Set(delta.removedShapeIDs)
             topShapes.removeAll { removed.contains($0.id) }
         }
         topShapes.append(contentsOf: delta.addedShapes)
+        if delta.removedShapeIDs.isEmpty {
+            for (offset, shape) in delta.addedShapes.enumerated() {
+                shapeIndexByID[shape.id] = topShapes.count - delta.addedShapes.count + offset
+            }
+        } else {
+            rebuildShapeIndex()
+        }
+        for shape in delta.updatedShapes + delta.addedShapes {
+            insertShapeIntoGrid(key: .top(shape.id), shape: shape)
+        }
+        for via in delta.updatedVias {
+            let old = topVias[viaIndexByID[via.id]!]
+            removeViaFromNetIndex(key: .top(via.id), via: old)
+        }
+        for id in delta.removedViaIDs {
+            let old = topVias[viaIndexByID[id]!]
+            removeViaFromNetIndex(key: .top(id), via: old)
+        }
         for via in delta.updatedVias { topVias[viaIndexByID[via.id]!] = via }
         if !delta.removedViaIDs.isEmpty {
             let removed = Set(delta.removedViaIDs)
             topVias.removeAll { removed.contains($0.id) }
         }
         topVias.append(contentsOf: delta.addedVias)
-
-        let shapes = topShapes + childShapes
-        let vias = topVias + childVias
-        let pairsByLayer = Dictionary(grouping: flattenedPairs(), by: { $0.shape.layer })
+        if delta.removedViaIDs.isEmpty {
+            for (offset, via) in delta.addedVias.enumerated() {
+                viaIndexByID[via.id] = topVias.count - delta.addedVias.count + offset
+            }
+        } else {
+            rebuildViaIndex()
+        }
+        for via in delta.updatedVias + delta.addedVias {
+            insertViaIntoNetIndex(key: .top(via.id), via: via)
+        }
 
         // A via's enclosure verdict depends only on geometry inside its
-        // enclosure halo (plus dbu rounding slack), so any via whose halo
-        // misses every edited bounding box is untouched.
-        let roundingSlack = 1.0 / tech.units.dbuPerMicron
-        for via in vias where !affectedViaIDs.contains(via.id) {
-            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { continue }
-            let margin = max(def.enclosure.top, def.enclosure.bottom) + roundingSlack
-            let halo = service.viaCutRect(for: via, tech: tech).expanded(by: margin, margin)
-            for layer in [def.topLayer, def.bottomLayer] {
-                guard let rects = dirtyRectsByLayer[layer] else { continue }
-                if rects.contains(where: { $0.intersects(halo) }) {
+        // layer-specific enclosure halo (plus dbu rounding slack), so a
+        // per-layer halo grid finds only vias whose verdict can change.
+        // Affected UUIDs drive violation removal; occurrence KEYS drive the
+        // recompute, expanded through viaKeysByID because multi-instanced
+        // child vias share one UUID across distinct occurrences.
+        var affectedViaKeys: Set<FlatViaKey> = []
+        for id in affectedViaIDs {
+            affectedViaKeys.formUnion(viaKeysByID[id] ?? [])
+        }
+        for layer in dirtyLayers {
+            guard let grid = viaHaloGridByLayer[layer],
+                  let rects = dirtyRectsByLayer[layer] else { continue }
+            for rect in rects {
+                for key in grid.neighbours(of: rect) {
+                    guard let via = viaByKey[key],
+                          !affectedViaIDs.contains(via.id),
+                          let halo = viaHalo(for: via, on: layer),
+                          halo.intersects(rect) else {
+                        continue
+                    }
                     affectedViaIDs.insert(via.id)
-                    break
+                    affectedViaKeys.formUnion(viaKeysByID[via.id] ?? [])
                 }
             }
         }
 
         // Per-layer geometric checks: coverage per layer, width/area and
-        // spacing per affected cluster.
+        // spacing per affected cluster. A layer WITH a rule set can never
+        // produce coverage violations, so the per-apply O(layerShapes)
+        // re-listing is skipped for it; the empty bucket is identical to
+        // what the full check would return.
         for layer in dirtyLayers {
-            let layerPairs = pairsByLayer[layer] ?? []
-            setBucket(
-                &coverageByLayer, layer,
-                service.checkRuleCoverage(shapes: layerPairs.map(\.shape), tech: tech)
-            )
+            if tech.ruleSet(for: layer) == nil {
+                setBucket(
+                    &coverageByLayer, layer,
+                    service.checkRuleCoverage(
+                        shapes: currentLayerPairs(layer: layer).map(\.shape),
+                        tech: tech
+                    )
+                )
+            } else {
+                setBucket(&coverageByLayer, layer, [])
+            }
             updateLayerClusters(
                 layer: layer,
-                layerPairs: layerPairs,
                 editedKeys: editedKeysByLayer[layer] ?? [],
                 dirtyRects: dirtyRectsByLayer[layer] ?? []
             )
         }
 
-        // Layer-pair enclosure rules touching a dirty layer.
+        // Layer-pair enclosure rules touching a dirty layer. The check only
+        // reads geometry on each rule's outer and inner layers, so passing
+        // exactly those layers' shapes (in flatten order) is verdict-equal
+        // to passing the whole design.
         let affectedRules = tech.enclosureRules.filter {
             dirtyLayers.contains($0.outerLayer) || dirtyLayers.contains($0.innerLayer)
         }
         for (ruleID, rules) in Dictionary(grouping: affectedRules, by: service.enclosureRuleID) {
-            let fresh = service.checkEnclosureRules(shapes: shapes, tech: tech, rules: rules)
+            var ruleLayers = Set<LayoutLayerID>()
+            for rule in rules {
+                ruleLayers.insert(rule.outerLayer)
+                ruleLayers.insert(rule.innerLayer)
+            }
+            let ruleShapes = ruleLayers
+                .flatMap { shapeKeysByLayer[$0] ?? [] }
+                .sorted { shapeOrder($0) < shapeOrder($1) }
+                .compactMap { shapeByKey[$0] }
+            let fresh = service.checkEnclosureRules(shapes: ruleShapes, tech: tech, rules: rules)
             enclosureByRuleID[ruleID] = fresh.isEmpty ? nil : fresh
         }
 
         // Density windows derive from the overall bounding box: if it
-        // moved, every layer's windows moved.
-        let newOverall = service.overallBoundingBox(shapes: shapes)
-        if newOverall != overallBoundingBox {
-            overallBoundingBox = newOverall
-            densityStateByLayer = [:]
-            if let overall = newOverall {
-                for (layer, layerPairs) in pairsByLayer {
-                    rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
+        // moved, every layer's windows moved. Skipped entirely when no
+        // rule set constrains density — no window can ever fail then.
+        if densityIsTracked {
+            let newOverall = service.overallBoundingBox(shapes: topShapes + childShapes)
+            if newOverall != overallBoundingBox {
+                overallBoundingBox = newOverall
+                densityStateByLayer = [:]
+                if let overall = newOverall {
+                    for layer in shapeKeysByLayer.keys where layerDensityIsRestrictive(layer) {
+                        rebuildLayerDensity(
+                            layer: layer,
+                            layerPairs: currentLayerPairs(layer: layer),
+                            overall: overall
+                        )
+                    }
                 }
-            }
-        } else if let overall = newOverall {
-            for layer in dirtyLayers {
-                updateLayerDensity(
-                    layer: layer,
-                    layerPairs: pairsByLayer[layer] ?? [],
-                    editedKeys: editedKeysByLayer[layer] ?? [],
-                    dirtyRects: dirtyRectsByLayer[layer] ?? [],
-                    idListChanged: idListChangedLayers.contains(layer),
-                    overall: overall
-                )
+            } else if let overall = newOverall {
+                for layer in dirtyLayers where layerDensityIsRestrictive(layer) {
+                    updateLayerDensity(
+                        layer: layer,
+                        layerPairs: currentLayerPairs(layer: layer),
+                        editedKeys: editedKeysByLayer[layer] ?? [],
+                        dirtyRects: dirtyRectsByLayer[layer] ?? [],
+                        idListChanged: idListChangedLayers.contains(layer),
+                        overall: overall
+                    )
+                }
             }
         }
 
         // Shorts: a pair verdict depends only on its two shapes.
         shortViolations.removeAll { !Set($0.shapeIDs).isDisjoint(with: editedShapeIDs) }
-        shortViolations.append(contentsOf: recomputeShorts(shapes: shapes, editedShapeIDs: editedShapeIDs))
+        shortViolations.append(contentsOf: recomputeShorts(editedShapeIDs: editedShapeIDs))
 
         // Opens: each net's connectivity depends only on its own elements.
         for netID in affectedNets { openByNet[netID] = nil }
         if !affectedNets.isEmpty {
-            let netShapes = shapes.filter { $0.netID.map(affectedNets.contains) ?? false }
-            let netVias = vias.filter { $0.netID.map(affectedNets.contains) ?? false }
+            let netShapes = shapesForNets(affectedNets)
+            let netVias = viasForNets(affectedNets)
             for violation in service.checkOpens(shapes: netShapes, vias: netVias, tech: tech) {
                 guard let netID = violation.netIDs.first else {
                     assertionFailure("open violations always carry their net")
@@ -253,14 +344,18 @@ public final class IncrementalDRCSession {
             }
         }
 
-        // Via enclosure for edited vias and vias whose halo was touched.
+        // Via enclosure for edited vias and vias whose halo was touched,
+        // resolved by occurrence key in flatten order so the emitted
+        // violations match the full scan exactly.
         viaEnclosureViolations.removeAll {
             $0.viaIDs.first.map(affectedViaIDs.contains) ?? false
         }
-        let recomputeVias = vias.filter { affectedViaIDs.contains($0.id) }
+        let recomputeVias = affectedViaKeys
+            .sorted { viaOrder($0) < viaOrder($1) }
+            .compactMap { viaByKey[$0] }
         if !recomputeVias.isEmpty {
             viaEnclosureViolations.append(
-                contentsOf: service.checkViaEnclosure(shapes: shapes, vias: recomputeVias, tech: tech)
+                contentsOf: checkViaEnclosure(vias: recomputeVias)
             )
         }
 
@@ -348,7 +443,23 @@ public final class IncrementalDRCSession {
         }
 
         terminalConflictViolations = conflicts.map(service.makeTerminalConflictViolation)
+        // Position indexes first: bucket rebuilding orders per-layer pair
+        // arrays by flatten position through shapeOrder/viaOrder.
+        rebuildShapeIndex()
+        rebuildViaIndex()
         rebuildAllBuckets()
+    }
+
+    private func rebuildShapeIndex() {
+        shapeIndexByID = Dictionary(
+            uniqueKeysWithValues: topShapes.enumerated().map { ($0.element.id, $0.offset) }
+        )
+    }
+
+    private func rebuildViaIndex() {
+        viaIndexByID = Dictionary(
+            uniqueKeysWithValues: topVias.enumerated().map { ($0.element.id, $0.offset) }
+        )
     }
 
     private func rebuildAllBuckets() {
@@ -356,6 +467,9 @@ public final class IncrementalDRCSession {
         let vias = topVias + childVias
         let pins = topPins + childPins
         let pairsByLayer = Dictionary(grouping: flattenedPairs(), by: { $0.shape.layer })
+        rebuildShapeIndexes(pairsByLayer: pairsByLayer)
+        rebuildNetIndexes()
+        densityIsTracked = tech.layerRules.contains { densityRuleIsRestrictive($0) }
 
         coverageByLayer = [:]
         clusterStateByLayer = [:]
@@ -364,7 +478,7 @@ public final class IncrementalDRCSession {
                 &coverageByLayer, layer,
                 service.checkRuleCoverage(shapes: layerPairs.map(\.shape), tech: tech)
             )
-            updateLayerClusters(layer: layer, layerPairs: layerPairs, editedKeys: [], dirtyRects: [])
+            updateLayerClusters(layer: layer, editedKeys: [], dirtyRects: [])
         }
 
         enclosureByRuleID = [:]
@@ -373,14 +487,21 @@ public final class IncrementalDRCSession {
             if !fresh.isEmpty { enclosureByRuleID[ruleID] = fresh }
         }
 
-        viaEnclosureViolations = service.checkViaEnclosure(shapes: shapes, vias: vias, tech: tech)
+        // The session's own per-layer grids already exist, so the per-via
+        // candidate path is the same one apply() uses — one grid build
+        // instead of two, identical verdicts.
+        viaEnclosureViolations = checkViaEnclosure(vias: vias)
 
-        overallBoundingBox = service.overallBoundingBox(shapes: shapes)
         densityStateByLayer = [:]
-        if let overall = overallBoundingBox {
-            for (layer, layerPairs) in pairsByLayer {
-                rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
+        if densityIsTracked {
+            overallBoundingBox = service.overallBoundingBox(shapes: shapes)
+            if let overall = overallBoundingBox {
+                for (layer, layerPairs) in pairsByLayer where layerDensityIsRestrictive(layer) {
+                    rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
+                }
             }
+        } else {
+            overallBoundingBox = nil
         }
 
         shortViolations = service.checkShorts(shapes: shapes)
@@ -408,28 +529,227 @@ public final class IncrementalDRCSession {
         return pairs
     }
 
+    private func rebuildShapeIndexes(
+        pairsByLayer: [LayoutLayerID: [(key: FlatShapeKey, shape: LayoutShape)]]
+    ) {
+        shapeByKey = [:]
+        shapeKeysByLayer = [:]
+        shapeGridByLayer = [:]
+        nonManhattanKeys = []
+        nonManhattanCountByLayer = [:]
+        let dbu = tech.units.dbuPerMicron
+        for (layer, layerPairs) in pairsByLayer {
+            var keys = Set<FlatShapeKey>()
+            keys.reserveCapacity(layerPairs.count)
+            for (key, shape) in layerPairs {
+                shapeByKey[key] = shape
+                keys.insert(key)
+                if !service.isManhattanShape(shape, dbu: dbu) {
+                    nonManhattanKeys.insert(key)
+                    nonManhattanCountByLayer[layer, default: 0] += 1
+                }
+            }
+            shapeKeysByLayer[layer] = keys
+            let boxes = layerPairs.map { LayoutGeometryAnalysis.boundingBox(for: $0.shape.geometry) }
+            shapeGridByLayer[layer] = MutableFlatShapeGridIndex(
+                boundingBoxes: zip(layerPairs.map(\.key), boxes).map { (key: $0.0, box: $0.1) },
+                cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
+            )
+        }
+    }
+
+    /// The layer's flattened pairs in flatten order, materialized on demand
+    /// from the incremental key set. Only paths that genuinely need the
+    /// whole layer (initial cluster builds, non-Manhattan layers,
+    /// unruled-layer coverage, restrictive-density layers, enclosure-rule
+    /// layers) pay this O(K log K); the steady-state apply path does not.
+    private func currentLayerPairs(layer: LayoutLayerID) -> [(key: FlatShapeKey, shape: LayoutShape)] {
+        guard let keys = shapeKeysByLayer[layer] else { return [] }
+        return keys
+            .sorted { shapeOrder($0) < shapeOrder($1) }
+            .compactMap { key in
+                guard let shape = shapeByKey[key] else {
+                    assertionFailure("layer key set out of sync with the shape table")
+                    return nil
+                }
+                return (key: key, shape: shape)
+            }
+    }
+
+    private func layerDensityIsRestrictive(_ layer: LayoutLayerID) -> Bool {
+        tech.ruleSet(for: layer).map(densityRuleIsRestrictive) ?? false
+    }
+
+    private func rebuildNetIndexes() {
+        shapeKeysByNet = [:]
+        for (key, shape) in shapeByKey {
+            if let netID = shape.netID {
+                shapeKeysByNet[netID, default: []].insert(key)
+            }
+        }
+
+        viaByKey = [:]
+        viaKeysByID = [:]
+        viaKeysByNet = [:]
+        viaHaloGridByLayer = [:]
+        for via in topVias {
+            insertViaIntoNetIndex(key: .top(via.id), via: via)
+        }
+        for (index, via) in childVias.enumerated() {
+            insertViaIntoNetIndex(key: .child(index), via: via)
+        }
+    }
+
+    private func insertShapeIntoGrid(key: FlatShapeKey, shape: LayoutShape) {
+        shapeByKey[key] = shape
+        shapeKeysByLayer[shape.layer, default: []].insert(key)
+        if !service.isManhattanShape(shape, dbu: tech.units.dbuPerMicron) {
+            nonManhattanKeys.insert(key)
+            nonManhattanCountByLayer[shape.layer, default: 0] += 1
+        }
+        if let netID = shape.netID {
+            shapeKeysByNet[netID, default: []].insert(key)
+        }
+        let box = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
+        if shapeGridByLayer[shape.layer] == nil {
+            shapeGridByLayer[shape.layer] = MutableFlatShapeGridIndex(
+                boundingBoxes: [],
+                cellSize: ShapeGridIndex.defaultCellSize(for: [box])
+            )
+        }
+        shapeGridByLayer[shape.layer]?.insert(key: key, box: box)
+    }
+
+    private func removeShapeFromGrid(key: FlatShapeKey, shape: LayoutShape) {
+        shapeByKey[key] = nil
+        shapeKeysByLayer[shape.layer]?.remove(key)
+        if shapeKeysByLayer[shape.layer]?.isEmpty == true {
+            shapeKeysByLayer[shape.layer] = nil
+        }
+        if nonManhattanKeys.remove(key) != nil {
+            nonManhattanCountByLayer[shape.layer, default: 1] -= 1
+            if nonManhattanCountByLayer[shape.layer] == 0 {
+                nonManhattanCountByLayer[shape.layer] = nil
+            }
+        }
+        if let netID = shape.netID {
+            shapeKeysByNet[netID]?.remove(key)
+            if shapeKeysByNet[netID]?.isEmpty == true {
+                shapeKeysByNet[netID] = nil
+            }
+        }
+        shapeGridByLayer[shape.layer]?.remove(key: key)
+    }
+
+    private func insertViaIntoNetIndex(key: FlatViaKey, via: LayoutVia) {
+        viaByKey[key] = via
+        viaKeysByID[via.id, default: []].insert(key)
+        if let netID = via.netID {
+            viaKeysByNet[netID, default: []].insert(key)
+        }
+        guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return }
+        for layer in Set([def.topLayer, def.bottomLayer]) {
+            guard let halo = viaHalo(for: via, on: layer) else { continue }
+            if viaHaloGridByLayer[layer] == nil {
+                viaHaloGridByLayer[layer] = MutableFlatViaGridIndex(
+                    boundingBoxes: [],
+                    cellSize: ShapeGridIndex.defaultCellSize(for: [halo])
+                )
+            }
+            viaHaloGridByLayer[layer]?.insert(key: key, box: halo)
+        }
+    }
+
+    private func removeViaFromNetIndex(key: FlatViaKey, via: LayoutVia) {
+        viaByKey[key] = nil
+        viaKeysByID[via.id]?.remove(key)
+        if viaKeysByID[via.id]?.isEmpty == true {
+            viaKeysByID[via.id] = nil
+        }
+        if let netID = via.netID {
+            viaKeysByNet[netID]?.remove(key)
+            if viaKeysByNet[netID]?.isEmpty == true {
+                viaKeysByNet[netID] = nil
+            }
+        }
+        guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return }
+        for layer in Set([def.topLayer, def.bottomLayer]) {
+            viaHaloGridByLayer[layer]?.remove(key: key)
+        }
+    }
+
+    private func viaHalo(for via: LayoutVia, on layer: LayoutLayerID) -> LayoutRect? {
+        guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return nil }
+        let enclosure: Double
+        if layer == def.topLayer {
+            enclosure = def.enclosure.top
+        } else if layer == def.bottomLayer {
+            enclosure = def.enclosure.bottom
+        } else {
+            return nil
+        }
+        let roundingSlack = 1.0 / tech.units.dbuPerMicron
+        return service.viaCutRect(for: via, tech: tech)
+            .expanded(by: enclosure + roundingSlack, enclosure + roundingSlack)
+    }
+
+    private func shapesForNets(_ netIDs: Set<UUID>) -> [LayoutShape] {
+        netIDs
+            .flatMap { shapeKeysByNet[$0] ?? [] }
+            .sorted { shapeOrder($0) < shapeOrder($1) }
+            .compactMap { shapeByKey[$0] }
+    }
+
+    private func viasForNets(_ netIDs: Set<UUID>) -> [LayoutVia] {
+        netIDs
+            .flatMap { viaKeysByNet[$0] ?? [] }
+            .sorted { viaOrder($0) < viaOrder($1) }
+            .compactMap { viaByKey[$0] }
+    }
+
+    private func shapeOrder(_ key: FlatShapeKey) -> Int {
+        switch key {
+        case .top(let id):
+            shapeIndexByID[id] ?? Int.max
+        case .child(let index):
+            topShapes.count + index
+        }
+    }
+
+    private func viaOrder(_ key: FlatViaKey) -> Int {
+        switch key {
+        case .top(let id):
+            viaIndexByID[id] ?? Int.max
+        case .child(let index):
+            topVias.count + index
+        }
+    }
+
     // MARK: - Cluster maintenance
 
     /// Replaces the layer's affected clusters with a fresh partition of the
     /// shapes near the edit and re-checks exactly those clusters.
     private func updateLayerClusters(
         layer: LayoutLayerID,
-        layerPairs: [(key: FlatShapeKey, shape: LayoutShape)],
         editedKeys: Set<FlatShapeKey>,
         dirtyRects: [LayoutRect]
     ) {
-        guard let rules = tech.ruleSet(for: layer), !layerPairs.isEmpty else {
+        guard let rules = tech.ruleSet(for: layer),
+              shapeKeysByLayer[layer]?.isEmpty == false else {
             clusterStateByLayer[layer] = nil
             return
         }
-        let dbu = tech.units.dbuPerMicron
         let halo = service.clusterHalo(for: rules, tech: tech)
-        let manhattan = layerPairs.allSatisfy { service.isManhattanShape($0.shape, dbu: dbu) }
+        // The non-Manhattan census is maintained per shape insert/remove,
+        // so this is the same verdict the full allSatisfy scan would give
+        // without re-evaluating the predicate across the layer.
+        let manhattan = (nonManhattanCountByLayer[layer] ?? 0) == 0
 
         guard manhattan else {
             // Non-Manhattan geometry sidesteps the scanline banding the
             // partition relies on; one whole-layer cluster is exact by
             // definition, just without locality.
+            let layerPairs = currentLayerPairs(layer: layer)
             var state = LayerClusterState()
             state.isMonolithic = true
             installClusters(
@@ -437,12 +757,18 @@ public final class IncrementalDRCSession {
                 analyzedPairs: layerPairs,
                 into: &state
             )
+            rebuildClusterGrid(in: &state)
             clusterStateByLayer[layer] = state
             return
         }
 
-        var state = clusterStateByLayer[layer] ?? LayerClusterState()
+        // Take ownership out of the dictionary: a subscript read would
+        // leave a second reference and turn every in-place mutation below
+        // into a full copy of the per-cluster dictionaries — at ~83k
+        // single-shape clusters that copy IS the apply cost.
+        var state = clusterStateByLayer.removeValue(forKey: layer) ?? LayerClusterState()
         if state.isMonolithic || state.clusters.isEmpty {
+            let layerPairs = currentLayerPairs(layer: layer)
             state = LayerClusterState()
             installClusters(
                 service.shapeClusters(
@@ -451,6 +777,7 @@ public final class IncrementalDRCSession {
                 analyzedPairs: layerPairs,
                 into: &state
             )
+            rebuildClusterGrid(in: &state)
             clusterStateByLayer[layer] = state
             return
         }
@@ -461,9 +788,9 @@ public final class IncrementalDRCSession {
         for key in editedKeys {
             if let clusterKey = state.clusterOfShape[key] { affected.insert(clusterKey) }
         }
-        for (clusterKey, cluster) in state.clusters where !affected.contains(clusterKey) {
-            let reach = cluster.boundingBox.expanded(by: halo, halo)
-            if dirtyRects.contains(where: { $0.intersects(reach) }) {
+        for rect in dirtyRects {
+            for clusterKey in clusterKeys(near: rect, margin: halo, state: state)
+            where !affected.contains(clusterKey) {
                 affected.insert(clusterKey)
             }
         }
@@ -471,7 +798,11 @@ public final class IncrementalDRCSession {
         // Re-partition the affected membership plus the edited shapes, then
         // pull in any untouched cluster a fresh cluster now reaches; repeat
         // until the boundary is closed. The fixed point restores the global
-        // partition restricted to the subset.
+        // partition restricted to the subset. The subset is materialized
+        // from the shape table in flatten order; edited keys whose shape
+        // was removed by this delta — or moved to ANOTHER layer, leaving
+        // the same key pointing at a foreign-layer shape — resolve to
+        // nothing here, exactly like the layer-array filter they replace.
         var subsetKeys = editedKeys
         for clusterKey in affected {
             guard let cluster = state.clusters[clusterKey] else { continue }
@@ -480,7 +811,12 @@ public final class IncrementalDRCSession {
         var analyzedPairs: [(key: FlatShapeKey, shape: LayoutShape)] = []
         var newClusters: [LayerShapeCluster] = []
         while true {
-            analyzedPairs = layerPairs.filter { subsetKeys.contains($0.key) }
+            analyzedPairs = subsetKeys
+                .sorted { shapeOrder($0) < shapeOrder($1) }
+                .compactMap { key in
+                    guard let shape = shapeByKey[key], shape.layer == layer else { return nil }
+                    return (key: key, shape: shape)
+                }
             newClusters = analyzedPairs.isEmpty ? [] : service.shapeClusters(
                 of: analyzedPairs.map(\.shape),
                 keys: analyzedPairs.map(\.key),
@@ -489,9 +825,9 @@ public final class IncrementalDRCSession {
             )
             var grew = false
             for cluster in newClusters {
-                let reach = cluster.boundingBox.expanded(by: halo, halo)
-                for (oldKey, old) in state.clusters
-                where !affected.contains(oldKey) && reach.intersects(old.boundingBox) {
+                for oldKey in clusterKeys(near: cluster.boundingBox, margin: halo, state: state)
+                where !affected.contains(oldKey) {
+                    guard let old = state.clusters[oldKey] else { continue }
                     affected.insert(oldKey)
                     subsetKeys.formUnion(old.memberKeys)
                     grew = true
@@ -502,6 +838,7 @@ public final class IncrementalDRCSession {
 
         for clusterKey in affected {
             guard let old = state.clusters.removeValue(forKey: clusterKey) else { continue }
+            state.clusterGrid?.remove(key: clusterKey)
             for member in old.memberKeys { state.clusterOfShape[member] = nil }
             state.widthAreaByCluster[clusterKey] = nil
             state.spacingByCluster[clusterKey] = nil
@@ -519,12 +856,74 @@ public final class IncrementalDRCSession {
     ) {
         for cluster in clusters {
             state.clusters[cluster.key] = cluster
+            state.clusterGrid?.insert(key: cluster.key, box: cluster.boundingBox)
             for member in cluster.memberKeys { state.clusterOfShape[member] = cluster.key }
             let clusterShapes = cluster.memberIndices.map { analyzedPairs[$0].shape }
             let widthArea = service.checkWidthAndArea(shapes: clusterShapes, tech: tech)
             if !widthArea.isEmpty { state.widthAreaByCluster[cluster.key] = widthArea }
             let spacing = service.checkSpacing(shapes: clusterShapes, tech: tech)
             if !spacing.isEmpty { state.spacingByCluster[cluster.key] = spacing }
+        }
+    }
+
+    private func rebuildClusterGrid(in state: inout LayerClusterState) {
+        let boxes = state.clusters.values.map { (key: $0.key, box: $0.boundingBox) }
+        state.clusterGrid = MutableFlatShapeGridIndex(
+            boundingBoxes: boxes,
+            cellSize: ShapeGridIndex.defaultCellSize(for: boxes.map(\.box))
+        )
+    }
+
+    private func clusterKeys(
+        near rect: LayoutRect,
+        margin: Double,
+        state: LayerClusterState
+    ) -> [FlatShapeKey] {
+        if state.clusters.count >= 512, let grid = state.clusterGrid {
+            return grid.neighbours(of: rect, margin: margin)
+        }
+        return state.clusters.compactMap { key, cluster in
+            cluster.boundingBox.expanded(by: margin, margin).intersects(rect) ? key : nil
+        }.sorted()
+    }
+
+    // MARK: - Via enclosure maintenance
+
+    private func checkViaEnclosure(vias: [LayoutVia]) -> [LayoutViolation] {
+        var violations: [LayoutViolation] = []
+        let roundingSlack = 1.0 / tech.units.dbuPerMicron
+        for via in vias {
+            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { continue }
+            let cutRect = service.viaCutRect(for: via, tech: tech)
+            let topHalo = cutRect.expanded(by: def.enclosure.top, def.enclosure.top)
+            let bottomHalo = cutRect.expanded(by: def.enclosure.bottom, def.enclosure.bottom)
+            let topCandidates = shapeCandidates(layer: def.topLayer, near: topHalo, margin: roundingSlack)
+            let bottomCandidates = shapeCandidates(layer: def.bottomLayer, near: bottomHalo, margin: roundingSlack)
+            if let violation = service.viaEnclosureViolation(
+                for: via,
+                topCandidates: topCandidates,
+                bottomCandidates: bottomCandidates,
+                tech: tech
+            ) {
+                violations.append(violation)
+            }
+        }
+        return violations
+    }
+
+    private func shapeCandidates(
+        layer: LayoutLayerID,
+        near rect: LayoutRect,
+        margin: Double
+    ) -> [LayoutShape] {
+        guard let grid = shapeGridByLayer[layer] else { return [] }
+        let probe = rect.expanded(by: margin, margin)
+        return grid.neighbours(of: rect, margin: margin).compactMap { key in
+            guard let shape = shapeByKey[key],
+                  LayoutGeometryAnalysis.boundingBox(for: shape.geometry).intersects(probe) else {
+                return nil
+            }
+            return shape
         }
     }
 
@@ -536,7 +935,9 @@ public final class IncrementalDRCSession {
         layerPairs: [(key: FlatShapeKey, shape: LayoutShape)],
         overall: LayoutRect
     ) {
-        guard let rules = tech.ruleSet(for: layer), !layerPairs.isEmpty else {
+        guard let rules = tech.ruleSet(for: layer),
+              densityRuleIsRestrictive(rules),
+              !layerPairs.isEmpty else {
             densityStateByLayer[layer] = nil
             return
         }
@@ -562,7 +963,9 @@ public final class IncrementalDRCSession {
         idListChanged: Bool,
         overall: LayoutRect
     ) {
-        guard let rules = tech.ruleSet(for: layer), !layerPairs.isEmpty else {
+        guard let rules = tech.ruleSet(for: layer),
+              densityRuleIsRestrictive(rules),
+              !layerPairs.isEmpty else {
             densityStateByLayer[layer] = nil
             return
         }
@@ -584,6 +987,10 @@ public final class IncrementalDRCSession {
             )
         }
         densityStateByLayer[layer] = state
+    }
+
+    private func densityRuleIsRestrictive(_ rules: LayoutLayerRuleSet) -> Bool {
+        rules.minDensity > 0 || rules.maxDensity < 1
     }
 
     /// Recomputes the window's boolean-merged clipped area — identical to
@@ -680,34 +1087,54 @@ public final class IncrementalDRCSession {
 
     /// Short pairs involving an edited, still-present shape, emitted with
     /// the lower flattened index first so payloads match the full scan.
-    private func recomputeShorts(
-        shapes: [LayoutShape],
-        editedShapeIDs: Set<UUID>
-    ) -> [LayoutViolation] {
+    private func recomputeShorts(editedShapeIDs: Set<UUID>) -> [LayoutViolation] {
         guard !editedShapeIDs.isEmpty else { return [] }
         struct PairKey: Hashable {
-            let low: Int
-            let high: Int
+            let lowOrder: Int
+            let highOrder: Int
+            let lowKey: FlatShapeKey
+            let highKey: FlatShapeKey
         }
         var seenPairs: Set<PairKey> = []
-        var violations: [LayoutViolation] = []
-        let editedIndices = shapes.indices.filter { editedShapeIDs.contains(shapes[$0].id) }
-        for editedIndex in editedIndices {
-            let edited = shapes[editedIndex]
-            for partnerIndex in shapes.indices where partnerIndex != editedIndex {
-                guard shapes[partnerIndex].layer == edited.layer else { continue }
-                let key = PairKey(
-                    low: min(editedIndex, partnerIndex),
-                    high: max(editedIndex, partnerIndex)
+        var pairs: [PairKey] = []
+        for shapeID in editedShapeIDs {
+            let editedKey = FlatShapeKey.top(shapeID)
+            guard let edited = shapeByKey[editedKey],
+                  let grid = shapeGridByLayer[edited.layer] else { continue }
+            let editedBox = LayoutGeometryAnalysis.boundingBox(for: edited.geometry)
+            let editedOrder = shapeOrder(editedKey)
+            for partnerKey in grid.neighbours(of: editedBox) where partnerKey != editedKey {
+                guard let partner = shapeByKey[partnerKey] else { continue }
+                let partnerBox = LayoutGeometryAnalysis.boundingBox(for: partner.geometry)
+                guard partnerBox.intersects(editedBox) else { continue }
+                let partnerOrder = shapeOrder(partnerKey)
+                let pair = editedOrder < partnerOrder ? PairKey(
+                    lowOrder: editedOrder,
+                    highOrder: partnerOrder,
+                    lowKey: editedKey,
+                    highKey: partnerKey
+                ) : PairKey(
+                    lowOrder: partnerOrder,
+                    highOrder: editedOrder,
+                    lowKey: partnerKey,
+                    highKey: editedKey
                 )
-                guard seenPairs.insert(key).inserted else { continue }
-                if let violation = service.sameLayerShortViolation(
-                    first: shapes[key.low],
-                    second: shapes[key.high]
-                ) {
-                    violations.append(violation)
-                }
+                guard seenPairs.insert(pair).inserted else { continue }
+                pairs.append(pair)
             }
+        }
+        pairs.sort {
+            if $0.lowOrder != $1.lowOrder { return $0.lowOrder < $1.lowOrder }
+            return $0.highOrder < $1.highOrder
+        }
+        var violations: [LayoutViolation] = []
+        for pair in pairs {
+            guard let first = shapeByKey[pair.lowKey],
+                  let second = shapeByKey[pair.highKey],
+                  let violation = service.sameLayerShortViolation(first: first, second: second) else {
+                continue
+            }
+            violations.append(violation)
         }
         return violations
     }

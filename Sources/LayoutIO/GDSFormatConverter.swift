@@ -40,7 +40,7 @@ public struct GDSFormatConverter: LayoutFormatConverter {
         guard format == .gds else {
             throw LayoutIOError.unsupportedFormat(format)
         }
-        let irLibrary = bridge.exportLibrary(document, tech: tech)
+        let irLibrary = try bridge.exportLibrary(document, tech: tech)
         let data: Data
         do {
             data = try GDSLibraryWriter.write(irLibrary)

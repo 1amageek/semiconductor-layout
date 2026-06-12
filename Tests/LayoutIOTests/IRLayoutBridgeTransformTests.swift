@@ -35,7 +35,7 @@ struct IRLayoutBridgeTransformTests {
     }
 
     @Test("Export preserves arbitrary rotation and magnification")
-    func exportPreservesArbitraryRotationAndMagnification() {
+    func exportPreservesArbitraryRotationAndMagnification() throws {
         let child = LayoutCell(name: "CHILD")
         let instance = LayoutInstance(
             cellID: child.id,
@@ -54,7 +54,7 @@ struct IRLayoutBridgeTransformTests {
             topCellID: top.id
         )
 
-        let library = IRLayoutBridge().exportLibrary(document, tech: .standard())
+        let library = try IRLayoutBridge().exportLibrary(document, tech: .standard())
         let topCell = library.cells.first { $0.name == "TOP" }
         let cellRef = topCell?.elements.compactMap { element -> IRCellRef? in
             if case .cellRef(let ref) = element {

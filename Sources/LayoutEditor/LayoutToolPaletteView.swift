@@ -11,7 +11,7 @@ public struct LayoutToolPaletteView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Tools")
                 .font(.headline)
-            ForEach([LayoutTool.select, .rectangle, .path, .via, .label, .pin], id: \.self) { tool in
+            ForEach([LayoutTool.select, .rectangle, .path, .route, .via, .label, .pin], id: \.self) { tool in
                 Button {
                     viewModel.tool = tool
                 } label: {

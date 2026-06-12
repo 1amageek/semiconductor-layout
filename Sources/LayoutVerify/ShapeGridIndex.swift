@@ -45,16 +45,26 @@ struct ShapeGridIndex {
         cells = table
     }
 
-    /// Mean of the boxes' larger dimension: long wires then span several
-    /// cells while compact shapes map to one, keeping both insert fanout
-    /// and query candidate counts low without tuning per call site.
+    /// Mean of the boxes' SMALLER dimension, floored so the single longest
+    /// box never spans more than ~256 cells.
+    ///
+    /// The smaller dimension is what keeps point-probe queries selective:
+    /// sizing cells by the larger dimension degenerates on wire-dominated
+    /// layers (one 500 µm wire layer made every via-halo query return the
+    /// whole layer, turning session init O(vias × layerShapes) — measured
+    /// 327 s at 167k elements). For compact shapes both means coincide, so
+    /// square-ish layers keep their previous grid. The longest-box floor
+    /// bounds insert fanout when one huge plane coexists with small pads.
     static func defaultCellSize(for boundingBoxes: [LayoutRect]) -> Double {
         guard !boundingBoxes.isEmpty else { return 1.0 }
-        var total = 0.0
+        var smallerTotal = 0.0
+        var longest = 0.0
         for box in boundingBoxes {
-            total += max(box.size.width, box.size.height)
+            smallerTotal += min(box.size.width, box.size.height)
+            longest = max(longest, max(box.size.width, box.size.height))
         }
-        return max(total / Double(boundingBoxes.count), 1e-3)
+        let meanSmaller = smallerTotal / Double(boundingBoxes.count)
+        return max(meanSmaller, longest / 256, 1e-3)
     }
 
     /// Ascending, duplicate-free indices of boxes whose cells intersect the

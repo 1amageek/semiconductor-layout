@@ -61,6 +61,7 @@ let package = Package(
                 "LayoutVerify",
                 "LayoutIO",
                 "LayoutIntegration",
+                "LayoutAutoGen",
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
             ]

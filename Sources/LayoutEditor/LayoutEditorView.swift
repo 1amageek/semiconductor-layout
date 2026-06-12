@@ -29,8 +29,13 @@ public struct LayoutEditorView: View {
                     .padding(12)
                 }
                 .overlay(alignment: .top) {
-                    LayoutToolOptionsOverlay(viewModel: viewModel)
-                        .padding(.top, 12)
+                    VStack(spacing: 8) {
+                        LayoutToolOptionsOverlay(viewModel: viewModel)
+                        if let message = viewModel.lastError {
+                            errorBanner(message)
+                        }
+                    }
+                    .padding(.top, 12)
                 }
                 .overlay(alignment: .bottomLeading) {
                     HStack(spacing: 8) {
@@ -43,6 +48,13 @@ public struct LayoutEditorView: View {
                     LayoutMiniMapView(viewModel: viewModel)
                         .padding(12)
                 }
+                .overlay(alignment: .topTrailing) {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        LayoutTrustDashboard(viewModel: viewModel)
+                        LayoutIntentPanel(viewModel: viewModel)
+                    }
+                    .padding(12)
+                }
                 .layoutPriority(1)
 
             if showsDiagnosticsBar {
@@ -50,7 +62,12 @@ public struct LayoutEditorView: View {
                     violations: viewModel.violations,
                     staleKinds: viewModel.staleViolationKinds,
                     connectivity: viewModel.connectivityAnalysis,
-                    constraintViolations: viewModel.constraintViolations
+                    constraintViolations: viewModel.constraintViolations,
+                    lvsExtraction: viewModel.lvsExtraction,
+                    lvsComparison: viewModel.lvsComparison,
+                    verificationPending: viewModel.inPlaceVerificationPending,
+                    onFocusViolation: { viewModel.focusViolation($0) },
+                    onFixAll: { viewModel.fixAllViolations() }
                 )
             }
         }
@@ -105,15 +122,44 @@ public struct LayoutEditorView: View {
     }
 
     /// The bar appears whenever there is a live verdict to show: DRC
-    /// violations, stale checks, or connectivity problems (shorts / opens).
+    /// violations, stale checks, connectivity problems, or a pending
+    /// in-place verification.
     private var showsDiagnosticsBar: Bool {
         if !viewModel.violations.isEmpty || !viewModel.staleViolationKinds.isEmpty {
+            return true
+        }
+        if viewModel.inPlaceVerificationPending {
             return true
         }
         if let connectivity = viewModel.connectivityAnalysis {
             return !connectivity.shorts.isEmpty || !connectivity.opens.isEmpty
         }
         return false
+    }
+
+    /// Errors the engine raised (refused via placement, window miss,
+    /// cycle rejection, ...) — visible, dismissible, never silent.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundStyle(.white)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            Button {
+                viewModel.clearError()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.white.opacity(0.8))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.red.opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
     }
 
     private var backSwipeGesture: some Gesture {

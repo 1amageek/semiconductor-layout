@@ -9,7 +9,7 @@ import LayoutIR
 struct IRLayoutBridgeViaTests {
 
     @Test("Export materializes vias as cut-layer boundaries")
-    func exportMaterializesViasAsCutLayerBoundaries() {
+    func exportMaterializesViasAsCutLayerBoundaries() throws {
         let via = LayoutVia(
             viaDefinitionID: "VIA1",
             position: LayoutPoint(x: 1.0, y: 2.0)
@@ -17,7 +17,7 @@ struct IRLayoutBridgeViaTests {
         let top = LayoutCell(name: "TOP", vias: [via])
         let document = LayoutDocument(name: "via-export", cells: [top], topCellID: top.id)
 
-        let library = IRLayoutBridge().exportLibrary(document, tech: .standard())
+        let library = try IRLayoutBridge().exportLibrary(document, tech: .standard())
         let boundaries = library.cells.first?.elements.compactMap { element -> IRBoundary? in
             if case .boundary(let boundary) = element {
                 return boundary
@@ -41,7 +41,7 @@ struct IRLayoutBridgeViaTests {
     }
 
     @Test("Import restores bridge-authored via boundaries as vias")
-    func importRestoresBridgeAuthoredViaBoundariesAsVias() {
+    func importRestoresBridgeAuthoredViaBoundariesAsVias() throws {
         let originalVia = LayoutVia(
             viaDefinitionID: "VIA1",
             position: LayoutPoint(x: 1.0, y: 2.0)
@@ -50,7 +50,7 @@ struct IRLayoutBridgeViaTests {
         let document = LayoutDocument(name: "via-round-trip", cells: [top], topCellID: top.id)
         let bridge = IRLayoutBridge()
 
-        let library = bridge.exportLibrary(document, tech: .standard())
+        let library = try bridge.exportLibrary(document, tech: .standard())
         let imported = bridge.importLibrary(library, tech: .standard())
         let importedTop = imported.cells.first
 
@@ -155,7 +155,7 @@ struct IRLayoutBridgeViaTests {
     }
 
     @Test("Export skips vias whose cut layer is not mapped")
-    func exportSkipsViasWhoseCutLayerIsNotMapped() {
+    func exportSkipsViasWhoseCutLayerIsNotMapped() throws {
         let m1 = LayoutLayerDefinition(
             id: LayoutLayerID(name: "M1", purpose: "drawing"),
             displayName: "Metal1",
@@ -195,7 +195,7 @@ struct IRLayoutBridgeViaTests {
         )
         let document = LayoutDocument(name: "missing-cut-layer", cells: [top], topCellID: top.id)
 
-        let library = IRLayoutBridge().exportLibrary(document, tech: tech)
+        let library = try IRLayoutBridge().exportLibrary(document, tech: tech)
 
         #expect(library.cells.first?.elements.isEmpty == true)
     }

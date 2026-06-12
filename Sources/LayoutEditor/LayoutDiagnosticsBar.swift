@@ -11,18 +11,36 @@ public struct LayoutDiagnosticsBar: View {
     let staleKinds: Set<LayoutViolationKind>
     let connectivity: ConnectivityAnalysis?
     let constraintViolations: [LayoutConstraintViolation]
+    let lvsExtraction: DeviceExtractionResult?
+    let lvsComparison: NetlistComparison?
+    /// True while in-place gesture edits have outrun verification.
+    let verificationPending: Bool
+    /// Row click → frame the finding on the canvas.
+    let onFocusViolation: ((LayoutViolation) -> Void)?
+    /// Fix-all trigger (N1 repair sweep); nil hides the button.
+    let onFixAll: (() -> Void)?
     @State private var isExpanded = false
 
     public init(
         violations: [LayoutViolation],
         staleKinds: Set<LayoutViolationKind> = [],
         connectivity: ConnectivityAnalysis? = nil,
-        constraintViolations: [LayoutConstraintViolation] = []
+        constraintViolations: [LayoutConstraintViolation] = [],
+        lvsExtraction: DeviceExtractionResult? = nil,
+        lvsComparison: NetlistComparison? = nil,
+        verificationPending: Bool = false,
+        onFocusViolation: ((LayoutViolation) -> Void)? = nil,
+        onFixAll: (() -> Void)? = nil
     ) {
         self.violations = violations
         self.staleKinds = staleKinds
         self.connectivity = connectivity
         self.constraintViolations = constraintViolations
+        self.lvsExtraction = lvsExtraction
+        self.lvsComparison = lvsComparison
+        self.verificationPending = verificationPending
+        self.onFocusViolation = onFocusViolation
+        self.onFixAll = onFixAll
     }
 
     public var body: some View {
@@ -45,7 +63,19 @@ public struct LayoutDiagnosticsBar: View {
                     }
                     connectivityChip
                     constraintChip
+                    lvsChip
+                    if verificationPending {
+                        Label("verification pending", systemImage: "hourglass")
+                            .foregroundStyle(.yellow)
+                            .help("In-place gesture edits have not re-verified yet; verdicts describe the pre-gesture geometry.")
+                    }
                     Spacer()
+                    if let onFixAll, !violations.isEmpty {
+                        Button("Fix All", action: onFixAll)
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .help("Apply every computable repair until a fixed point; residuals stay listed with reasons.")
+                    }
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                         .foregroundStyle(.secondary)
@@ -63,22 +93,28 @@ public struct LayoutDiagnosticsBar: View {
                         connectivityRows
                         constraintRows
                         ForEach(violations.prefix(50)) { violation in
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                    .font(.caption)
-                                    .frame(width: 16)
-                                Text(violation.message)
-                                    .font(.caption)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Spacer()
-                                if let layer = violation.layer {
-                                    Text(layer.name)
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
+                            Button {
+                                onFocusViolation?(violation)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange)
+                                        .font(.caption)
+                                        .frame(width: 16)
+                                    Text(violation.message)
+                                        .font(.caption)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    if let layer = violation.layer {
+                                        Text(layer.name)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
                                 }
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 4)
                         }
@@ -156,8 +192,27 @@ public struct LayoutDiagnosticsBar: View {
         }
     }
 
-    /// Design-intent verdict: broken constraints (symmetry, matching,
-    /// alignment, ...) — purple, apart from DRC orange.
+    /// Live LVS verdict against the loaded reference netlist. Hidden when
+    /// no reference is set (LVS off is a configuration, not a verdict).
+    @ViewBuilder
+    private var lvsChip: some View {
+        if let comparison = lvsComparison {
+            let issueCount = lvsExtraction?.issues.count ?? 0
+            if comparison.passed && issueCount == 0 {
+                Label("LVS clean", systemImage: "checkmark.seal")
+                    .foregroundStyle(.green)
+                    .help("The extracted device netlist matches the reference.")
+            } else {
+                Label(
+                    "LVS \(comparison.unmatchedExtractedDevices.count + comparison.unmatchedReferenceDevices.count) unmatched · \(comparison.parameterMismatches.count) params · \(issueCount) issues",
+                    systemImage: "xmark.seal"
+                )
+                .foregroundStyle(.red)
+                .help("Differences between the extracted netlist and the reference, plus extraction issues.")
+            }
+        }
+    }
+
     @ViewBuilder
     private var constraintChip: some View {
         if !constraintViolations.isEmpty {

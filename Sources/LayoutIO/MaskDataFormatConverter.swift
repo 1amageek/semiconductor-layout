@@ -45,7 +45,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
     }
 
     public func exportDocument(_ document: LayoutDocument, to url: URL, format: LayoutFileFormat) throws {
-        let irLibrary = bridge.exportLibrary(document, tech: tech)
+        let irLibrary = try bridge.exportLibrary(document, tech: tech)
         let data: Data
         do {
             data = try writeIRLibrary(irLibrary, format: format)

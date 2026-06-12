@@ -205,6 +205,93 @@ struct IncrementalDRCSessionBenchmarkTests {
         #expect(padSamples[padSamples.count / 2] < 100, "dense-layer live apply regressed")
     }
 
+    /// M7 scale parity: the live verification sessions must keep their
+    /// per-edit budgets on a design two orders of magnitude larger than
+    /// the interactive benchmark above (~170k elements). Open cost (init)
+    /// is reported alongside, since it bounds how big a document the
+    /// editor can load with live verification enabled.
+    @Test func liveSessionsScaleToHundredThousandElements() throws {
+        let rows = 500
+        let cols = 500
+        #if DEBUG
+        let configuration = "debug"
+        #else
+        let configuration = "release"
+        #endif
+        let document = makeDocument(rows: rows, cols: cols)
+        let tech = makeTech()
+        let topCell = try #require(document.cells.first)
+        let clock = ContinuousClock()
+        let shapeCount = topCell.shapes.count
+        let viaCount = topCell.vias.count
+
+        let wire = try #require(
+            topCell.shapes.first {
+                $0.layer == m1 && LayoutGeometryAnalysis.boundingBox(for: $0.geometry).origin.y == 250.0
+            },
+            "row-250 M1 wire must exist"
+        )
+        let pad = try #require(
+            topCell.shapes.first {
+                $0.layer == m2 && {
+                    let box = LayoutGeometryAnalysis.boundingBox(for: $0.geometry)
+                    return box.origin.x == 251.3 && box.origin.y == 250.0
+                }($0)
+            },
+            "row-250 col-251 M2 pad must exist"
+        )
+
+        // Incremental DRC.
+        var drcSession: IncrementalDRCSession? = nil
+        let drcInit = try clock.measure {
+            drcSession = try IncrementalDRCSession(document: document, tech: tech)
+        }
+        let drc = try #require(drcSession)
+        #expect(drc.currentResult.violations.isEmpty == true)
+        let drcWire = try measureMoves(
+            session: drc, original: wire, moved: try shifted(wire, dy: 0.02), rounds: 5
+        )
+        let drcPad = try measureMoves(
+            session: drc, original: pad, moved: try shifted(pad, dy: 0.02), rounds: 5
+        )
+
+        // Live connectivity.
+        var connectivitySession: LiveConnectivitySession? = nil
+        let connectivityInit = try clock.measure {
+            connectivitySession = try LiveConnectivitySession(document: document, tech: tech)
+        }
+        let connectivity = try #require(connectivitySession)
+        var connectivitySamples: [Double] = []
+        for _ in 0..<5 {
+            let forth = try connectivity.apply(LayoutEditDelta(updatedShapes: [try shifted(wire, dy: 0.02)]))
+            connectivitySamples.append(milliseconds(forth.duration))
+            let back = try connectivity.apply(LayoutEditDelta(updatedShapes: [wire]))
+            connectivitySamples.append(milliseconds(back.duration))
+        }
+        connectivitySamples.sort()
+
+        func median(_ samples: [Double]) -> Double { samples[samples.count / 2] }
+        func verdict(_ value: Double, _ target: Double) -> String {
+            value <= target ? "MEETS" : "MISSES"
+        }
+        print("[bench] (\(configuration), \(shapeCount)s/\(viaCount)v) DRC init: \(String(format: "%.0f", milliseconds(drcInit)))ms, connectivity init: \(String(format: "%.0f", milliseconds(connectivityInit)))ms")
+        print("[bench] (\(configuration)) DRC m1WireMove median \(String(format: "%.2f", median(drcWire)))ms, m2PadMove median \(String(format: "%.2f", median(drcPad)))ms (\(verdict(max(median(drcWire), median(drcPad)), 10)) 10ms live target)")
+        print("[bench] (\(configuration)) connectivity wireMove median \(String(format: "%.2f", median(connectivitySamples)))ms (\(verdict(median(connectivitySamples), 10)) 10ms live target)")
+
+        #expect(drc.commit().violations.isEmpty == true, "round-trip edits must end clean")
+
+        // Hard regression caps, generous (3-4x) over observed debug
+        // numbers (init ~18s, wire ~50ms, pad ~140ms, connectivity ~11ms)
+        // so the honest verdict stays in the printed report. The first
+        // run of this benchmark caught the degenerate grid cell size that
+        // made init O(vias x layerShapes) — 327s before the fix.
+        #expect(milliseconds(drcInit) < 90_000, "DRC session init regressed")
+        #expect(milliseconds(connectivityInit) < 30_000, "connectivity session init regressed")
+        #expect(median(drcWire) < 200, "sparse-layer live apply regressed at scale")
+        #expect(median(drcPad) < 500, "dense-layer live apply regressed at scale")
+        #expect(median(connectivitySamples) < 50, "connectivity live apply regressed at scale")
+    }
+
     @Test func violationAppearsAndClearsAtScale() throws {
         let document = makeDocument(rows: 80, cols: 80)
         let tech = makeTech()

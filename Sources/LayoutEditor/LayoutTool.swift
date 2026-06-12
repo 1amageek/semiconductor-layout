@@ -5,6 +5,7 @@ public enum LayoutTool: String, CaseIterable, Sendable {
     case rectangle
     case polygon
     case path
+    case route
     case subtract
     case split
     case merge
@@ -19,6 +20,7 @@ public enum LayoutTool: String, CaseIterable, Sendable {
         case .rectangle: return "Rectangle"
         case .polygon: return "Polygon"
         case .path: return "Path"
+        case .route: return "Route"
         case .subtract: return "Subtract"
         case .split: return "Split"
         case .merge: return "Merge"
@@ -35,6 +37,7 @@ public enum LayoutTool: String, CaseIterable, Sendable {
         case .rectangle: return "rectangle"
         case .polygon: return "pentagon"
         case .path: return "line.diagonal"
+        case .route: return "point.topleft.down.curvedto.point.bottomright.up"
         case .subtract: return "rectangle.badge.minus"
         case .split: return "scissors"
         case .merge: return "arrow.triangle.merge"
@@ -52,6 +55,7 @@ public enum LayoutTool: String, CaseIterable, Sendable {
         case .rectangle: return "r"
         case .polygon: return "g"
         case .path: return "p"
+        case .route: return "w"
         case .subtract: return "x"
         case .split: return "c"
         case .merge: return "e"

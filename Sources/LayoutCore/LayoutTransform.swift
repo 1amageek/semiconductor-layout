@@ -45,6 +45,26 @@ public struct LayoutTransform: Hashable, Sendable, Codable {
         return rotated.translated(by: translation)
     }
 
+    /// Maps a parent-space point back into the instance's local space —
+    /// the exact inverse of ``apply(to:)`` step by step: untranslate,
+    /// unrotate, unscale, unmirror. A zero magnification cannot be
+    /// inverted and is a caller bug, not a recoverable state.
+    public func inverseApply(to point: LayoutPoint) -> LayoutPoint {
+        precondition(magnification != 0, "a zero-magnification transform is not invertible")
+        let tx = point.x - translation.x
+        let ty = point.y - translation.y
+
+        let radians = -rotationDegrees * .pi / 180
+        var x = normalized(tx * cos(radians) - ty * sin(radians))
+        var y = normalized(tx * sin(radians) + ty * cos(radians))
+
+        x /= magnification
+        y /= magnification
+        if mirrorX { x = -x }
+        if mirrorY { y = -y }
+        return LayoutPoint(x: x, y: y)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case translation
         case rotation
