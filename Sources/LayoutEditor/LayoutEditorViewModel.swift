@@ -589,6 +589,11 @@ public final class LayoutEditorViewModel {
                 handleError(LayoutEditorError.intentDeviceNotFound(deviceID))
                 succeeded = false
             }
+        case .bindIntentTerminals:
+            succeeded = (bindIntentTerminals() ?? 0) > 0
+        case .setActiveLayer(let layer):
+            activeLayer = layer
+            succeeded = true
         }
 
         goalLog.append(LayoutGoalRecord(
@@ -846,6 +851,55 @@ public final class LayoutEditorViewModel {
             handleError(error)
             return false
         }
+    }
+
+    /// Binds every placed intent instance's terminals to document nets
+    /// named after the LVS reference — the label-less autonomy path: the
+    /// reference already states which net each terminal belongs to, so
+    /// an agent needs no text labels. Instances are matched to reference
+    /// devices by name (placement names them after the device ID), pins
+    /// to terminals by role. Nets are created or reused BY NAME, and the
+    /// terminal map carries them through flatten into connectivity and
+    /// LVS. Returns the number of newly bound terminals, or nil when no
+    /// reference is loaded. One undo unit.
+    @discardableResult
+    public func bindIntentTerminals() -> Int? {
+        guard let reference = lvsReference, let cellID = editTargetCellID else { return nil }
+        var bound = 0
+        editor.perform { doc in
+            guard var cell = doc.cell(withID: cellID) else { return }
+            var netIDByName = Dictionary(
+                cell.nets.map { ($0.name, $0.id) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for device in reference.devices {
+                for index in cell.instances.indices where cell.instances[index].name == device.id {
+                    guard let child = doc.cell(withID: cell.instances[index].cellID) else { continue }
+                    for pin in child.pins {
+                        guard let role = ComparisonTerminalRole(rawValue: pin.role.rawValue),
+                              let net = device.terminals[role],
+                              net.rawValue.hasPrefix("pin:") else { continue }
+                        let name = String(net.rawValue.dropFirst("pin:".count))
+                        let netID: UUID
+                        if let existing = netIDByName[name] {
+                            netID = existing
+                        } else {
+                            let created = LayoutNet(name: name)
+                            cell.nets.append(created)
+                            netIDByName[name] = created.id
+                            netID = created.id
+                        }
+                        if cell.instances[index].terminalNetIDs[pin.name] != netID {
+                            cell.instances[index].terminalNetIDs[pin.name] = netID
+                            bound += 1
+                        }
+                    }
+                }
+            }
+            doc.updateCell(cell)
+        }
+        resyncAfterInstanceEdit()
+        return bound
     }
 
     // MARK: - finish-net (N3)
@@ -1757,6 +1811,7 @@ public final class LayoutEditorViewModel {
         of cell: LayoutCell,
         in document: LayoutDocument,
         transforms: [LayoutTransform],
+        terminalNetIDs: [String: UUID] = [:],
         depth: Int,
         into content: inout FlattenedContent
     ) {
@@ -1800,7 +1855,10 @@ public final class LayoutEditorViewModel {
                 position: mapPoint(pin.position),
                 size: pin.size,
                 layer: pin.layer,
-                netID: pin.netID,
+                // The instance terminal binding overrides the child
+                // pin's own net at this occurrence — same semantics as
+                // the connectivity flatten.
+                netID: terminalNetIDs[pin.name] ?? pin.netID,
                 role: pin.role
             ))
         }
@@ -1811,6 +1869,7 @@ public final class LayoutEditorViewModel {
                     of: child,
                     in: document,
                     transforms: transforms + [occurrence],
+                    terminalNetIDs: instance.terminalNetIDs,
                     depth: depth + 1,
                     into: &content
                 )

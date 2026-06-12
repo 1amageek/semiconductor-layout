@@ -16,4 +16,10 @@ public enum LayoutGoalCommand: Sendable, Equatable, Codable {
     case annotateNetsFromLabels
     /// Place one unrealized intent device by its reference ID (N2).
     case placeIntentDevice(deviceID: String, at: LayoutPoint)
+    /// Bind every placed intent instance's terminals to nets named after
+    /// the LVS reference — the label-less autonomy path (C5).
+    case bindIntentTerminals
+    /// Select the active (routing/drawing) layer. Recorded so a replayed
+    /// script carries ALL state its later commands depend on.
+    case setActiveLayer(LayoutLayerID)
 }

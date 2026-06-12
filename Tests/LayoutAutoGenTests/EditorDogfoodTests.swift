@@ -117,4 +117,43 @@ struct EditorDogfoodTests {
             "after re-annotation the reimported layout must satisfy the same intent: \(String(describing: reopened.lvsComparison))"
         )
     }
+
+    /// The label-less autonomy path (C5): the reference netlist already
+    /// states every terminal's net, so an agent closes the same intent
+    /// through goal commands alone — place, bind, finish — and the
+    /// recorded goal log replays deterministically on a fresh editor.
+    @Test func intentClosesWithoutLabelsThroughGoalCommandsOnly() throws {
+        let tech = LayoutTechDatabase.sampleProcess()
+
+        func freshEditor() -> LayoutEditorViewModel {
+            let top = LayoutCell(name: "CHAIN")
+            let document = LayoutDocument(name: "chain", cells: [top], topCellID: top.id)
+            let viewModel = LayoutEditorViewModel(document: document, tech: tech)
+            viewModel.activeLayer = Self.m1
+            viewModel.loadLVSReference(fromSubckt: Self.chainReference)
+            return viewModel
+        }
+
+        let viewModel = freshEditor()
+        let first = try #require(viewModel.unplacedIntentDevices.first)
+        #expect(viewModel.execute(.placeIntentDevice(deviceID: first.id, at: LayoutPoint(x: 0, y: 0))))
+        let second = try #require(viewModel.unplacedIntentDevices.first(where: { $0.id != first.id }))
+        #expect(viewModel.execute(.placeIntentDevice(deviceID: second.id, at: LayoutPoint(x: 25, y: 0))))
+
+        #expect(viewModel.execute(.bindIntentTerminals))
+        #expect(viewModel.connectivityAnalysis?.opens.isEmpty == false)
+        #expect(viewModel.execute(.finishAllNets))
+        #expect(viewModel.connectivityAnalysis?.opens.isEmpty == true)
+        #expect(viewModel.liveLVSPassed == true, "\(String(describing: viewModel.lvsComparison))")
+        #expect(viewModel.violations.isEmpty)
+
+        // Determinism gate: the recorded script reproduces the same
+        // verdicts from scratch — record for record.
+        let script = viewModel.goalLog.map(\.command)
+        let replayed = freshEditor()
+        #expect(replayed.replay(script))
+        #expect(replayed.liveLVSPassed == true)
+        #expect(replayed.violations.isEmpty)
+        #expect(replayed.goalLog == viewModel.goalLog)
+    }
 }
