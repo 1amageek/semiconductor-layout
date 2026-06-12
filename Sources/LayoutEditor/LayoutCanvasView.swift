@@ -87,14 +87,18 @@ public struct LayoutCanvasView: View {
             }
         }
         .background(scrollEventOverlay)
-        .onKeyPress(phases: .down) { keyPress in
-            handleKeyPress(keyPress)
-        }
         .onChange(of: viewModel.tool) { _, _ in
             drawingVertices.removeAll()
             viewModel.cancelRoute()
         }
         .focusable()
+        // Key events dispatch from the focused view outward, so this
+        // handler must wrap `.focusable()`; applied inside it, the
+        // focused node sits above the handler and no key (Delete,
+        // arrows, tool shortcuts) ever reaches it.
+        .onKeyPress(phases: .down) { keyPress in
+            handleKeyPress(keyPress)
+        }
         .focusEffectDisabled()
         .focused($isFocused)
         .onAppear { isFocused = true }
