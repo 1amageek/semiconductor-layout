@@ -584,8 +584,7 @@ public final class LayoutEditorViewModel {
         case .placeIntentDevice(let deviceID, let point):
             if let device = unplacedIntentDevices.first(where: { $0.id == deviceID }) {
                 armIntentPlacement(device)
-                placeArmedIntentDevice(at: point)
-                succeeded = unplacedIntentDevices.allSatisfy { $0.id != deviceID }
+                succeeded = placeArmedIntentDevice(at: point)
             } else {
                 handleError(LayoutEditorError.intentDeviceNotFound(deviceID))
                 succeeded = false
@@ -622,10 +621,14 @@ public final class LayoutEditorViewModel {
         public var netsCreated: Int
         public var shapesAnnotated: Int
         public var viasAnnotated: Int
+        /// Instance terminals bound through `terminalNetIDs` because the
+        /// labeled island lives inside an instance.
+        public var terminalsBound: Int = 0
         /// Labels whose position touches no conductor on their layer.
         public var unmatchedLabels: [String]
         /// Child-occurrence conductors in annotated islands that a
-        /// document edit cannot reach (counted, never silently skipped).
+        /// document edit cannot reach directly (their nets flow through
+        /// the instance terminal binding instead).
         public var unreachableChildElements: Int
     }
 
@@ -670,17 +673,31 @@ public final class LayoutEditorViewModel {
                 let topShapeIDs = Set(cell.shapes.map(\.id))
                 let topViaIDs = Set(cell.vias.map(\.id))
 
+                // Labels may sit on FLATTENED geometry — a terminal bar
+                // inside an instance — so candidates come from the same
+                // flatten the connectivity analysis used. A child shape's
+                // UUID repeats across occurrences; the label's position
+                // against the island's bounding box disambiguates which
+                // occurrence it names (far-apart occurrences in practice;
+                // a genuinely ambiguous label is reported, not guessed).
+                let flatShapes = try LayoutConnectivityExtractor()
+                    .flattenedConductors(document: doc, tech: tech, cellID: cellID)
+                    .shapes
+
                 for label in cell.labels.sorted(by: { $0.text < $1.text }) {
-                    // The island under the label: any net whose member
-                    // shape on the label's layer contains the position.
-                    let island = analysis.nets.first { net in
-                        net.shapeIDs.contains { shapeID in
-                            guard let shape = cell.shapes.first(where: { $0.id == shapeID }),
-                                  shape.layer == label.layer else { return false }
-                            return LayoutGeometryAnalysis.contains(label.position, in: shape.geometry)
-                        }
+                    let touchedIDs = Set(
+                        flatShapes
+                            .filter {
+                                $0.layer == label.layer
+                                    && LayoutGeometryAnalysis.contains(label.position, in: $0.geometry)
+                            }
+                            .map(\.id)
+                    )
+                    let candidates = analysis.nets.filter { net in
+                        !touchedIDs.isDisjoint(with: net.shapeIDs)
+                            && net.boundingBox.contains(label.position)
                     }
-                    guard let island else {
+                    guard candidates.count == 1, let island = candidates.first else {
                         summary.unmatchedLabels.append(label.text)
                         continue
                     }
@@ -694,6 +711,7 @@ public final class LayoutEditorViewModel {
                         netID = net.id
                         summary.netsCreated += 1
                     }
+                    var childShapeCount = 0
                     for shapeID in island.shapeIDs {
                         if topShapeIDs.contains(shapeID),
                            let index = cell.shapes.firstIndex(where: { $0.id == shapeID }) {
@@ -702,7 +720,7 @@ public final class LayoutEditorViewModel {
                                 summary.shapesAnnotated += 1
                             }
                         } else {
-                            summary.unreachableChildElements += 1
+                            childShapeCount += 1
                         }
                     }
                     for viaID in island.viaIDs {
@@ -713,8 +731,40 @@ public final class LayoutEditorViewModel {
                                 summary.viasAnnotated += 1
                             }
                         } else {
-                            summary.unreachableChildElements += 1
+                            childShapeCount += 1
                         }
+                    }
+                    // An island inside an instance has no editable shape;
+                    // its net flows through the instance TERMINAL binding:
+                    // every child pin sitting on the island gets bound, so
+                    // flatten republishes the net on the pin and the
+                    // connectivity tagging sees it. Child members count as
+                    // unreachable only when no terminal carries their net.
+                    var boundForIsland = 0
+                    let islandShapeIDs = Set(island.shapeIDs)
+                    for instanceIndex in cell.instances.indices {
+                        let instance = cell.instances[instanceIndex]
+                        guard let child = doc.cell(withID: instance.cellID) else { continue }
+                        for occurrence in instance.occurrenceTransforms() {
+                            for pin in child.pins {
+                                let position = occurrence.apply(to: pin.position)
+                                guard island.boundingBox.contains(position) else { continue }
+                                let sitsOnIsland = flatShapes.contains { shape in
+                                    islandShapeIDs.contains(shape.id)
+                                        && shape.layer == pin.layer
+                                        && LayoutGeometryAnalysis.contains(position, in: shape.geometry)
+                                }
+                                guard sitsOnIsland else { continue }
+                                if cell.instances[instanceIndex].terminalNetIDs[pin.name] != netID {
+                                    cell.instances[instanceIndex].terminalNetIDs[pin.name] = netID
+                                    summary.terminalsBound += 1
+                                }
+                                boundForIsland += 1
+                            }
+                        }
+                    }
+                    if boundForIsland == 0 {
+                        summary.unreachableChildElements += childShapeCount
                     }
                 }
                 doc.updateCell(cell)
@@ -747,9 +797,12 @@ public final class LayoutEditorViewModel {
 
     /// Places the armed intent device at `point`: generates (or reuses) a
     /// parameter-exact device cell and instantiates it through the normal
-    /// instance verb, so every live session follows.
-    public func placeArmedIntentDevice(at point: LayoutPoint) {
-        guard let device = pendingIntentDevice else { return }
+    /// instance verb, so every live session follows. Returns whether the
+    /// instance landed — intent MATCHING converges only once the device
+    /// is wired, so placement success is judged here, not by the meter.
+    @discardableResult
+    public func placeArmedIntentDevice(at point: LayoutPoint) -> Bool {
+        guard let device = pendingIntentDevice else { return false }
         pendingIntentDevice = nil
         do {
             let kindID: String
@@ -778,14 +831,20 @@ public final class LayoutEditorViewModel {
                 )
                 generated.name = cellName
                 let cell = generated
-                try editor.perform { doc in
+                editor.perform { doc in
                     doc.cells.append(cell)
                 }
                 deviceCellID = cell.id
             }
+            let instanceCountBefore = editor.document
+                .cell(withID: editTargetCellID ?? UUID())?.instances.count ?? 0
             placeInstance(cellID: deviceCellID, name: device.id, at: point)
+            let instanceCountAfter = editor.document
+                .cell(withID: editTargetCellID ?? UUID())?.instances.count ?? 0
+            return instanceCountAfter == instanceCountBefore + 1
         } catch {
             handleError(error)
+            return false
         }
     }
 
@@ -802,17 +861,44 @@ public final class LayoutEditorViewModel {
             return false
         }
         guard let analysis = connectivityAnalysis,
-              let flyline = analysis.flylines.first(where: { $0.netID == netID }) else {
+              let open = analysis.opens.first(where: { $0.netID == netID }),
+              let flyline = open.flylines.first else {
             handleError(LayoutEditorError.netAlreadyConnected(netID))
             return false
         }
+        // The target is the ISLAND, not the flyline's corner point: the
+        // nearest-point can sit inside foreign clearance while the rest
+        // of the island is perfectly reachable. Footprints are occurrence
+        // exact; resolving shapeIDs would alias reused child shapes onto
+        // OTHER instances' geometry.
+        var targetRegion: [LayoutRect] = []
+        if open.islands.indices.contains(flyline.toIslandIndex) {
+            targetRegion = open.islands[flyline.toIslandIndex].memberFootprints
+                .filter { $0.layer == activeLayer }
+                .map(\.boundingBox)
+        }
         let flylinesBefore = analysis.flylines.count { $0.netID == netID }
-        let violationsBefore = violations.count
+        // DRC regression is judged by violation IDENTITY, not count: a
+        // route that fixes two opens while creating one short would pass
+        // a count check. The net's own residual open is exempt — its
+        // member set changes with every leg, which would otherwise read
+        // as a new violation on a multi-island net.
+        let identitiesBefore = Set(violations.map(ViolationIdentity.init))
+
+        // The goal-level route uses this layer's minimum legal width —
+        // exactly, not the interactive default, which belongs to another
+        // layer and can be thinner (illegal) or much fatter (its
+        // clearance envelope walls off every landing).
+        let savedPathWidth = pathWidth
+        if let minWidth = tech.ruleSet(for: activeLayer)?.minWidth, minWidth > 0 {
+            pathWidth = minWidth
+        }
+        defer { pathWidth = savedPathWidth }
 
         cancelRoute()
-        beginRoute(at: flyline.start)
+        beginRoute(at: flyline.start, netID: netID)
         guard isRouting else { return false }
-        completeRoute(to: flyline.end)
+        completeRoute(to: flyline.end, targetRegion: targetRegion)
         guard let preview = routePreview, preview.isLegal else {
             let reason: String
             if case .blockedByViolations(let blocking)? = routePreview?.stopReason,
@@ -828,7 +914,11 @@ public final class LayoutEditorViewModel {
         commitRoute()
 
         let flylinesAfter = connectivityAnalysis?.flylines.count { $0.netID == netID } ?? 0
-        if flylinesAfter >= flylinesBefore || violations.count > violationsBefore {
+        let regressed = violations.contains { violation in
+            guard !identitiesBefore.contains(ViolationIdentity(of: violation)) else { return false }
+            return !(violation.kind == .disconnectedOpen && violation.netIDs == [netID])
+        }
+        if flylinesAfter >= flylinesBefore || regressed {
             undo()
             handleError(LayoutEditorError.finishNetRegressed)
             return false
@@ -974,10 +1064,11 @@ public final class LayoutEditorViewModel {
 
     public var isRouting: Bool { routeSession != nil }
 
-    /// Starts a route at `point` on the active layer. The net is inherited
-    /// from the topmost shape under the start point so same-net proximity
-    /// is legal while foreign nets still block.
-    public func beginRoute(at point: LayoutPoint) {
+    /// Starts a route at `point` on the active layer. The net comes from
+    /// `netID` when given (intent-driven flows know their net even when
+    /// the anchor geometry carries none), else from the topmost shape
+    /// under the start point.
+    public func beginRoute(at point: LayoutPoint, netID: UUID? = nil) {
         guard let cellID = activeCellID else { return }
         guard !isEditingInPlace else {
             handleError(LayoutEditorError.routingUnavailableInPlace)
@@ -992,7 +1083,7 @@ public final class LayoutEditorViewModel {
                 start: RouteAnchor(
                     point: snapToGrid(point),
                     layer: activeLayer,
-                    netID: netID(at: point, on: activeLayer)
+                    netID: netID ?? self.netID(at: point, on: activeLayer)
                 ),
                 mode: routeShoveEnabled ? .shove : .manual,
                 width: pathWidth > 0 ? pathWidth : nil
@@ -1006,8 +1097,13 @@ public final class LayoutEditorViewModel {
     /// Completes the current route to `target` with a window-local path
     /// search. The search is confined to the bounding window of the route
     /// anchor and the target (plus a margin); no path inside that window
-    /// is an explicit error, never a silent detour.
-    public func completeRoute(to target: LayoutPoint, windowMargin: Double = 2.0) {
+    /// is an explicit error, never a silent detour. `targetRegion` widens
+    /// the goal from the exact point to anywhere on the target island.
+    public func completeRoute(
+        to target: LayoutPoint,
+        windowMargin: Double = 2.0,
+        targetRegion: [LayoutRect] = []
+    ) {
         guard let session = routeSession else { return }
         let anchor = session.currentAnchor
         let snappedTarget = snapToGrid(target)
@@ -1023,9 +1119,21 @@ public final class LayoutEditorViewModel {
                 height: abs(anchor.point.y - snappedTarget.y) + 2 * windowMargin
             )
         )
-        let obstacles = flattenedDocumentShapes()
-            .filter { $0.layer == anchor.layer && (anchor.netID == nil || $0.netID != anchor.netID) }
-            .map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
+        // Obstacles come from the connectivity analysis, whose member
+        // footprints are occurrence-exact — id-based filtering would
+        // alias reused child shapes across instances, hiding a foreign
+        // occurrence or walling off an own-net one. Conductor pieces
+        // carrying the route's net are legal landing places, all others
+        // block. The BFS is only a guide; `proposePath` re-judges the
+        // result against exact DRC either way.
+        let obstacles = (connectivityAnalysis?.nets ?? [])
+            .filter { net in
+                guard let netID = anchor.netID else { return true }
+                return !net.declaredNetIDs.contains(netID)
+            }
+            .flatMap(\.memberFootprints)
+            .filter { $0.layer == anchor.layer }
+            .map(\.boundingBox)
             .filter { $0.intersects(window) }
         let path = RouteAutoCompleter().findPath(RouteAutoCompleter.Request(
             start: anchor.point,
@@ -1033,7 +1141,8 @@ public final class LayoutEditorViewModel {
             window: window,
             obstacles: obstacles,
             clearance: width / 2 + spacing,
-            step: max(gridSize, 0.01)
+            step: max(gridSize, 0.01),
+            targetRegion: targetRegion
         ))
         guard let path else {
             handleError(LayoutEditorError.routeWindowMiss)
@@ -2057,6 +2166,24 @@ public final class LayoutEditorViewModel {
             return []
         }
         return cell.vias
+    }
+
+    /// All pins of the active cell hierarchy at their flattened positions
+    /// — the terminals a wiring or SDL flow targets.
+    public func flattenedDocumentPins() -> [LayoutPin] {
+        guard let cellID = activeCellID,
+              let cell = editor.document.cell(withID: cellID) else {
+            return []
+        }
+        var content = FlattenedContent()
+        Self.collectFlattenedContent(
+            of: cell,
+            in: editor.document,
+            transforms: [],
+            depth: 0,
+            into: &content
+        )
+        return content.pins
     }
 
     /// Returns all shapes from the active cell hierarchy, recursively flattening

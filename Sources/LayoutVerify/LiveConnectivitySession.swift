@@ -38,6 +38,9 @@ public final class LiveConnectivitySession {
     private var childVias: [LayoutVia] = []
     private var childShapeIDs: Set<UUID> = []
     private var childViaIDs: Set<UUID> = []
+    /// Flattened pins (structural between rebuilds); net-carrying pins
+    /// tag their islands' declared nets in every emitted analysis.
+    private var flatPins: [LayoutPin] = []
 
     // Conductor element table, contact graph, and the persistent spatial
     // index that prunes edited-element contact re-tests. The index is
@@ -77,7 +80,11 @@ public final class LiveConnectivitySession {
     /// session has been fed.
     public var currentAnalysis: ConnectivityAnalysis {
         LayoutConnectivityExtractor.analysis(
-            nets: netsInCanonicalOrder(),
+            nets: LayoutConnectivityExtractor.tagPinNets(
+                nets: netsInCanonicalOrder(),
+                pins: flatPins,
+                elements: elements
+            ),
             elements: elements
         )
     }
@@ -224,7 +231,11 @@ public final class LiveConnectivitySession {
         let rebuiltComponentCount = repartition(affectedKeys: affectedKeys)
 
         let analysis = LayoutConnectivityExtractor.analysis(
-            nets: netsInCanonicalOrder(),
+            nets: LayoutConnectivityExtractor.tagPinNets(
+                nets: netsInCanonicalOrder(),
+                pins: flatPins,
+                elements: elements
+            ),
             elements: elements
         )
         return LiveConnectivityUpdate(
@@ -274,6 +285,7 @@ public final class LiveConnectivitySession {
         childVias = Array(vias.dropFirst(targetCell.vias.count))
         childShapeIDs = Set(childShapes.map(\.id))
         childViaIDs = Set(childVias.map(\.id))
+        flatPins = pins
 
         // Key-based component bookkeeping needs editable IDs distinct from
         // child contributions; duplicates among multi-instanced children

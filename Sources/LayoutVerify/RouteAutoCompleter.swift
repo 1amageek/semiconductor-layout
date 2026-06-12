@@ -22,6 +22,12 @@ public struct RouteAutoCompleter: Sendable {
         public var clearance: Double
         /// Lattice pitch in microns.
         public var step: Double
+        /// Boxes of the target island's same-layer members: reaching ANY
+        /// clear lattice node inside one of them completes the path even
+        /// when the exact `target` point is clearance-blocked by foreign
+        /// geometry — landing anywhere on the island connects the net.
+        /// Empty means the exact `target` node is the only goal.
+        public var targetRegion: [LayoutRect]
 
         public init(
             start: LayoutPoint,
@@ -29,7 +35,8 @@ public struct RouteAutoCompleter: Sendable {
             window: LayoutRect,
             obstacles: [LayoutRect],
             clearance: Double,
-            step: Double
+            step: Double,
+            targetRegion: [LayoutRect] = []
         ) {
             self.start = start
             self.target = target
@@ -37,6 +44,7 @@ public struct RouteAutoCompleter: Sendable {
             self.obstacles = obstacles
             self.clearance = clearance
             self.step = step
+            self.targetRegion = targetRegion
         }
     }
 
@@ -74,24 +82,38 @@ public struct RouteAutoCompleter: Sendable {
             return false
         }
 
+        func index(_ column: Int, _ row: Int) -> Int { row * columns + column }
+
         guard let startNode = node(nearest: request.start),
-              let targetNode = node(nearest: request.target),
-              !blocked(startNode.column, startNode.row),
-              !blocked(targetNode.column, targetNode.row) else {
+              !blocked(startNode.column, startNode.row) else {
             return nil
         }
+        let targetIndex: Int
+        if let targetNode = node(nearest: request.target),
+           !blocked(targetNode.column, targetNode.row) {
+            targetIndex = index(targetNode.column, targetNode.row)
+        } else if request.targetRegion.isEmpty {
+            return nil
+        } else {
+            targetIndex = -1
+        }
+        func isGoal(_ current: Int) -> Bool {
+            if current == targetIndex { return true }
+            guard !request.targetRegion.isEmpty else { return false }
+            let p = point(of: current % columns, current / columns)
+            return request.targetRegion.contains { $0.contains(p) }
+        }
 
-        // BFS with parent reconstruction.
+        // BFS with parent reconstruction; the first goal node dequeued
+        // ends the shortest path.
         var parent = [Int32](repeating: -2, count: columns * rows)
-        func index(_ column: Int, _ row: Int) -> Int { row * columns + column }
         var queue: [Int] = [index(startNode.column, startNode.row)]
         parent[queue[0]] = -1
-        let targetIndex = index(targetNode.column, targetNode.row)
+        var goalIndex: Int? = isGoal(queue[0]) ? queue[0] : nil
         var head = 0
-        while head < queue.count {
+        while goalIndex == nil, head < queue.count {
             let current = queue[head]
             head += 1
-            if current == targetIndex { break }
             let column = current % columns
             let row = current / columns
             for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -101,13 +123,17 @@ public struct RouteAutoCompleter: Sendable {
                 let next = index(nc, nr)
                 guard parent[next] == -2, !blocked(nc, nr) else { continue }
                 parent[next] = Int32(current)
+                if isGoal(next) {
+                    goalIndex = next
+                    break
+                }
                 queue.append(next)
             }
         }
-        guard parent[targetIndex] != -2 else { return nil }
+        guard let reached = goalIndex else { return nil }
 
         var indices: [Int] = []
-        var cursor = targetIndex
+        var cursor = reached
         while cursor != -1 {
             indices.append(cursor)
             cursor = Int(parent[cursor])
@@ -126,7 +152,14 @@ public struct RouteAutoCompleter: Sendable {
                 corners.append(point(of: current % columns, current / columns))
             }
         }
-        corners.append(request.target)
+        // Pin the exact target only when the search ended on its node; a
+        // region landing ends at the lattice point that actually reached
+        // the island.
+        if reached == targetIndex {
+            corners.append(request.target)
+        } else {
+            corners.append(point(of: reached % columns, reached / columns))
+        }
         return corners
     }
 }

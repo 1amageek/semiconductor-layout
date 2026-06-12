@@ -21,6 +21,10 @@ public struct ConnectivityNet: Equatable, Sendable {
     public var declaredNetIDs: [UUID]
     /// Union of the member bounding boxes.
     public var boundingBox: LayoutRect
+    /// Occurrence-exact member geometry (layer + box, vias excluded), in
+    /// canonical member order. Unlike `shapeIDs`, instance reuse does
+    /// not alias: a child shape placed twice contributes two footprints.
+    public var memberFootprints: [ConnectivityIslandFootprint]
 
     /// Canonical member identities (sorted); the live session and the
     /// batch extractor must agree on these exactly.

@@ -14,6 +14,9 @@ public struct ConnectivityIsland: Equatable, Sendable {
     public var viaIDs: [UUID]
     /// Union of the member bounding boxes.
     public var boundingBox: LayoutRect
+    /// Occurrence-exact member geometry (layer + box), in canonical
+    /// member order. Unlike `shapeIDs`, instance reuse does not alias.
+    public var memberFootprints: [ConnectivityIslandFootprint]
 
     /// Canonical member identities (sorted); flyline endpoints iterate
     /// these in order so live and batch emit bit-identical geometry.

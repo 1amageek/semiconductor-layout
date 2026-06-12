@@ -30,7 +30,11 @@ public struct IRLayoutBridge: Sendable {
             cells.append(cell)
         }
 
-        let topCellID = cells.last?.id
+        // GDS carries no explicit top cell; the top is the cell that no
+        // other cell references. Multiple roots resolve to the first in
+        // library order, deterministically.
+        let referencedCellIDs = Set(cells.flatMap { $0.instances.map(\.cellID) })
+        let topCellID = cells.first { !referencedCellIDs.contains($0.id) }?.id ?? cells.first?.id
         return LayoutDocument(
             name: library.name,
             units: LayoutUnits(dbuPerMicron: dbu),

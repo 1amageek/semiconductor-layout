@@ -83,10 +83,26 @@ public struct DeviceExtractor: Sendable {
             service: service
         )
         let pinIslandByIndex = mapPinsToIslands(pins: pins, connectivity: connectivity)
+        // Declared nets that carry a NAME speak the same currency as
+        // `.subckt` references ("pin:<name>"); anonymous net IDs keep the
+        // uuid form. Names come from the target cell's net table — the
+        // label→net annotation pass writes exactly there.
+        let netNameByID = Dictionary(
+            targetCell.nets.map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Labels sitting ON conductor geometry name their island directly
+        // (Magic semantics). This is what keeps extraction working after
+        // formats that drop pins and nets: the text survives, the
+        // conductor under it defines what it names.
+        let labels = flattenedLabels(cell: targetCell, document: document)
+        let labelsByIsland = mapLabelsToIslands(labels: labels, connectivity: connectivity)
         let islandNames = nameIslands(
             connectivity: connectivity,
             pins: pins,
             pinIslandByIndex: pinIslandByIndex,
+            labelsByIsland: labelsByIsland,
+            netNameByID: netNameByID,
             issues: &issues
         )
 
@@ -97,6 +113,7 @@ public struct DeviceExtractor: Sendable {
             connectivity: connectivity,
             islandNames: islandNames,
             pins: pins,
+            pinIslandByIndex: pinIslandByIndex,
             issues: &issues
         )
         devices = groupedDevices(devices)
@@ -106,9 +123,18 @@ public struct DeviceExtractor: Sendable {
             return $0.id < $1.id
         }
 
+        // Only the target cell's OWN pins define its subckt interface.
+        // Flattened child pins are device terminal markers: two instances
+        // of one device cell both expose "gate", legitimately on
+        // different nets — an interface built from them would conflict.
+        let topPinIDs = Set(targetCell.pins.map(\.id))
         let ports = ports(
-            from: pins,
+            from: pins.filter { topPinIDs.contains($0.id) },
             pinIslandByIndex: pinIslandByIndex,
+            pinIndexByID: Dictionary(
+                pins.enumerated().map { ($0.element.id, $0.offset) },
+                uniquingKeysWith: { first, _ in first }
+            ),
             islandNames: islandNames,
             issues: &issues
         )
@@ -316,6 +342,10 @@ public struct DeviceExtractor: Sendable {
         /// are zero-width gaps (channel at the active edge).
         var slabKeysByActiveOrdinal: [Int: [ConnectivityElementKey?]]
         var slabRectsByActiveOrdinal: [Int: [LayoutRect?]]
+        /// Element key of every shape that conducts as-is (metal, tap
+        /// actives — not poly, cuts, or channel-split actives), by
+        /// flatten index.
+        var plainShapeKeyByFlatIndex: [Int: ConnectivityElementKey]
     }
 
     /// Builds the conductor element table the way the device sees it:
@@ -340,6 +370,7 @@ public struct DeviceExtractor: Sendable {
         var polyKeyByFlatIndex: [Int: ConnectivityElementKey] = [:]
         var slabKeysByActiveOrdinal: [Int: [ConnectivityElementKey?]] = [:]
         var slabRectsByActiveOrdinal: [Int: [LayoutRect?]] = [:]
+        var plainShapeKeyByFlatIndex: [Int: ConnectivityElementKey] = [:]
         var shapeOrdinal = 0
         var viaOrdinal = 0
 
@@ -436,7 +467,7 @@ public struct DeviceExtractor: Sendable {
                 slabRectsByActiveOrdinal[activeOrdinal] = slabRects
                 continue
             }
-            _ = appendShapeElement(shape, geometry: shape.geometry)
+            plainShapeKeyByFlatIndex[index] = appendShapeElement(shape, geometry: shape.geometry)
         }
 
         for via in vias {
@@ -484,8 +515,57 @@ public struct DeviceExtractor: Sendable {
             islandCount: components.count,
             polyKeyByFlatIndex: polyKeyByFlatIndex,
             slabKeysByActiveOrdinal: slabKeysByActiveOrdinal,
-            slabRectsByActiveOrdinal: slabRectsByActiveOrdinal
+            slabRectsByActiveOrdinal: slabRectsByActiveOrdinal,
+            plainShapeKeyByFlatIndex: plainShapeKeyByFlatIndex
         )
+    }
+
+    /// Labels of the cell plus all instance occurrences, recursively
+    /// mapped into the target cell's space.
+    private func flattenedLabels(cell: LayoutCell, document: LayoutDocument) -> [LayoutLabel] {
+        var result = cell.labels
+        for instance in cell.instances {
+            guard let child = document.cell(withID: instance.cellID) else { continue }
+            let childLabels = flattenedLabels(cell: child, document: document)
+            for occurrence in instance.occurrenceTransforms() {
+                for label in childLabels {
+                    var moved = label
+                    moved.position = occurrence.apply(to: label.position)
+                    result.append(moved)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Label → island, by point containment in member geometry on the
+    /// label's layer. A label floating off its layer's conductors names
+    /// nothing (instance banners, annotations). Lowest island index wins
+    /// deterministically; labels per island sort by text.
+    private func mapLabelsToIslands(
+        labels: [LayoutLabel],
+        connectivity: Connectivity
+    ) -> [Int: [LayoutLabel]] {
+        var result: [Int: [LayoutLabel]] = [:]
+        for label in labels {
+            var island: Int? = nil
+            for element in connectivity.elements.values {
+                guard element.layer == label.layer,
+                      let candidate = connectivity.islandIndexByKey[element.key],
+                      island.map({ candidate < $0 }) ?? true,
+                      LayoutGeometryAnalysis.contains(label.position, in: element.geometry) else {
+                    continue
+                }
+                island = candidate
+            }
+            if let island {
+                result[island, default: []].append(label)
+            }
+        }
+        for island in result.keys {
+            result[island]?.sort { $0.text < $1.text }
+        }
+        return result
     }
 
     /// Pin flatten-index → island, by geometric overlap on the pin's
@@ -516,12 +596,15 @@ public struct DeviceExtractor: Sendable {
     }
 
     /// Stable comparison name per island. Precedence: a unique declared
-    /// net, then a pin sitting on the island, then a deterministic
-    /// anonymous ordinal that can never match a named reference net.
+    /// net, then a pin sitting on the island, then a label sitting on
+    /// member conductor, then a deterministic anonymous ordinal that can
+    /// never match a named reference net.
     private func nameIslands(
         connectivity: Connectivity,
         pins: [LayoutPin],
         pinIslandByIndex: [Int: Int],
+        labelsByIsland: [Int: [LayoutLabel]],
+        netNameByID: [UUID: String],
         issues: inout [DeviceExtractionIssue]
     ) -> [ComparisonNetID] {
         var pinsByIsland: [Int: [LayoutPin]] = [:]
@@ -546,13 +629,23 @@ public struct DeviceExtractor: Sendable {
             }
             let base: ComparisonNetID
             if let first = declared.first {
-                base = ComparisonNetID("net:\(first.uuidString)")
+                if let name = netNameByID[first] {
+                    base = ComparisonNetID("pin:\(name)")
+                } else {
+                    base = ComparisonNetID("net:\(first.uuidString)")
+                }
             } else if let pin = pinsByIsland[island]?.first {
                 if let netID = pin.netID {
-                    base = ComparisonNetID("net:\(netID.uuidString)")
+                    if let name = netNameByID[netID] {
+                        base = ComparisonNetID("pin:\(name)")
+                    } else {
+                        base = ComparisonNetID("net:\(netID.uuidString)")
+                    }
                 } else {
                     base = ComparisonNetID("pin:\(pin.name)")
                 }
+            } else if let label = labelsByIsland[island]?.first {
+                base = ComparisonNetID("pin:\(label.text)")
             } else {
                 base = ComparisonNetID("island:\(island)")
             }
@@ -593,6 +686,7 @@ public struct DeviceExtractor: Sendable {
         connectivity: Connectivity,
         islandNames: [ComparisonNetID],
         pins: [LayoutPin],
+        pinIslandByIndex: [Int: Int],
         issues: inout [DeviceExtractionIssue]
     ) -> [ComparisonNetlist.Device] {
         let nimpBoxes = shapes
@@ -605,6 +699,25 @@ public struct DeviceExtractor: Sendable {
         func islandName(of key: ConnectivityElementKey?) -> ComparisonNetID? {
             guard let key, let island = connectivity.islandIndexByKey[key] else { return nil }
             return islandNames[island]
+        }
+
+        // Channel-less actives are substrate/well taps; their conductor
+        // island is the rail the bulk actually ties to. They back up the
+        // bulk-pin resolution when no pins exist (post-GDS documents).
+        var tapCandidates: [(rect: LayoutRect, name: ComparisonNetID, isPType: Bool)] = []
+        for (ordinal, active) in actives.enumerated() {
+            if let maybeChannels = channelsByActive[ordinal],
+               let channels = maybeChannels,
+               !channels.isEmpty {
+                continue
+            }
+            guard let name = islandName(of: connectivity.plainShapeKeyByFlatIndex[active.flatIndex]) else {
+                continue
+            }
+            let nimp = nimpBoxes.contains { positiveIntersection($0, active.rect) != nil }
+            let pimp = pimpBoxes.contains { positiveIntersection($0, active.rect) != nil }
+            guard nimp != pimp else { continue }
+            tapCandidates.append((rect: active.rect, name: name, isPType: pimp))
         }
 
         var devices: [ComparisonNetlist.Device] = []
@@ -664,6 +777,10 @@ public struct DeviceExtractor: Sendable {
                 let bulk = bulkTerminalNet(
                     activeRect: active.rect,
                     pins: pins,
+                    pinIslandByIndex: pinIslandByIndex,
+                    islandNames: islandNames,
+                    // NMOS bulk is the substrate (P+ tap), PMOS the well (N+ tap).
+                    taps: tapCandidates.filter { $0.isPType == (kind == .nmos) },
                     issues: &issues
                 )
 
@@ -691,28 +808,47 @@ public struct DeviceExtractor: Sendable {
     }
 
     /// Substrate/well connectivity is not part of the drawn conductor
-    /// stack, so bulk keeps the nearest-pin resolution with an explicit
-    /// issue when no bulk-role pin exists.
+    /// stack, so bulk anchors on the nearest bulk-role pin — but resolves
+    /// to that pin's ISLAND name when the pin sits on wired geometry, so
+    /// a tap strapped to a named rail reads as that rail. Without any
+    /// bulk pin (pins do not survive GDS), the nearest matching-polarity
+    /// tap's island answers instead — that diffusion IS the bulk tie.
     private func bulkTerminalNet(
         activeRect: LayoutRect,
         pins: [LayoutPin],
+        pinIslandByIndex: [Int: Int],
+        islandNames: [ComparisonNetID],
+        taps: [(rect: LayoutRect, name: ComparisonNetID, isPType: Bool)],
         issues: inout [DeviceExtractionIssue]
     ) -> ComparisonNetID {
-        let candidates = pins.filter { $0.role == .bulk }
+        func rectDistance(_ lhs: LayoutRect, _ rhs: LayoutRect) -> Double {
+            let dx = max(rhs.minX - lhs.maxX, lhs.minX - rhs.maxX, 0)
+            let dy = max(rhs.minY - lhs.maxY, lhs.minY - rhs.maxY, 0)
+            return dx * dx + dy * dy
+        }
+        let candidates = pins.enumerated().filter { $0.element.role == .bulk }
         guard let best = candidates.min(by: {
-            pinDistance($0, to: activeRect) < pinDistance($1, to: activeRect)
+            pinDistance($0.element, to: activeRect) < pinDistance($1.element, to: activeRect)
         }) else {
+            if let tap = taps.min(by: {
+                rectDistance($0.rect, activeRect) < rectDistance($1.rect, activeRect)
+            }) {
+                return tap.name
+            }
             issues.append(DeviceExtractionIssue(
                 kind: .missingTerminal,
-                message: "No bulk pin was available for device terminal extraction.",
+                message: "No bulk pin or tap was available for device terminal extraction.",
                 region: activeRect
             ))
             return ComparisonNetID("bulk:default")
         }
-        if let netID = best.netID {
+        if let island = pinIslandByIndex[best.offset] {
+            return islandNames[island]
+        }
+        if let netID = best.element.netID {
             return ComparisonNetID("net:\(netID.uuidString)")
         }
-        return ComparisonNetID("pin:\(best.name)")
+        return ComparisonNetID("pin:\(best.element.name)")
     }
 
     // MARK: - Grouping
@@ -769,13 +905,14 @@ public struct DeviceExtractor: Sendable {
     private func ports(
         from pins: [LayoutPin],
         pinIslandByIndex: [Int: Int],
+        pinIndexByID: [UUID: Int],
         islandNames: [ComparisonNetID],
         issues: inout [DeviceExtractionIssue]
     ) -> [String: ComparisonNetID] {
         var ports: [String: ComparisonNetID] = [:]
-        for (pinIndex, pin) in pins.enumerated() {
+        for pin in pins {
             let net: ComparisonNetID
-            if let island = pinIslandByIndex[pinIndex] {
+            if let pinIndex = pinIndexByID[pin.id], let island = pinIslandByIndex[pinIndex] {
                 net = islandNames[island]
             } else if let netID = pin.netID {
                 net = ComparisonNetID("net:\(netID.uuidString)")

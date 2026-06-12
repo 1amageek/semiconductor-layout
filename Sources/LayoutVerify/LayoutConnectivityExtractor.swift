@@ -21,6 +21,37 @@ public struct LayoutConnectivityExtractor {
 
     public init() {}
 
+    /// The flattened conductor geometry of one cell — instance subtrees
+    /// expanded with their transforms applied — KEEPING source element
+    /// IDs, so the result cross-references the IDs a connectivity
+    /// analysis reports. (Child occurrences of a multi-instanced cell
+    /// share an ID by design; positions disambiguate.)
+    public func flattenedConductors(
+        document: LayoutDocument,
+        tech: LayoutTechDatabase,
+        cellID: UUID? = nil
+    ) throws -> (shapes: [LayoutShape], vias: [LayoutVia], pins: [LayoutPin]) {
+        guard let targetCell = service.resolveCell(document: document, cellID: cellID) else {
+            throw LayoutConnectivityExtractionError.targetCellNotFound
+        }
+        var shapes: [LayoutShape] = []
+        var vias: [LayoutVia] = []
+        var pins: [LayoutPin] = []
+        var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
+        service.flatten(
+            cell: targetCell,
+            document: document,
+            tech: tech,
+            transforms: [],
+            terminalNetIDs: [:],
+            shapes: &shapes,
+            vias: &vias,
+            pins: &pins,
+            terminalConflicts: &conflicts
+        )
+        return (shapes, vias, pins)
+    }
+
     /// Extracts connectivity for one cell of the document, flattening
     /// child instances exactly like the DRC service does.
     public func extract(
@@ -58,7 +89,7 @@ public struct LayoutConnectivityExtractor {
         )
         let adjacency = Self.contactAdjacency(elements: elements, service: service)
         let components = Self.components(adjacency: adjacency, elements: elements)
-        return Self.assemble(components: components, elements: elements)
+        return Self.assemble(components: components, elements: elements, pins: pins)
     }
 
     // MARK: - Element table
@@ -250,12 +281,50 @@ public struct LayoutConnectivityExtractor {
     /// the emitted analyses are bit-identical.
     static func assemble(
         components: [[ConnectivityElementKey]],
-        elements: [ConnectivityElementKey: ConnectivityElement]
+        elements: [ConnectivityElementKey: ConnectivityElement],
+        pins: [LayoutPin] = []
     ) -> ConnectivityAnalysis {
         analysis(
-            nets: components.map { net(for: $0, elements: elements) },
+            nets: tagPinNets(
+                nets: components.map { net(for: $0, elements: elements) },
+                pins: pins,
+                elements: elements
+            ),
             elements: elements
         )
+    }
+
+    /// Folds pin-declared nets into the islands the pins sit on: a bound
+    /// instance terminal (or a net-carrying top pin) participates in
+    /// shorts, opens and flylines exactly like declared geometry — the
+    /// pin marker itself never conducts, it only NAMES the conductor
+    /// under it. Pins over empty space tag nothing.
+    static func tagPinNets(
+        nets: [ConnectivityNet],
+        pins: [LayoutPin],
+        elements: [ConnectivityElementKey: ConnectivityElement]
+    ) -> [ConnectivityNet] {
+        let boundPins = pins.filter { $0.netID != nil }
+        guard !boundPins.isEmpty else { return nets }
+        var tagged = nets
+        for pin in boundPins {
+            guard let netID = pin.netID else { continue }
+            for index in tagged.indices {
+                guard tagged[index].boundingBox.contains(pin.position) else { continue }
+                let sitsOnMember = tagged[index].memberKeys.contains { key in
+                    guard let element = elements[key],
+                          element.layer == pin.layer else { return false }
+                    return LayoutGeometryAnalysis.contains(pin.position, in: element.geometry)
+                }
+                guard sitsOnMember else { continue }
+                if !tagged[index].declaredNetIDs.contains(netID) {
+                    tagged[index].declaredNetIDs.append(netID)
+                    tagged[index].declaredNetIDs.sort { $0.isCanonicallyOrderedBefore($1) }
+                }
+                break
+            }
+        }
+        return tagged
     }
 
     /// One conductor piece's verdict view. Split out so the live session
@@ -270,6 +339,7 @@ public struct LayoutConnectivityExtractor {
         var viaIDs: Set<UUID> = []
         var declared: Set<UUID> = []
         var box: LayoutRect?
+        var footprints: [ConnectivityIslandFootprint] = []
         for key in memberKeys {
             guard let element = elements[key] else {
                 assertionFailure("component member missing from element table")
@@ -277,6 +347,9 @@ public struct LayoutConnectivityExtractor {
             }
             if element.isVia { viaIDs.insert(element.elementID) } else { shapeIDs.insert(element.elementID) }
             if let netID = element.netID { declared.insert(netID) }
+            if let layer = element.layer {
+                footprints.append(ConnectivityIslandFootprint(layer: layer, boundingBox: element.boundingBox))
+            }
             box = box.map { $0.union(element.boundingBox) } ?? element.boundingBox
         }
         guard let boundingBox = box else {
@@ -284,6 +357,7 @@ public struct LayoutConnectivityExtractor {
             return ConnectivityNet(
                 shapeIDs: [], viaIDs: [], declaredNetIDs: [],
                 boundingBox: LayoutRect(origin: .zero, size: LayoutSize(width: 0, height: 0)),
+                memberFootprints: [],
                 memberKeys: memberKeys
             )
         }
@@ -292,6 +366,7 @@ public struct LayoutConnectivityExtractor {
             viaIDs: viaIDs.sorted { $0.isCanonicallyOrderedBefore($1) },
             declaredNetIDs: declared.sorted { $0.isCanonicallyOrderedBefore($1) },
             boundingBox: boundingBox,
+            memberFootprints: footprints,
             memberKeys: memberKeys
         )
     }
@@ -331,6 +406,7 @@ public struct LayoutConnectivityExtractor {
                     shapeIDs: net.shapeIDs,
                     viaIDs: net.viaIDs,
                     boundingBox: net.boundingBox,
+                    memberFootprints: net.memberFootprints,
                     memberKeys: net.memberKeys
                 )
             }

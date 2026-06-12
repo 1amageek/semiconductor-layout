@@ -197,18 +197,34 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         let impRect = activeRect.expanded(by: c.impEnclosure, c.impEnclosure)
         shapes.append(LayoutShape(layer: c.impID, geometry: .rect(impRect)))
 
-        // 3. POLY gate
+        // 3. POLY gate. The gate M1 connector must keep the full M1
+        // spacing to the source/drain bars VERTICALLY — corner-to-corner
+        // distance dips below the rule otherwise once the connector is
+        // widened to the M1 minimum — so the contact stack may sit higher
+        // (NMOS) or lower (PMOS) than the bare enclosure math, and the
+        // poly is extended by the same shift to keep the cut enclosed.
         let polyX = snap(c.contactRegionLength + c.sdSpacing, grid: c.grid)
+        let gateContY: Double
         let polyRect: LayoutRect
         if c.isPMOS {
+            let base = snap(-c.polyExtension + c.polyContEnc, grid: c.grid)
+            var bound = snap(-(c.m1Rules.minSpacing + c.m1Width), grid: c.grid)
+            if bound > -(c.m1Rules.minSpacing + c.m1Width) { bound -= c.grid }
+            gateContY = min(base, bound)
+            let shift = base - gateContY
             polyRect = LayoutRect(
-                origin: LayoutPoint(x: polyX, y: -c.polyExtension),
-                size: LayoutSize(width: snap(c.l, grid: c.grid), height: activeW + c.polyExtension + c.polyRules.minWidth)
+                origin: LayoutPoint(x: polyX, y: -c.polyExtension - shift),
+                size: LayoutSize(width: snap(c.l, grid: c.grid), height: activeW + c.polyExtension + c.polyRules.minWidth + shift)
             )
         } else {
+            let base = snap(activeW + c.polyExtension - c.polyContEnc - c.contSize, grid: c.grid)
+            var bound = snap(activeW + c.m1Rules.minSpacing, grid: c.grid)
+            if bound < activeW + c.m1Rules.minSpacing { bound += c.grid }
+            gateContY = max(base, bound)
+            let shift = gateContY - base
             polyRect = LayoutRect(
                 origin: LayoutPoint(x: polyX, y: -c.polyRules.minWidth),
-                size: LayoutSize(width: snap(c.l, grid: c.grid), height: activeW + c.polyExtension + c.polyRules.minWidth)
+                size: LayoutSize(width: snap(c.l, grid: c.grid), height: activeW + c.polyExtension + c.polyRules.minWidth + shift)
             )
         }
         shapes.append(LayoutShape(layer: c.polyID, geometry: .rect(polyRect)))
@@ -252,16 +268,17 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         )
         shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(drainM1Rect)))
 
-        // 7. Gate M1 + contact
-        let gateContY: Double
-        if c.isPMOS {
-            gateContY = snap(-c.polyExtension + c.polyContEnc, grid: c.grid)
-        } else {
-            gateContY = snap(activeW + c.polyExtension - c.polyContEnc - c.contSize, grid: c.grid)
-        }
+        // 7. Gate M1 + contact (gateContY computed with the poly in
+        // step 3 so the clearance shift extends both consistently).
+        // The connector must satisfy the M1 width rule even when the
+        // channel length is narrower; widen symmetrically around the poly.
+        let gateM1Width = snap(max(polyRect.size.width, c.m1Width), grid: c.grid)
         let gateM1Rect = LayoutRect(
-            origin: LayoutPoint(x: polyRect.origin.x, y: gateContY),
-            size: LayoutSize(width: polyRect.size.width, height: snap(c.m1Width, grid: c.grid))
+            origin: LayoutPoint(
+                x: snap(polyRect.origin.x + (polyRect.size.width - gateM1Width) / 2, grid: c.grid),
+                y: gateContY
+            ),
+            size: LayoutSize(width: gateM1Width, height: snap(c.m1Width, grid: c.grid))
         )
         shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(gateM1Rect)))
 
