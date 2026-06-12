@@ -196,6 +196,26 @@ struct LayoutEditorViewModelRenderPlanTests {
         #expect(viewModel.currentRenderPlan() != nil)
     }
 
+    @Test func firstShapeOnEmptyDocumentDerivesARealGrid() throws {
+        // Regression: the default view model builds its render index over
+        // an empty TOP cell, whose derived grid used to bottom out at the
+        // 1e-6 µm cell-size floor — the first drawn rectangle then spun
+        // `insert` across ~1e16 cells and froze the editor. The suite time
+        // limit is the hang oracle; the plan equality pins correctness.
+        let viewModel = LayoutEditorViewModel()
+        viewModel.canvasSize = CGSize(width: 800, height: 600)
+        viewModel.zoom = 50
+        viewModel.offset = .zero
+
+        viewModel.addRectangle(
+            from: LayoutPoint(x: 0, y: 0),
+            to: LayoutPoint(x: 100, y: 100)
+        )
+
+        let plan = try expectMatchesFreshIndex(viewModel, "first shape on empty document")
+        #expect(plan.stats.totalShapes == 1)
+    }
+
     // MARK: - Discrete edits with undo/redo
 
     @Test func discreteEditsKeepThePlanInLockstep() throws {

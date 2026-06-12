@@ -1349,6 +1349,20 @@ public final class LayoutEditorViewModel {
         renderIndex = LayoutRenderIndex(shapes: flattenedDocumentShapes())
     }
 
+    /// Routes a geometry delta into the render index. An index built over
+    /// an empty document has a placeholder grid with no real scale, so the
+    /// first content rebuilds instead — deriving the grid from the actual
+    /// extent — and every later delta applies incrementally as usual.
+    private func applyRenderIndexDelta(_ delta: LayoutEditDelta) {
+        guard let index = renderIndex else { return }
+        if index.count == 0,
+           !(delta.addedShapes.isEmpty && delta.updatedShapes.isEmpty) {
+            rebuildRenderIndex()
+        } else {
+            renderIndex?.apply(delta)
+        }
+    }
+
     // MARK: - Active-Element Index
 
     /// Current top-level shapes of the active cell by ID plus the array
@@ -1538,7 +1552,7 @@ public final class LayoutEditorViewModel {
         applyConnectivityDelta(delta)
         applyConstraintDelta(delta)
         applyLVSDelta(delta)
-        renderIndex?.apply(delta)
+        applyRenderIndexDelta(delta)
     }
 
     /// Applies a delta to the cell with the session's ordering semantics:
@@ -2553,7 +2567,7 @@ public final class LayoutEditorViewModel {
         applyConnectivityDelta(LayoutEditDelta(updatedShapes: moved))
         applyConstraintDelta(LayoutEditDelta(updatedShapes: moved))
         applyLVSDelta(LayoutEditDelta(updatedShapes: moved))
-        renderIndex?.apply(LayoutEditDelta(updatedShapes: moved))
+        applyRenderIndexDelta(LayoutEditDelta(updatedShapes: moved))
     }
 
     // MARK: - Handle Editing (Stretch / Vertex)

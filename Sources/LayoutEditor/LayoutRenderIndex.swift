@@ -123,7 +123,17 @@ public struct LayoutRenderIndex {
                 extent = extent.map { $0.union(box) } ?? box
             }
             let longerAxis = extent.map { max($0.size.width, $0.size.height) } ?? 0
-            self.cellSize = max(longerAxis / Double(max(targetCellsPerAxis, 1)), 1e-6)
+            if longerAxis > 0 {
+                self.cellSize = max(longerAxis / Double(max(targetCellsPerAxis, 1)), 1e-6)
+            } else {
+                // Empty or zero-area content gives no scale to derive a
+                // grid from. The grid is fixed at build time, so a tiny
+                // placeholder cell (1e-6 µm) would make the first real
+                // shape span ~1e16 cells and spin `insert` forever; one
+                // micron keeps inserts cheap until the owner rebuilds
+                // over real content.
+                self.cellSize = 1.0
+            }
         }
         entries.reserveCapacity(shapes.count)
         for shape in shapes {

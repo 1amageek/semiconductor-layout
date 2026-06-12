@@ -94,6 +94,19 @@ struct LayoutRenderIndexTests {
         #expect(plan.stats.totalShapes == 0)
     }
 
+    @Test func emptyExtentDerivedGridAcceptsFirstShapeCheaply() {
+        // Regression: deriving the grid from an empty document used to
+        // bottom out at the 1e-6 µm cell-size floor, so the first real
+        // shape spanned ~1e16 cells and `insert` spun forever. The suite
+        // time limit is the hang oracle; the expectations pin behavior.
+        var index = LayoutRenderIndex(shapes: [])
+        let first = Self.shape(0, 0, 100, 100)
+        index.apply(LayoutEditDelta(addedShapes: [first]))
+        #expect(index.count == 1)
+        let plan = index.plan(viewport: Self.viewport(0, 0, 100, 100), pixelsPerMicron: 10)
+        #expect(fullIDs(plan) == [first.id])
+    }
+
     // MARK: - Level-of-detail tiers
 
     @Test func tiersSplitByOnScreenSizeAtExactThresholds() {
