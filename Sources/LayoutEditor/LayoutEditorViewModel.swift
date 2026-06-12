@@ -45,6 +45,10 @@ public final class LayoutEditorViewModel {
     public var hiddenLayers: Set<LayoutLayerID> = []
     public var cellNavigationPath: [UUID] = []
 
+    /// Pointer position in layout space while the cursor is over the
+    /// canvas, `nil` when it leaves — drives the coordinate readout.
+    public var cursorPosition: LayoutPoint?
+
     // MARK: - Live DRC (DRD)
 
     /// Design-rule-driven editing mode. In `observe` and `enforce` every
@@ -2732,6 +2736,32 @@ public final class LayoutEditorViewModel {
         guard !ids.isEmpty else { return }
         commitDelta(LayoutEditDelta(removedShapeIDs: ids))
         selectedShapeIDs.removeAll()
+    }
+
+    /// Removes the selected instance from its host cell. Instance edits
+    /// are not expressible as a shape delta, so this goes through the
+    /// document editor (one undo unit) and re-syncs the live sessions —
+    /// the same path every other instance edit uses.
+    public func deleteSelectedInstance() {
+        guard let hostCellID = editTargetCellID, let selectedInstanceID else { return }
+        do {
+            try editor.removeInstance(id: selectedInstanceID, from: hostCellID)
+            self.selectedInstanceID = nil
+            resyncAfterInstanceEdit()
+        } catch {
+            handleError(error)
+        }
+    }
+
+    /// Deletes whatever is selected — shapes when any, otherwise the
+    /// selected instance. The single entry point for the Delete key and
+    /// the Edit menu.
+    public func deleteSelection() {
+        if !selectedShapeIDs.isEmpty {
+            deleteSelectedShapes()
+        } else if selectedInstanceID != nil {
+            deleteSelectedInstance()
+        }
     }
 
     // MARK: - File Import

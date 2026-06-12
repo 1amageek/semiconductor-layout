@@ -320,6 +320,69 @@ struct HierarchyEditingTests {
         #expect(sortedBoxes(viewModel.flattenedDocumentShapes()) == before)
     }
 
+    @Test func deleteSelectedInstanceRemovesItAndUndoRestores() {
+        let child = LayoutCell(name: "UNIT", shapes: [
+            LayoutShape(
+                layer: m1,
+                geometry: .rect(LayoutRect(
+                    origin: .zero,
+                    size: LayoutSize(width: 1, height: 1)
+                ))
+            )
+        ])
+        let instance = LayoutInstance(cellID: child.id, name: "X1")
+        let top = LayoutCell(name: "TOP", instances: [instance])
+        let document = LayoutDocument(name: "hier", cells: [child, top], topCellID: top.id)
+        let viewModel = LayoutEditorViewModel(document: document, tech: .standard())
+
+        viewModel.selectedInstanceID = instance.id
+        viewModel.deleteSelectedInstance()
+
+        #expect(viewModel.editor.document.cell(withID: top.id)?.instances.isEmpty == true)
+        #expect(viewModel.selectedInstanceID == nil)
+        #expect(flattenedBoxes(viewModel.editor.document).isEmpty)
+
+        viewModel.undo()
+        #expect(viewModel.editor.document.cell(withID: top.id)?.instances.count == 1)
+        #expect(flattenedBoxes(viewModel.editor.document).first?.origin == .zero)
+    }
+
+    /// A shape selection takes precedence: the unified delete must never
+    /// remove an instance while shapes are selected.
+    @Test func deleteSelectionPrefersShapesOverInstance() {
+        let child = LayoutCell(name: "UNIT", shapes: [
+            LayoutShape(
+                layer: m1,
+                geometry: .rect(LayoutRect(
+                    origin: .zero,
+                    size: LayoutSize(width: 1, height: 1)
+                ))
+            )
+        ])
+        let instance = LayoutInstance(cellID: child.id, name: "X1")
+        let topShape = LayoutShape(
+            layer: m1,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 5, y: 5),
+                size: LayoutSize(width: 2, height: 2)
+            ))
+        )
+        let top = LayoutCell(name: "TOP", shapes: [topShape], instances: [instance])
+        let document = LayoutDocument(name: "hier", cells: [child, top], topCellID: top.id)
+        let viewModel = LayoutEditorViewModel(document: document, tech: .standard())
+
+        viewModel.selectedShapeIDs = [topShape.id]
+        viewModel.selectedInstanceID = instance.id
+        viewModel.deleteSelection()
+
+        let cell = viewModel.editor.document.cell(withID: top.id)
+        #expect(cell?.shapes.isEmpty == true)
+        #expect(cell?.instances.count == 1, "the instance must survive a shape delete")
+
+        viewModel.deleteSelection()
+        #expect(viewModel.editor.document.cell(withID: top.id)?.instances.isEmpty == true)
+    }
+
     @Test func placeInstanceSurfacesCycleRejection() {
         let child = LayoutCell(name: "UNIT")
         let instance = LayoutInstance(cellID: child.id, name: "X1")

@@ -77,11 +77,13 @@ public struct LayoutCanvasView: View {
             switch phase {
             case .active(let location):
                 hoverLocation = location
+                viewModel.cursorPosition = toLayout(location)
                 if viewModel.tool == .route, viewModel.isRouting {
                     viewModel.updateRoute(to: toLayout(location))
                 }
             case .ended:
                 hoverLocation = nil
+                viewModel.cursorPosition = nil
             }
         }
         .background(scrollEventOverlay)
@@ -146,8 +148,16 @@ public struct LayoutCanvasView: View {
 
         switch keyPress.key {
         case .delete, .deleteForward:
-            viewModel.deleteSelectedShapes()
+            // Mid-drawing, Delete retracts the last placed vertex; it
+            // only deletes the selection when no drawing is in progress.
+            if !drawingVertices.isEmpty {
+                drawingVertices.removeLast()
+                return .handled
+            }
+            viewModel.deleteSelection()
             return .handled
+        case .upArrow, .downArrow, .leftArrow, .rightArrow:
+            return nudgeSelection(keyPress.key, hasShift: hasShift)
         case .escape:
             if viewModel.isDraggingHandle {
                 viewModel.cancelHandleDrag()
@@ -185,14 +195,6 @@ public struct LayoutCanvasView: View {
             return .handled
         default:
             break
-        }
-
-        // Backspace removes last vertex in multi-click mode
-        if keyPress.characters == "\u{7F}" || keyPress.key == .delete {
-            if !drawingVertices.isEmpty {
-                drawingVertices.removeLast()
-                return .handled
-            }
         }
 
         guard !hasCmd else { return .ignored }
@@ -251,6 +253,31 @@ public struct LayoutCanvasView: View {
             }
         }
 
+        return .ignored
+    }
+
+    /// Arrow-key nudge: one grid step, ×5 with Shift. Directions follow
+    /// the screen (layout +y renders downward on this canvas). Shapes
+    /// move through the delta stream; an instance selection moves
+    /// through the instance edit path.
+    private func nudgeSelection(_ key: KeyEquivalent, hasShift: Bool) -> KeyPress.Result {
+        let step = viewModel.gridSize * (hasShift ? 5 : 1)
+        let delta: LayoutPoint
+        switch key {
+        case .upArrow: delta = LayoutPoint(x: 0, y: -step)
+        case .downArrow: delta = LayoutPoint(x: 0, y: step)
+        case .leftArrow: delta = LayoutPoint(x: -step, y: 0)
+        case .rightArrow: delta = LayoutPoint(x: step, y: 0)
+        default: return .ignored
+        }
+        if !viewModel.selectedShapeIDs.isEmpty {
+            viewModel.moveSelectedShapes(by: delta)
+            return .handled
+        }
+        if viewModel.selectedInstanceID != nil {
+            viewModel.moveSelectedInstance(by: delta)
+            return .handled
+        }
         return .ignored
     }
 

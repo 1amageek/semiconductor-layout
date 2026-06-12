@@ -40,6 +40,7 @@ public struct LayoutEditorView: View {
                 .overlay(alignment: .bottomLeading) {
                     HStack(spacing: 8) {
                         LayoutZoomControlView(viewModel: viewModel)
+                        LayoutCursorReadoutView(viewModel: viewModel)
                         LayoutScaleBarView(viewModel: viewModel)
                     }
                     .padding(12)

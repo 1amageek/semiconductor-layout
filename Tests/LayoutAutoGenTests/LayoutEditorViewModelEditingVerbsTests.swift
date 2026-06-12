@@ -567,4 +567,52 @@ struct LayoutEditorViewModelEditingVerbsTests {
         #expect(!opens(viewModel, net: fixture.rich.netB))
         try expectConnectivityMatchesBatch(viewModel, "after undo")
     }
+
+    // MARK: - Keyboard nudge
+
+    /// The arrow-key path: each ``moveSelectedShapes(by:)`` call is one
+    /// ID-preserving discrete edit — verified live, one undo step each.
+    @Test func nudgeMovesIDPreservingOneUndoStepPerCall() throws {
+        let fixture = try Self.makeFixture()
+        let viewModel = fixture.viewModel
+        let wireID = fixture.rich.wireA.id
+        let original = fixture.rich.wireA.geometry
+        let step = viewModel.gridSize
+
+        viewModel.selectedShapeIDs = [wireID]
+        viewModel.moveSelectedShapes(by: LayoutPoint(x: step, y: 0))
+        viewModel.moveSelectedShapes(by: LayoutPoint(x: 0, y: step))
+
+        #expect(
+            try geometry(of: wireID, in: viewModel) == original.translated(
+                by: LayoutPoint(x: step, y: step)
+            )
+        )
+        #expect(viewModel.selectedShapeIDs == [wireID], "nudge keeps the selection")
+        expectDRCMatchesBatchExactly(viewModel, "after nudge")
+        try expectConnectivityMatchesBatch(viewModel, "after nudge")
+
+        viewModel.undo()
+        #expect(
+            try geometry(of: wireID, in: viewModel) == original.translated(
+                by: LayoutPoint(x: step, y: 0)
+            ),
+            "each nudge is its own undo step"
+        )
+        viewModel.undo()
+        #expect(try geometry(of: wireID, in: viewModel) == original)
+        expectDRCMatchesBatchExactly(viewModel, "after undo")
+        try expectConnectivityMatchesBatch(viewModel, "after undo")
+    }
+
+    @Test func nudgeWithEmptySelectionDoesNothing() throws {
+        let fixture = try Self.makeFixture()
+        let viewModel = fixture.viewModel
+        let before = viewModel.editor.document
+
+        viewModel.moveSelectedShapes(by: LayoutPoint(x: viewModel.gridSize, y: 0))
+
+        #expect(viewModel.editor.document == before)
+        #expect(!viewModel.canUndo, "an empty nudge must not record an undo step")
+    }
 }
