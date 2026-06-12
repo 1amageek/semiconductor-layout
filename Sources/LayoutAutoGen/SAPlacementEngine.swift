@@ -40,6 +40,12 @@ struct SAPlacementState: Sendable {
 
     var slots: [UUID: SlotEntry]
     var rowAssignments: [DeviceType: [UUID]]
+    /// Canonical instance order (placement-input order). Every random
+    /// pick and every floating-point accumulation runs over THIS order:
+    /// dictionary iteration order depends on the run's random UUID
+    /// values, and an order-dependent pick or sum silently breaks the
+    /// seeded RNG's determinism from run to run.
+    var orderedIDs: [UUID]
 
     /// Applies a move to the state, mutating it in place.
     mutating func apply(_ move: SAMove, grid: Double) {
@@ -592,7 +598,11 @@ public struct SAPlacementEngine: PlacementEngine {
             rowAssignments[inst.deviceType, default: []].append(inst.id)
         }
 
-        return SAPlacementState(slots: slots, rowAssignments: rowAssignments)
+        return SAPlacementState(
+            slots: slots,
+            rowAssignments: rowAssignments,
+            orderedIDs: instances.map(\.id)
+        )
     }
 
     private func alignSelfSymmetricMembers(

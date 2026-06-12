@@ -1096,6 +1096,10 @@ struct TierImprovementTests {
             )
             rowAssignments[inst.deviceType, default: []].append(inst.id)
         }
-        return SAPlacementState(slots: slots, rowAssignments: rowAssignments)
+        return SAPlacementState(
+            slots: slots,
+            rowAssignments: rowAssignments,
+            orderedIDs: instances.map(\.id)
+        )
     }
 }

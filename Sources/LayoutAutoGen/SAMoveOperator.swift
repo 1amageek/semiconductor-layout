@@ -174,16 +174,32 @@ struct SAMoveGenerator: Sendable {
         Double.random(in: 0..<1, using: &rng)
     }
 
+    /// Picks an instance through the state's canonical order — never
+    /// through dictionary iteration, whose order tracks the run's random
+    /// UUID values and would break the seeded RNG's determinism.
+    private mutating func randomInstanceID(state: SAPlacementState) -> UUID? {
+        guard !state.orderedIDs.isEmpty else { return nil }
+        return state.orderedIDs[Int.random(in: 0..<state.orderedIDs.count, using: &rng)]
+    }
+
+    /// Picks a swappable row deterministically: rows sorted by their
+    /// stable device-type key, then an RNG-indexed choice.
+    private mutating func randomSwappableRow(state: SAPlacementState) -> [UUID]? {
+        let nonEmptyRows = state.rowAssignments
+            .filter { $0.value.count >= 2 }
+            .sorted { $0.key.rawValue < $1.key.rawValue }
+        guard !nonEmptyRows.isEmpty else { return nil }
+        return nonEmptyRows[Int.random(in: 0..<nonEmptyRows.count, using: &rng)].value
+    }
+
     private mutating func randomSwap(state: SAPlacementState) -> SAMove? {
-        let nonEmptyRows = state.rowAssignments.filter { $0.value.count >= 2 }
-        guard let (_, ids) = nonEmptyRows.randomElement(using: &rng) else { return nil }
-        guard ids.count >= 2 else { return nil }
+        guard let ids = randomSwappableRow(state: state), ids.count >= 2 else { return nil }
         let shuffled = ids.shuffled(using: &rng)
         return .swap(a: shuffled[0], b: shuffled[1])
     }
 
     private mutating func randomShift(state: SAPlacementState, ratio: Double) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
+        guard let instID = randomInstanceID(state: state) else { return nil }
 
         // Self-symmetric instances on vertical axis: only shift along axis (Y only)
         if let selfAxis = constraintIndex.selfSymmetricInstances[instID] {
@@ -203,7 +219,7 @@ struct SAMoveGenerator: Sendable {
     }
 
     private mutating func randomShiftY(state: SAPlacementState, ratio: Double) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
+        guard let instID = randomInstanceID(state: state) else { return nil }
         return randomShiftY(state: state, ratio: ratio, forInstance: instID)
     }
 
@@ -218,7 +234,7 @@ struct SAMoveGenerator: Sendable {
     }
 
     private mutating func randomSymmetricShift(state: SAPlacementState, ratio: Double) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
+        guard let instID = randomInstanceID(state: state) else { return nil }
 
         // If this is a self-symmetric instance, only shift along the axis
         if let selfAxis = constraintIndex.selfSymmetricInstances[instID] {
@@ -271,9 +287,7 @@ struct SAMoveGenerator: Sendable {
 
     private mutating func randomGroupSwap(state: SAPlacementState) -> SAMove? {
         // Try to find two instances with matching partners and swap them
-        let nonEmptyRows = state.rowAssignments.filter { $0.value.count >= 2 }
-        guard let (_, ids) = nonEmptyRows.randomElement(using: &rng) else { return nil }
-        guard ids.count >= 2 else { return nil }
+        guard let ids = randomSwappableRow(state: state), ids.count >= 2 else { return nil }
 
         let shuffled = ids.shuffled(using: &rng)
         let a = shuffled[0]
@@ -290,12 +304,12 @@ struct SAMoveGenerator: Sendable {
     }
 
     private mutating func randomRotate(state: SAPlacementState) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
+        guard let instID = randomInstanceID(state: state) else { return nil }
         return .rotate(instance: instID)
     }
 
     private mutating func randomMirror(state: SAPlacementState) -> SAMove? {
-        guard let (instID, _) = state.slots.randomElement(using: &rng) else { return nil }
+        guard let instID = randomInstanceID(state: state) else { return nil }
         return .mirror(instance: instID)
     }
 

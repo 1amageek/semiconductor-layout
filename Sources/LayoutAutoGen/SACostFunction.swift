@@ -541,9 +541,18 @@ struct SACostFunction: Sendable {
         guard let grid = spatialGrid else { return computeOverlapPenalty(state: state) }
         var penalty = 0.0
         var checked = Set<String>()
-        for (id, bbox) in instanceBBoxes {
+        // Accumulate in the state's canonical order: a dictionary-order
+        // sum varies in its floating-point rounding from run to run
+        // (UUID hashing), which is enough to flip an accept/reject
+        // decision and fork the whole annealing trajectory.
+        let canonicalIndex = Dictionary(
+            uniqueKeysWithValues: state.orderedIDs.enumerated().map { ($1, $0) }
+        )
+        for id in state.orderedIDs {
+            guard let bbox = instanceBBoxes[id] else { continue }
             let expanded = bbox.expanded(by: minSpacing, minSpacing)
             let neighbors = grid.neighbors(of: expanded)
+                .sorted { (canonicalIndex[$0] ?? .max) < (canonicalIndex[$1] ?? .max) }
             for neighborID in neighbors where neighborID != id {
                 let pairKey = id < neighborID
                     ? "\(id)-\(neighborID)"
