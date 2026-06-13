@@ -1964,7 +1964,12 @@ public final class LayoutEditorViewModel {
             try editor.addLabel(label, to: cellID)
         } catch {
             handleError(error)
+            return
         }
+        // Labels are structural annotations for extraction: LVS uses them
+        // as island names, and live sessions cannot absorb them as a
+        // geometry delta.
+        resyncAfterAnnotationEdit()
     }
 
     public func addPin(name: String, at point: LayoutPoint, size: LayoutSize) {
@@ -1978,9 +1983,14 @@ public final class LayoutEditorViewModel {
         }
         // Pins participate in connectivity checks but are structural for
         // the live sessions, so they require a rebuild rather than a delta.
+        resyncAfterAnnotationEdit()
+    }
+
+    private func resyncAfterAnnotationEdit() {
         resyncLiveDRC()
         resyncLiveConnectivity()
         refreshConstraintViolations()
+        resyncLiveLVS()
         rebuildRenderIndex()
     }
 

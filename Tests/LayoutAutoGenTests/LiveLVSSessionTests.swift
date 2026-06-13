@@ -268,6 +268,38 @@ struct LiveLVSSessionTests {
         #expect(viewModel.liveLVSPassed == true)
     }
 
+    @MainActor
+    @Test func editorViewModelRebuildsLiveLVSAfterAddingLabel() throws {
+        let tech = LayoutTechDatabase.sampleProcess()
+        var cell = try MOSFETCellGenerator().generateCell(
+            deviceKindID: "nmos",
+            instanceName: "M1",
+            parameters: ["w": 2.0, "l": 0.18],
+            tech: tech
+        )
+        let gatePin = try #require(cell.pins.first { $0.role == .gate })
+        cell.pins.removeAll()
+        cell.labels.removeAll()
+        let document = LayoutDocument(name: "label-driven-lvs", cells: [cell], topCellID: cell.id)
+
+        let baseline = try DeviceExtractor().extract(document: document, tech: tech).netlist
+        var referenceDevice = try #require(baseline.devices.first)
+        #expect(referenceDevice.terminals[.gate] != ComparisonNetID("pin:gate"))
+        referenceDevice.terminals[.gate] = ComparisonNetID("pin:gate")
+        let reference = ComparisonNetlist(devices: [referenceDevice])
+
+        let viewModel = LayoutEditorViewModel(document: document, tech: tech)
+        viewModel.setLVSReference(reference)
+        #expect(viewModel.liveLVSPassed == false)
+
+        viewModel.activeLayer = gatePin.layer
+        viewModel.addLabel(text: "gate", at: gatePin.position)
+
+        let device = try #require(viewModel.lvsExtraction?.netlist.devices.first)
+        #expect(device.terminals[.gate] == ComparisonNetID("pin:gate"))
+        #expect(viewModel.liveLVSPassed == true)
+    }
+
     private func generatedDocument(
         kind: String,
         width: Double,
