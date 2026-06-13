@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "LayoutIntegration", targets: ["LayoutIntegration"]),
         .library(name: "LayoutEditor", targets: ["LayoutEditor"]),
         .library(name: "LayoutAutoGen", targets: ["LayoutAutoGen"]),
+        .library(name: "LayoutEngine", targets: ["LayoutEngine"]),
     ],
     dependencies: [
         .package(path: "../swift-mask-data"),
@@ -70,6 +71,10 @@ let package = Package(
             name: "LayoutAutoGen",
             dependencies: ["LayoutCore", "LayoutTech"]
         ),
+        .target(
+            name: "LayoutEngine",
+            dependencies: ["LayoutCore", "LayoutTech", "LayoutAutoGen"]
+        ),
         .testTarget(
             name: "LayoutIOTests",
             dependencies: [
@@ -85,10 +90,20 @@ let package = Package(
             name: "LayoutAutoGenTests",
             dependencies: [
                 "LayoutAutoGen",
+                "LayoutEngine",
                 "LayoutCore",
                 "LayoutTech",
                 "LayoutVerify",
                 "LayoutEditor",
+            ]
+        ),
+        .testTarget(
+            name: "LayoutEngineTests",
+            dependencies: [
+                "LayoutEngine",
+                "LayoutAutoGen",
+                "LayoutCore",
+                "LayoutTech",
             ]
         ),
     ]
