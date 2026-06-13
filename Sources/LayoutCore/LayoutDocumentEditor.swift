@@ -1,8 +1,20 @@
 import Foundation
 
 public struct LayoutDocumentEditor: Sendable {
-    public private(set) var document: LayoutDocument
+    public private(set) var document: LayoutDocument {
+        didSet { revision &+= 1 }
+    }
     private var undoStack: LayoutUndoStack
+
+    /// Monotonic count of document mutations since this editor was created.
+    /// Every mutation path (perform, transient gestures, undo, redo, and the
+    /// typed helpers) writes through `document`, so the counter cannot miss
+    /// an edit.
+    public private(set) var revision: Int = 0
+
+    /// Revision recorded by the last ``markSaved()``; nil when the document
+    /// has never been persisted.
+    private var savedRevision: Int?
 
     public init(document: LayoutDocument) {
         self.document = document
@@ -11,6 +23,20 @@ public struct LayoutDocumentEditor: Sendable {
 
     public var canUndo: Bool { undoStack.canUndo }
     public var canRedo: Bool { undoStack.canRedo }
+
+    // MARK: - Change Tracking
+
+    /// True once ``markSaved()`` has recorded a persisted baseline.
+    public var isPersisted: Bool { savedRevision != nil }
+
+    /// True when the document has mutated since the last ``markSaved()``.
+    /// A never-saved editor always reports unsaved changes; undoing back to
+    /// the saved content still counts as a change (revision-based, not
+    /// content-based).
+    public var hasUnsavedChanges: Bool { savedRevision != revision }
+
+    /// Records the current document state as the persisted baseline.
+    public mutating func markSaved() { savedRevision = revision }
 
     public mutating func perform(_ body: (inout LayoutDocument) throws -> Void) rethrows {
         undoStack.record(document)
