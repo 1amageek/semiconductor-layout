@@ -27,4 +27,22 @@ struct LayoutTransformTests {
         transform.rotation = .deg180
         #expect(transform.rotationDegrees == 180)
     }
+
+    @Test("Checked inverse rejects zero magnification")
+    func checkedInverseRejectsZeroMagnification() {
+        let transform = LayoutTransform(magnification: 0)
+
+        #expect(throws: LayoutCoreError.nonInvertibleTransform(magnification: 0)) {
+            _ = try transform.checkedInverseApply(to: .zero)
+        }
+    }
+
+    @Test("Inverse apply rejects zero magnification")
+    func inverseApplyRejectsZeroMagnification() {
+        let transform = LayoutTransform(magnification: 0)
+
+        #expect(throws: LayoutCoreError.nonInvertibleTransform(magnification: 0)) {
+            _ = try transform.inverseApply(to: .zero)
+        }
+    }
 }

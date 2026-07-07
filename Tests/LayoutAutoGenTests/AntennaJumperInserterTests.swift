@@ -106,6 +106,44 @@ struct AntennaJumperInserterTests {
         #expect(cell.vias.isEmpty)
     }
 
+    @Test func missingTopLayerRulesReportEveryGateWithoutPartialEdits() throws {
+        let firstGate = gatePin()
+        var secondGate = gatePin()
+        secondGate.position = LayoutPoint(x: 1, y: 0)
+        let wire = m1Rect(x: -0.05, y: -0.05, width: 2.0, height: 0.1)
+        var doc = document(shapes: [wire], pins: [firstGate, secondGate])
+        let base = antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)])
+        let tech = LayoutTechDatabase(
+            units: base.units,
+            grid: base.grid,
+            layers: base.layers,
+            vias: base.vias,
+            layerRules: [relaxedRules(m1)],
+            antennaRules: base.antennaRules
+        )
+
+        let result = try AntennaJumperInserter().insert(
+            requests: [AntennaJumperRequest(
+                layer: m1,
+                shapeIDs: [wire.id],
+                gates: [
+                    AntennaJumperGate(position: firstGate.position, size: firstGate.size),
+                    AntennaJumperGate(position: secondGate.position, size: secondGate.size),
+                ]
+            )],
+            into: &doc,
+            cellID: try #require(doc.topCellID),
+            tech: tech
+        )
+
+        #expect(result.insertedJumpers == 0)
+        #expect(result.failures.map(\.reason) == [.missingLayerRules(m2), .missingLayerRules(m2)])
+        let topCellID = try #require(doc.topCellID)
+        let cell = try #require(doc.cell(withID: topCellID))
+        #expect(cell.shapes == [wire])
+        #expect(cell.vias.isEmpty)
+    }
+
     @Test func netIDIsPreservedOnAllJumperGeometry() throws {
         let net = UUID()
         let gate = gatePin()

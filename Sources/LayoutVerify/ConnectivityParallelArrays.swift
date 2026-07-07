@@ -9,4 +9,6 @@ struct ConnectivityParallelArrays {
     var layers: [LayoutLayerID?]
     var isVia: [Bool]
     var viaDefs: [LayoutViaDefinition?]
+    var viaCutRects: [[LayoutRect]]
+    var viaContactRectsByLayer: [[LayoutLayerID: [LayoutRect]]]
 }

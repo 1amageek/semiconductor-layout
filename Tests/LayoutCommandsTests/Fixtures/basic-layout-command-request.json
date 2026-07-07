@@ -1,0 +1,60 @@
+{
+  "artifactManifestPath" : "/tmp/layout-command-fixture/manifest.json",
+  "commands" : [
+    {
+      "createCell" : {
+        "cellID" : "10000000-0000-0000-0000-000000000001",
+        "makeTop" : true,
+        "name" : "top"
+      },
+      "kind" : "createCell"
+    },
+    {
+      "addNet" : {
+        "cellID" : "10000000-0000-0000-0000-000000000001",
+        "name" : "out",
+        "netID" : "10000000-0000-0000-0000-000000000002"
+      },
+      "kind" : "addNet"
+    },
+    {
+      "addRect" : {
+        "cellID" : "10000000-0000-0000-0000-000000000001",
+        "layer" : {
+          "name" : "M1",
+          "purpose" : "drawing"
+        },
+        "netID" : "10000000-0000-0000-0000-000000000002",
+        "origin" : {
+          "x" : 0,
+          "y" : 0
+        },
+        "properties" : {
+          "role" : "wire"
+        },
+        "shapeID" : "10000000-0000-0000-0000-000000000003",
+        "size" : {
+          "height" : 2,
+          "width" : 10
+        }
+      },
+      "kind" : "addRect"
+    },
+    {
+      "translateShape" : {
+        "cellID" : "10000000-0000-0000-0000-000000000001",
+        "delta" : {
+          "x" : 1,
+          "y" : 2
+        },
+        "shapeID" : "10000000-0000-0000-0000-000000000003"
+      },
+      "kind" : "translateShape"
+    }
+  ],
+  "documentID" : "10000000-0000-0000-0000-000000000000",
+  "documentName" : "fixture-layout",
+  "outputDocumentPath" : "/tmp/layout-command-fixture/layout.json",
+  "resultPath" : "/tmp/layout-command-fixture/result.json",
+  "schemaVersion" : 1
+}

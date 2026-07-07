@@ -27,6 +27,18 @@ public enum InteractiveRouteSessionError: Error, Equatable, Sendable {
 /// (ID-preserving updates), to be fed through the editor's single edit
 /// stream as one undo unit.
 public struct InteractiveRouteSession {
+    private struct LayerSwitchCandidate {
+        var junction: LayoutPoint
+        var frozenLeg: [LayoutShape]
+        var via: LayoutVia
+        var topPad: LayoutShape
+        var bottomPad: LayoutShape
+
+        var fixedShapes: [LayoutShape] {
+            frozenLeg + [topPad, bottomPad]
+        }
+    }
+
     private let tech: LayoutTechDatabase
     private let mode: RouteMode
     /// Requested wire width; nil falls back to the layer's minimum width.
@@ -150,12 +162,16 @@ public struct InteractiveRouteSession {
         // the furthest legal end.
         var low = anchor.point
         var high = snapped.point
+        var lastLegalEnd = low
         var lastLegalShapes = try evaluate(leg: routeShapes(to: low)).shapes
         for _ in 0..<14 {
-            let mid = LayoutPoint(x: (low.x + high.x) / 2, y: (low.y + high.y) / 2)
+            let rawMid = LayoutPoint(x: (low.x + high.x) / 2, y: (low.y + high.y) / 2)
+            let mid = gridSnapped(rawMid)
+            guard mid != low, mid != high else { break }
             let candidate = try evaluate(leg: routeShapes(to: mid))
             if candidate.newViolations.isEmpty {
                 low = mid
+                lastLegalEnd = mid
                 lastLegalShapes = candidate.shapes
             } else {
                 high = mid
@@ -166,7 +182,7 @@ public struct InteractiveRouteSession {
         }
         lastPreview = preview(
             requestedEnd: snapped.point,
-            legalEnd: low,
+            legalEnd: lastLegalEnd,
             snapReason: snapped.reason,
             stopReason: .blockedByViolations(requested.newViolations),
             violations: requested.newViolations
@@ -205,54 +221,86 @@ public struct InteractiveRouteSession {
     /// would itself violate.
     public mutating func switchLayer(to newLayer: LayoutLayerID) throws -> RoutePreview {
         guard newLayer != anchor.layer else { return lastPreview }
-        guard let viaDef = tech.vias.first(where: {
-            ($0.topLayer == newLayer && $0.bottomLayer == anchor.layer)
-                || ($0.topLayer == anchor.layer && $0.bottomLayer == newLayer)
-        }) else {
-            throw InteractiveRouteSessionError.noViaBetweenLayers(anchor.layer, newLayer)
+        let viaDef = try viaDefinition(from: anchor.layer, to: newLayer)
+        let previousLeg = legShapes
+        let candidate = layerSwitchCandidate(viaDef: viaDef)
+        let update = try applyLayerSwitchCandidate(candidate, replacing: previousLeg)
+        let blocking = newViolations(after: update)
+        guard blocking.isEmpty else {
+            try rollbackLayerSwitchCandidate(candidate, restoring: previousLeg)
+            throw InteractiveRouteSessionError.viaPlacementBlocked(blocking)
         }
 
+        acceptLayerSwitchCandidate(candidate, newLayer: newLayer)
+        return lastPreview
+    }
+
+    private func viaDefinition(
+        from currentLayer: LayoutLayerID,
+        to newLayer: LayoutLayerID
+    ) throws -> LayoutViaDefinition {
+        guard let viaDef = tech.vias.first(where: {
+            ($0.topLayer == newLayer && $0.bottomLayer == currentLayer)
+                || ($0.topLayer == currentLayer && $0.bottomLayer == newLayer)
+        }) else {
+            throw InteractiveRouteSessionError.noViaBetweenLayers(currentLayer, newLayer)
+        }
+        return viaDef
+    }
+
+    private func layerSwitchCandidate(viaDef: LayoutViaDefinition) -> LayerSwitchCandidate {
         let junction = lastPreview.legalEnd
-        let frozenLeg = routeShapes(to: junction)
         let via = LayoutVia(
             viaDefinitionID: viaDef.id,
             position: junction,
             netID: anchor.netID
         )
-        let topPad = landingPad(for: viaDef, layer: viaDef.topLayer, at: junction)
-        let bottomPad = landingPad(for: viaDef, layer: viaDef.bottomLayer, at: junction)
+        return LayerSwitchCandidate(
+            junction: junction,
+            frozenLeg: routeShapes(to: junction),
+            via: via,
+            topPad: landingPad(for: viaDef, layer: viaDef.topLayer, at: junction),
+            bottomPad: landingPad(for: viaDef, layer: viaDef.bottomLayer, at: junction)
+        )
+    }
 
-        let previousLeg = legShapes
-        let candidateFixed = frozenLeg + [topPad, bottomPad]
-        let update = try drc.apply(LayoutEditDelta(
-            addedShapes: candidateFixed,
+    private mutating func applyLayerSwitchCandidate(
+        _ candidate: LayerSwitchCandidate,
+        replacing previousLeg: [LayoutShape]
+    ) throws -> IncrementalDRCUpdate {
+        try drc.apply(LayoutEditDelta(
+            addedShapes: candidate.fixedShapes,
             removedShapeIDs: previousLeg.map(\.id),
-            addedVias: [via]
+            addedVias: [candidate.via]
         ))
-        let blocking = newViolations(in: update.result)
-        guard blocking.isEmpty else {
-            // Roll the switch back exactly: drop the candidate geometry,
-            // restore the previous leg.
-            _ = try drc.apply(LayoutEditDelta(
-                addedShapes: previousLeg,
-                removedShapeIDs: candidateFixed.map(\.id),
-                removedViaIDs: [via.id]
-            ))
-            legShapes = previousLeg
-            throw InteractiveRouteSessionError.viaPlacementBlocked(blocking)
-        }
+    }
 
-        fixedShapes.append(contentsOf: candidateFixed)
-        fixedVias.append(via)
+    private mutating func rollbackLayerSwitchCandidate(
+        _ candidate: LayerSwitchCandidate,
+        restoring previousLeg: [LayoutShape]
+    ) throws {
+        _ = try drc.apply(LayoutEditDelta(
+            addedShapes: previousLeg,
+            removedShapeIDs: candidate.fixedShapes.map(\.id),
+            removedViaIDs: [candidate.via.id]
+        ))
+        legShapes = previousLeg
+    }
+
+    private mutating func acceptLayerSwitchCandidate(
+        _ candidate: LayerSwitchCandidate,
+        newLayer: LayoutLayerID
+    ) {
+        fixedShapes.append(contentsOf: candidate.fixedShapes)
+        fixedVias.append(candidate.via)
         legShapes = []
-        anchor = RouteAnchor(point: junction, layer: newLayer, netID: anchor.netID)
+        anchor = RouteAnchor(point: candidate.junction, layer: newLayer, netID: anchor.netID)
         refreshSnapTargets()
         lastPreview = preview(
-            requestedEnd: junction,
-            legalEnd: junction,
+            requestedEnd: candidate.junction,
+            legalEnd: candidate.junction,
             snapReason: .none
         )
-        return lastPreview
     }
 
     // MARK: - Commit / cancel
@@ -309,8 +357,8 @@ public struct InteractiveRouteSession {
     private mutating func evaluate(
         leg: [LayoutShape]
     ) throws -> (shapes: [LayoutShape], newViolations: [LayoutViolation]) {
-        let result = try applyLeg(leg)
-        return (leg, newViolations(in: result))
+        let update = try applyLeg(leg)
+        return (leg, newViolations(after: update))
     }
 
     /// Violations the route gesture must stop for: everything new against
@@ -333,13 +381,18 @@ public struct InteractiveRouteSession {
         }
     }
 
-    private mutating func applyLeg(_ shapes: [LayoutShape]) throws -> LayoutDRCResult {
+    private func newViolations(after update: IncrementalDRCUpdate) -> [LayoutViolation] {
+        let exactResult = update.staleKinds.isEmpty ? update.result : drc.commit()
+        return newViolations(in: exactResult)
+    }
+
+    private mutating func applyLeg(_ shapes: [LayoutShape]) throws -> IncrementalDRCUpdate {
         let update = try drc.apply(LayoutEditDelta(
             addedShapes: shapes,
             removedShapeIDs: legShapes.map(\.id)
         ))
         legShapes = shapes
-        return update.result
+        return update
     }
 
     private func commitDelta() -> LayoutEditDelta {
@@ -406,7 +459,7 @@ public struct InteractiveRouteSession {
             chain += 1
 
             let result = try drc.apply(LayoutEditDelta(updatedShapes: [moved]))
-            work = newViolations(in: result.result)
+            work = newViolations(after: result)
         }
         return true
     }
@@ -640,6 +693,15 @@ public struct InteractiveRouteSession {
                 y: (point.y / grid).rounded() * grid
             ),
             .grid
+        )
+    }
+
+    private func gridSnapped(_ point: LayoutPoint) -> LayoutPoint {
+        let grid = tech.grid
+        guard grid > 0 else { return point }
+        return LayoutPoint(
+            x: (point.x / grid).rounded() * grid,
+            y: (point.y / grid).rounded() * grid
         )
     }
 

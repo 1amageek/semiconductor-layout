@@ -54,8 +54,32 @@ public struct NetlistComparator: Sendable {
                 }
                 return $0.referenceDeviceID < $1.referenceDeviceID
             },
+            portMismatches: portMismatches(
+                extracted: extracted.ports,
+                reference: reference.ports
+            ),
             referenceDeviceCount: reference.devices.count
         )
+    }
+
+    private func portMismatches(
+        extracted: [String: ComparisonNetID],
+        reference: [String: ComparisonNetID]
+    ) -> [NetlistPortMismatch] {
+        guard !reference.isEmpty else { return [] }
+        let names: [String] = Set(extracted.keys)
+            .union(reference.keys)
+            .sorted()
+        return names.compactMap { name in
+            let extractedNet = extracted[name]
+            let referenceNet = reference[name]
+            guard extractedNet != referenceNet else { return nil }
+            return NetlistPortMismatch(
+                portName: name,
+                extracted: extractedNet,
+                reference: referenceNet
+            )
+        }
     }
 
     private struct TopologyKey: Hashable {

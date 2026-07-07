@@ -16,6 +16,8 @@ public struct IRTechLayoutBridge: Sendable {
         let layerRules = buildLayerRules(from: lib)
         let antennaRules = lib.antennaRules.map { convertAntennaRule($0) }
         let enclosureRules = lib.enclosureRules.map { convertEnclosureRule($0) }
+        let extensionRules = lib.extensionRules.map { convertExtensionRule($0) }
+        let minimumCutRules = lib.minimumCutRules.map { convertMinimumCutRule($0) }
 
         return LayoutTechDatabase(
             units: LayoutUnits(dbuPerMicron: lib.dbuPerMicron),
@@ -24,7 +26,9 @@ public struct IRTechLayoutBridge: Sendable {
             vias: vias,
             layerRules: layerRules,
             antennaRules: antennaRules,
-            enclosureRules: enclosureRules
+            enclosureRules: enclosureRules,
+            extensionRules: extensionRules,
+            minimumCutRules: minimumCutRules
         )
     }
 
@@ -36,6 +40,8 @@ public struct IRTechLayoutBridge: Sendable {
         let designRules = tech.layerRules.map { exportDesignRule($0) }
         let antennaRules = tech.antennaRules.map { exportAntennaRule($0) }
         let enclosureRules = tech.enclosureRules.map { exportEnclosureRule($0) }
+        let extensionRules = tech.extensionRules.map { exportExtensionRule($0) }
+        let minimumCutRules = tech.minimumCutRules.map { exportMinimumCutRule($0) }
 
         return IRTechLibrary(
             name: name,
@@ -44,6 +50,8 @@ public struct IRTechLayoutBridge: Sendable {
             vias: vias,
             designRules: designRules,
             enclosureRules: enclosureRules,
+            extensionRules: extensionRules,
+            minimumCutRules: minimumCutRules,
             antennaRules: antennaRules
         )
     }
@@ -115,7 +123,18 @@ public struct IRTechLayoutBridge: Sendable {
             bottomLayer: bottomLayer,
             cutSize: cutSize,
             enclosure: enclosure,
-            cutSpacing: ir.spacing ?? 0
+            cutSpacing: ir.spacing ?? 0,
+            layerGeometries: ir.layers.map { convertViaLayerGeometry($0, via: ir) }
+        )
+    }
+
+    private func convertViaLayerGeometry(
+        _ geometry: IRTechViaLayerGeometry,
+        via: IRTechViaDef
+    ) -> LayoutViaLayerGeometry {
+        LayoutViaLayerGeometry(
+            layer: viaLayerID(named: geometry.layerName, via: via),
+            rects: geometry.rects.map(convertRect)
         )
     }
 
@@ -129,7 +148,10 @@ public struct IRTechLayoutBridge: Sendable {
                 minSpacing: rule.minSpacing ?? 0,
                 minArea: rule.minArea ?? 0,
                 minDensity: rule.minDensity ?? 0,
-                maxDensity: rule.maxDensity ?? 1
+                maxDensity: rule.maxDensity ?? 1,
+                minEnclosedArea: rule.minEnclosedArea,
+                requiresRectangular: rule.requiresRectangular ?? false,
+                allowedAngleStepDegrees: rule.allowedAngleStepDegrees
             )
         }
     }
@@ -143,6 +165,34 @@ public struct IRTechLayoutBridge: Sendable {
         let outer = LayoutLayerID(name: ir.outerLayerName, purpose: "drawing")
         let inner = LayoutLayerID(name: ir.innerLayerName, purpose: "drawing")
         return LayoutEnclosureRule(outerLayer: outer, innerLayer: inner, minEnclosure: ir.minEnclosure)
+    }
+
+    private func convertExtensionRule(_ ir: IRTechExtensionRule) -> LayoutExtensionRule {
+        let extending = LayoutLayerID(name: ir.extendingLayerName, purpose: "drawing")
+        let enclosed = LayoutLayerID(name: ir.enclosedLayerName, purpose: "drawing")
+        let direction: LayoutExtensionRule.Direction
+        switch ir.direction {
+        case .horizontal:
+            direction = .horizontal
+        case .vertical:
+            direction = .vertical
+        }
+        return LayoutExtensionRule(
+            extendingLayer: extending,
+            enclosedLayer: enclosed,
+            minExtension: ir.minExtension,
+            direction: direction
+        )
+    }
+
+    private func convertMinimumCutRule(_ ir: IRTechMinimumCutRule) -> LayoutMinimumCutRule {
+        LayoutMinimumCutRule(
+            id: ir.name,
+            cutLayer: LayoutLayerID(name: ir.cutLayerName, purpose: "cut"),
+            bottomLayer: LayoutLayerID(name: ir.bottomLayerName, purpose: "drawing"),
+            topLayer: LayoutLayerID(name: ir.topLayerName, purpose: "drawing"),
+            minimumCount: ir.minimumCount
+        )
     }
 
     private func convertFillPattern(_ ir: IRTechFillPattern) -> LayoutFillPattern {
@@ -172,6 +222,24 @@ public struct IRTechLayoutBridge: Sendable {
             return "cut"
         }
         return "drawing"
+    }
+
+    private func viaLayerID(named layerName: String, via: IRTechViaDef) -> LayoutLayerID {
+        if layerName == via.cutLayerName {
+            return LayoutLayerID(name: layerName, purpose: "cut")
+        }
+        return LayoutLayerID(name: layerName, purpose: "drawing")
+    }
+
+    private func convertRect(_ rect: IRTechRect) -> LayoutRect {
+        let minX = min(rect.x1, rect.x2)
+        let minY = min(rect.y1, rect.y2)
+        let maxX = max(rect.x1, rect.x2)
+        let maxY = max(rect.y1, rect.y2)
+        return LayoutRect(
+            origin: LayoutPoint(x: minX, y: minY),
+            size: LayoutSize(width: maxX - minX, height: maxY - minY)
+        )
     }
 
     private func fallbackColor(for layer: Int) -> LayoutColor {
@@ -233,7 +301,24 @@ public struct IRTechLayoutBridge: Sendable {
             cutWidth: layout.cutSize.width,
             cutHeight: layout.cutSize.height,
             enclosure: IRTechEnclosureValues(overhang1: layout.enclosure.top, overhang2: layout.enclosure.bottom),
-            spacing: layout.cutSpacing
+            spacing: layout.cutSpacing,
+            layers: layout.layerGeometries.map(exportViaLayerGeometry)
+        )
+    }
+
+    private func exportViaLayerGeometry(_ geometry: LayoutViaLayerGeometry) -> IRTechViaLayerGeometry {
+        IRTechViaLayerGeometry(
+            layerName: geometry.layer.name,
+            rects: geometry.rects.map(exportRect)
+        )
+    }
+
+    private func exportRect(_ rect: LayoutRect) -> IRTechRect {
+        IRTechRect(
+            x1: rect.minX,
+            y1: rect.minY,
+            x2: rect.maxX,
+            y2: rect.maxY
         )
     }
 
@@ -243,8 +328,11 @@ public struct IRTechLayoutBridge: Sendable {
             minWidth: rule.minWidth,
             minSpacing: rule.minSpacing,
             minArea: rule.minArea,
+            minEnclosedArea: rule.minEnclosedArea,
             minDensity: rule.minDensity,
-            maxDensity: rule.maxDensity
+            maxDensity: rule.maxDensity,
+            requiresRectangular: rule.requiresRectangular ? true : nil,
+            allowedAngleStepDegrees: rule.allowedAngleStepDegrees
         )
     }
 
@@ -257,6 +345,32 @@ public struct IRTechLayoutBridge: Sendable {
             outerLayerName: rule.outerLayer.name,
             innerLayerName: rule.innerLayer.name,
             minEnclosure: rule.minEnclosure
+        )
+    }
+
+    private func exportExtensionRule(_ rule: LayoutExtensionRule) -> IRTechExtensionRule {
+        let direction: IRTechExtensionRule.Direction
+        switch rule.direction {
+        case .horizontal:
+            direction = .horizontal
+        case .vertical:
+            direction = .vertical
+        }
+        return IRTechExtensionRule(
+            extendingLayerName: rule.extendingLayer.name,
+            enclosedLayerName: rule.enclosedLayer.name,
+            minExtension: rule.minExtension,
+            direction: direction
+        )
+    }
+
+    private func exportMinimumCutRule(_ rule: LayoutMinimumCutRule) -> IRTechMinimumCutRule {
+        IRTechMinimumCutRule(
+            name: rule.id,
+            cutLayerName: rule.cutLayer.name,
+            bottomLayerName: rule.bottomLayer.name,
+            topLayerName: rule.topLayer.name,
+            minimumCount: rule.minimumCount
         )
     }
 

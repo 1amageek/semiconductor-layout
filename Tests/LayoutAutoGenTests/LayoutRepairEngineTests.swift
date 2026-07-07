@@ -13,6 +13,8 @@ import LayoutVerify
 struct LayoutRepairEngineTests {
 
     private static let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+    private static let m2 = LayoutLayerID(name: "M2", purpose: "drawing")
+    private static let via1 = LayoutLayerID(name: "VIA1", purpose: "cut")
 
     @Test func spacingViolationGetsAVerifiedDisplacementRepair() throws {
         let netA = UUID()
@@ -72,6 +74,80 @@ struct LayoutRepairEngineTests {
 
         Self.apply(repair.delta, to: &document, cellID: cell.id)
         #expect(LayoutDRCService().run(document: document, tech: tech).violations.isEmpty)
+    }
+
+    @Test func minimumCutViolationAddsAVerifiedViaRepair() throws {
+        let net = UUID()
+        let bottom = LayoutShape(
+            layer: Self.m1,
+            netID: net,
+            geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 1)))
+        )
+        let top = LayoutShape(
+            layer: Self.m2,
+            netID: net,
+            geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 1)))
+        )
+        let cell = LayoutCell(name: "TOP", shapes: [bottom, top])
+        var document = LayoutDocument(name: "fix-mincut", cells: [cell], topCellID: cell.id)
+        let tech = Self.makeMinimumCutTech()
+        let service = LayoutDRCService()
+        let violation = try #require(
+            service.run(document: document, tech: tech).violations
+                .first { $0.kind == .minimumCut }
+        )
+
+        let engine = LayoutRepairEngine(document: document, tech: tech, cellID: cell.id)
+        guard case .repair(let repair) = try engine.repair(for: violation) else {
+            Issue.record("expected a computed minimum-cut repair")
+            return
+        }
+
+        #expect(repair.delta.addedVias.count == 1)
+        #expect(repair.delta.addedVias.first?.viaDefinitionID == "VIA1")
+        #expect(repair.delta.addedVias.first?.netID == net)
+
+        Self.apply(repair.delta, to: &document, cellID: cell.id)
+        let after = service.run(document: document, tech: tech).violations
+        #expect(!after.contains { $0.kind == .minimumCut })
+    }
+
+    @Test func overlapShortGetsAVerifiedDisplacementRepair() throws {
+        let netA = UUID()
+        let netB = UUID()
+        let first = LayoutShape(
+            layer: Self.m1,
+            netID: netA,
+            geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 0.4)))
+        )
+        let second = LayoutShape(
+            layer: Self.m1,
+            netID: netB,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 0.5, y: 0),
+                size: LayoutSize(width: 1, height: 0.4)
+            ))
+        )
+        let cell = LayoutCell(name: "TOP", shapes: [first, second])
+        var document = LayoutDocument(name: "fix-short", cells: [cell], topCellID: cell.id)
+        let tech = Self.makeTech()
+        let service = LayoutDRCService()
+        let violation = try #require(
+            service.run(document: document, tech: tech).violations
+                .first { $0.kind == .overlapShort }
+        )
+
+        let engine = LayoutRepairEngine(document: document, tech: tech, cellID: cell.id)
+        guard case .repair(let repair) = try engine.repair(for: violation) else {
+            Issue.record("expected a computed short repair")
+            return
+        }
+
+        #expect(repair.delta.updatedShapes.count == 1)
+        Self.apply(repair.delta, to: &document, cellID: cell.id)
+        let after = service.run(document: document, tech: tech).violations
+        #expect(!after.contains { $0.kind == .overlapShort })
+        #expect(after.isEmpty)
     }
 
     @Test func blockedRepairIsRefusedBeforeMutating() throws {
@@ -161,7 +237,7 @@ struct LayoutRepairEngineTests {
             ),
         ]
         // The short: two overlapping shapes on different nets, far from
-        // the rest.
+        // the rest. It is now repairable by verified displacement.
         shapes.append(LayoutShape(
             layer: Self.m1,
             netID: netA,
@@ -178,6 +254,23 @@ struct LayoutRepairEngineTests {
                 size: LayoutSize(width: 1, height: 0.4)
             ))
         ))
+        let openNet = UUID()
+        shapes.append(LayoutShape(
+            layer: Self.m1,
+            netID: openNet,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 20, y: 20),
+                size: LayoutSize(width: 1, height: 0.4)
+            ))
+        ))
+        shapes.append(LayoutShape(
+            layer: Self.m1,
+            netID: openNet,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 25, y: 20),
+                size: LayoutSize(width: 1, height: 0.4)
+            ))
+        ))
         let cell = LayoutCell(name: "TOP", shapes: shapes)
         let document = LayoutDocument(name: "sweep", cells: [cell], topCellID: cell.id)
         let tech = Self.makeTech()
@@ -186,11 +279,11 @@ struct LayoutRepairEngineTests {
         let (repairs, sweep) = try engine.sweep()
 
         #expect(sweep.reachedFixedPoint)
-        #expect(repairs.count >= 2, "spacing and width must both be repaired")
-        #expect(!sweep.residuals.isEmpty, "the short must remain, with a reason")
+        #expect(repairs.count >= 3, "spacing, width, and short must be repaired")
+        #expect(!sweep.residuals.isEmpty, "the open must remain, with a reason")
         #expect(sweep.residuals.allSatisfy { violation, reason in
             if case .unsupportedKind = reason {
-                return violation.kind == .overlapShort || violation.kind == .disconnectedOpen
+                return violation.kind == .disconnectedOpen
             }
             return false
         })
@@ -337,6 +430,64 @@ struct LayoutRepairEngineTests {
                     maxDensity: 1
                 )
             ]
+        )
+    }
+
+    private static func makeMinimumCutTech() -> LayoutTechDatabase {
+        LayoutTechDatabase(
+            units: .defaultUnits,
+            grid: 0.01,
+            layers: [
+                layerDefinition(Self.m1),
+                layerDefinition(Self.m2),
+                layerDefinition(Self.via1),
+            ],
+            vias: [
+                LayoutViaDefinition(
+                    id: "VIA1",
+                    cutLayer: Self.via1,
+                    topLayer: Self.m2,
+                    bottomLayer: Self.m1,
+                    cutSize: LayoutSize(width: 0.1, height: 0.1),
+                    enclosure: LayoutViaEnclosure(top: 0, bottom: 0),
+                    cutSpacing: 0.1
+                )
+            ],
+            layerRules: [
+                layerRule(Self.m1),
+                layerRule(Self.m2),
+                layerRule(Self.via1),
+            ],
+            minimumCutRules: [
+                LayoutMinimumCutRule(
+                    id: "mincut.VIA1",
+                    cutLayer: Self.via1,
+                    bottomLayer: Self.m1,
+                    topLayer: Self.m2,
+                    minimumCount: 1
+                )
+            ]
+        )
+    }
+
+    private static func layerDefinition(_ id: LayoutLayerID) -> LayoutLayerDefinition {
+        LayoutLayerDefinition(
+            id: id,
+            displayName: id.name,
+            gdsLayer: 1,
+            gdsDatatype: 0,
+            color: LayoutColor(red: 0.3, green: 0.5, blue: 0.9)
+        )
+    }
+
+    private static func layerRule(_ id: LayoutLayerID) -> LayoutLayerRuleSet {
+        LayoutLayerRuleSet(
+            layerID: id,
+            minWidth: 0,
+            minSpacing: 0,
+            minArea: 0,
+            minDensity: 0,
+            maxDensity: 1
         )
     }
 

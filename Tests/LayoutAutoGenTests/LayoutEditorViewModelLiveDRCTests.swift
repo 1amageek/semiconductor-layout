@@ -3,7 +3,7 @@ import Testing
 import LayoutCore
 import LayoutTech
 import LayoutVerify
-import LayoutEditor
+@testable import LayoutEditor
 
 /// Contract of the view model's live-DRC plumbing: after every editing
 /// operation the published `violations` must equal a from-scratch batch
@@ -120,6 +120,18 @@ struct LayoutEditorViewModelLiveDRCTests {
         viewModel.deleteSelectedShapes()
         expectLiveMatchesBatch(viewModel, "deleteSelectedShapes")
         #expect(!viewModel.violations.contains { $0.kind == .minWidth })
+    }
+
+    @Test func duplicateDeltaIsRejectedBeforeDocumentMutation() throws {
+        let fixture = Self.makeFixture()
+        let viewModel = fixture.viewModel
+        let beforeIDs = viewModel.documentShapes().map(\.id)
+
+        viewModel.commitDelta(LayoutEditDelta(addedShapes: [fixture.anchor]))
+
+        #expect(viewModel.lastError?.contains("already exists") == true)
+        #expect(viewModel.documentShapes().map(\.id) == beforeIDs)
+        expectLiveMatchesBatch(viewModel, "after rejected duplicate delta")
     }
 
     @Test func booleanOperationsKeepLiveSnapshotExact() throws {

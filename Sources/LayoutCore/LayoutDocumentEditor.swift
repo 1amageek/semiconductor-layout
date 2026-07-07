@@ -43,6 +43,22 @@ public struct LayoutDocumentEditor: Sendable {
         try body(&document)
     }
 
+    public mutating func recordCellElementUpdate(
+        cellID: UUID,
+        beforeShapes: [LayoutShape],
+        afterShapes: [LayoutShape],
+        beforeVias: [LayoutVia],
+        afterVias: [LayoutVia]
+    ) {
+        undoStack.recordCellElementUpdate(
+            cellID: cellID,
+            beforeShapes: beforeShapes,
+            afterShapes: afterShapes,
+            beforeVias: beforeVias,
+            afterVias: afterVias
+        )
+    }
+
     /// Records the current document as an undo boundary without mutating.
     /// Call once at the start of an interactive gesture whose intermediate
     /// states go through ``performTransient(_:)``, so the whole gesture
@@ -203,6 +219,19 @@ public struct LayoutDocumentEditor: Sendable {
                 throw LayoutCoreError.instanceNotFound(id)
             }
             cell.instances.remove(at: index)
+            doc.updateCell(cell)
+        }
+    }
+
+    public mutating func updateInstance(_ instance: LayoutInstance, in cellID: UUID) throws {
+        try perform { doc in
+            guard var cell = doc.cell(withID: cellID) else {
+                throw LayoutCoreError.cellNotFound(cellID)
+            }
+            guard let index = cell.instances.firstIndex(where: { $0.id == instance.id }) else {
+                throw LayoutCoreError.instanceNotFound(instance.id)
+            }
+            cell.instances[index] = instance
             doc.updateCell(cell)
         }
     }

@@ -6,7 +6,8 @@ import LayoutTech
 /// engine sees it: the geometry that participates in contact tests plus
 /// the metadata needed to derive verdicts.
 ///
-/// Vias are represented by their cut rectangle (the conducting plug); the
+/// Vias are indexed by the bounding box of their conducting cut plugs and
+/// keep the individual cut rectangles for the exact contact test. The
 /// layer is `nil` for vias because their contact rule is "touches a shape
 /// on the via definition's top or bottom layer", evaluated through
 /// `LayoutDRCService.shouldConnect`.
@@ -23,5 +24,7 @@ struct ConnectivityElement: Sendable {
     var geometry: LayoutGeometry
     var layer: LayoutLayerID?
     var viaDefinition: LayoutViaDefinition?
+    var viaCutRects: [LayoutRect]
+    var viaContactRectsByLayer: [LayoutLayerID: [LayoutRect]]
     var boundingBox: LayoutRect
 }

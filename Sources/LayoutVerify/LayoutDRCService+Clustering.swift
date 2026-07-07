@@ -53,13 +53,22 @@ extension LayoutDRCService {
         of shapes: [LayoutShape],
         keys: [FlatShapeKey]
     ) -> LayerShapeCluster {
+        guard let firstBox = shapes.first.map({ LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }),
+              let clusterKey = keys.min() else {
+            return LayerShapeCluster(
+                key: .child(-1),
+                memberKeys: [],
+                memberIndices: [],
+                boundingBox: .zero
+            )
+        }
         let boxes = shapes.map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
-        var hull = boxes[0]
+        var hull = firstBox
         for box in boxes.dropFirst() {
             hull = hull.union(box)
         }
         return LayerShapeCluster(
-            key: keys.min()!,
+            key: clusterKey,
             memberKeys: keys,
             memberIndices: Array(shapes.indices),
             boundingBox: hull
@@ -94,7 +103,6 @@ extension LayoutDRCService {
                 // Components of a non-empty region always carry geometry; an
                 // empty one would only over-merge clusters near the origin,
                 // which is conservative, never wrong.
-                assertionFailure("connected component without geometry")
                 componentBoxes.append(.zero)
                 continue
             }
@@ -185,14 +193,18 @@ extension LayoutDRCService {
             hullByRoot[root] = hullByRoot[root].map { $0.union(nodeBoxes[node]) } ?? nodeBoxes[node]
         }
 
-        return rootOrder.map { root in
-            let memberIndices = memberIndicesByRoot[root]!
+        return rootOrder.compactMap { root in
+            guard let memberIndices = memberIndicesByRoot[root],
+                  let firstMemberKey = memberIndices.map({ keys[$0] }).min(),
+                  let boundingBox = hullByRoot[root] else {
+                return nil
+            }
             let memberKeys = memberIndices.map { keys[$0] }
             return LayerShapeCluster(
-                key: memberKeys.min()!,
+                key: firstMemberKey,
                 memberKeys: memberKeys,
                 memberIndices: memberIndices,
-                boundingBox: hullByRoot[root]!
+                boundingBox: boundingBox
             )
         }
     }

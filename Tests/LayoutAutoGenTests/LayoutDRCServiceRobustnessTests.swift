@@ -6,6 +6,46 @@ import LayoutVerify
 
 @Suite("Layout DRC Service Robustness")
 struct LayoutDRCServiceRobustnessTests {
+    @Test func missingTargetCellIsDiagnosticFailure() {
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let missingCellID = UUID()
+        let inputDocument = document(shapes: [])
+        let result = LayoutDRCService().run(
+            document: inputDocument,
+            tech: tech(layer: m1),
+            cellID: missingCellID
+        )
+
+        #expect(result.violations.isEmpty)
+        #expect(result.hasErrors)
+        #expect(result.hasDiagnostics)
+        #expect(result.diagnostics.count == 1)
+        #expect(result.diagnostics.first?.code == "drc.target_cell_not_found")
+        #expect(result.diagnostics.first?.severity == .error)
+        #expect(result.diagnostics.first?.cellID == missingCellID)
+        #expect(result.diagnostics.first?.suggestedActions.contains("pass_existing_cell_id") == true)
+    }
+
+    @Test func checkedRunRejectsMissingTargetCell() throws {
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let missingCellID = UUID()
+        let inputDocument = document(shapes: [])
+
+        do {
+            _ = try LayoutDRCService().runChecked(
+                document: inputDocument,
+                tech: tech(layer: m1),
+                cellID: missingCellID
+            )
+            Issue.record("Expected missing target cell failure")
+        } catch let error as LayoutDRCServiceError {
+            #expect(error == .targetCellNotFound(
+                requestedCellID: missingCellID,
+                topCellID: inputDocument.topCellID
+            ))
+        }
+    }
+
     @Test func spacingDoesNotUseGridToleranceToHideViolations() {
         let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
         let first = rect(layer: m1, x: 0, y: 0, width: 1, height: 1)

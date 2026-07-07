@@ -72,6 +72,31 @@ struct LiveConstraintSessionTests {
         #expect(update.violations.contains { $0.kind == .unresolvedMember && $0.constraintIndex == 1 })
     }
 
+    @Test func duplicateShapeAddIsRejectedBeforeOverlayMutation() throws {
+        let fixture = Self.fixture()
+        let session = try LiveConstraintSession(document: fixture.document, cellID: fixture.cellID)
+        let before = session.currentViolations
+
+        #expect(throws: LayoutEditDeltaValidationError.duplicateShapeID(fixture.a.id)) {
+            try session.apply(LayoutEditDelta(addedShapes: [fixture.a]))
+        }
+        #expect(Self.project(session.currentViolations) == Self.project(before))
+    }
+
+    @Test func conflictingShapeDeltaEntryIsRejectedBeforeOverlayMutation() throws {
+        let fixture = Self.fixture()
+        let session = try LiveConstraintSession(document: fixture.document, cellID: fixture.cellID)
+        let before = session.currentViolations
+
+        #expect(throws: LayoutEditDeltaValidationError.conflictingDeltaEntry(fixture.a.id)) {
+            try session.apply(LayoutEditDelta(
+                updatedShapes: [fixture.a],
+                removedShapeIDs: [fixture.a.id]
+            ))
+        }
+        #expect(Self.project(session.currentViolations) == Self.project(before))
+    }
+
     @Test func checkerSubsetPreservesOriginalConstraintIndices() throws {
         let fixture = Self.fixture()
         let partial = try LayoutConstraintChecker().check(

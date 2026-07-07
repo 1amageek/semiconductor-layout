@@ -40,6 +40,35 @@ struct IncrementalDRCSessionValidationTests {
         }
     }
 
+    @Test func duplicateTopShapeIDsAreRejectedAtInit() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        var document = fixture.document
+        let topIndex = try #require(document.cells.firstIndex(where: { $0.id == document.topCellID }))
+        var duplicate = fixture.wireA
+        duplicate.geometry = .rect(LayoutRect(
+            origin: LayoutPoint(x: 12, y: 12),
+            size: LayoutSize(width: 0.4, height: 0.4)
+        ))
+        document.cells[topIndex].shapes.append(duplicate)
+
+        #expect(throws: IncrementalDRCSessionError.duplicateShapeID(fixture.wireA.id)) {
+            _ = try IncrementalDRCSession(document: document, tech: fixture.tech)
+        }
+    }
+
+    @Test func duplicateTopViaIDsAreRejectedAtInit() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        var document = fixture.document
+        let topIndex = try #require(document.cells.firstIndex(where: { $0.id == document.topCellID }))
+        var duplicate = fixture.viaB
+        duplicate.position = LayoutPoint(x: 12, y: 12)
+        document.cells[topIndex].vias.append(duplicate)
+
+        #expect(throws: IncrementalDRCSessionError.duplicateViaID(fixture.viaB.id)) {
+            _ = try IncrementalDRCSession(document: document, tech: fixture.tech)
+        }
+    }
+
     @Test func unknownShapeUpdateIsRejected() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let session = try IncrementalDRCSession(document: fixture.document, tech: fixture.tech)
@@ -74,6 +103,17 @@ struct IncrementalDRCSessionValidationTests {
         }
     }
 
+    @Test func duplicateViaAddIsRejected() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        let session = try IncrementalDRCSession(document: fixture.document, tech: fixture.tech)
+        var clone = fixture.viaB
+        clone.position = LayoutPoint(x: 12, y: 12)
+
+        #expect(throws: IncrementalDRCSessionError.duplicateViaID(fixture.viaB.id)) {
+            _ = try session.apply(LayoutEditDelta(addedVias: [clone]))
+        }
+    }
+
     @Test func conflictingDeltaEntryIsRejected() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let session = try IncrementalDRCSession(document: fixture.document, tech: fixture.tech)
@@ -96,6 +136,25 @@ struct IncrementalDRCSessionValidationTests {
         )
         #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
             _ = try session.apply(LayoutEditDelta(addedShapes: [collider]))
+        }
+    }
+
+    @Test func addViaCollidingWithChildIDIsRejected() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        let session = try IncrementalDRCSession(document: fixture.document, tech: fixture.tech)
+        let topID = try #require(fixture.document.topCellID)
+        let childVia = try #require(
+            fixture.document.cells.first { $0.id != topID }?.vias.first
+        )
+        let collider = LayoutVia(
+            id: childVia.id,
+            viaDefinitionID: childVia.viaDefinitionID,
+            position: LayoutPoint(x: 12, y: 12),
+            netID: fixture.netA
+        )
+
+        #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(childVia.id)) {
+            _ = try session.apply(LayoutEditDelta(addedVias: [collider]))
         }
     }
 
@@ -124,6 +183,36 @@ struct IncrementalDRCSessionValidationTests {
         try harness.applyAndVerify(
             LayoutEditDelta(updatedShapes: [moved]),
             context: "valid delta after a rejected one"
+        )
+    }
+
+    @Test func failedRebuildLeavesSessionUsable() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        let harness = try IncrementalDRCEquivalenceHarness(
+            document: fixture.document,
+            tech: fixture.tech
+        )
+        let removable = try #require(harness.topShapes.dropFirst().first)
+        var invalid = harness.document
+        let topIndex = try #require(invalid.cells.firstIndex(where: { $0.id == invalid.topCellID }))
+        invalid.cells[topIndex].shapes = [
+            LayoutShape(
+                id: fixture.childShapeID,
+                layer: fixture.m1,
+                geometry: .rect(LayoutRect(
+                    origin: LayoutPoint(x: 10, y: 10),
+                    size: LayoutSize(width: 0.4, height: 0.4)
+                ))
+            )
+        ]
+
+        #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
+            _ = try harness.session.rebuild(document: invalid)
+        }
+
+        try harness.applyAndVerify(
+            LayoutEditDelta(removedShapeIDs: [removable.id]),
+            context: "valid delta after a failed rebuild"
         )
     }
 }

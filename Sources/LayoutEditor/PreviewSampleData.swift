@@ -805,7 +805,11 @@ enum PreviewSampleData {
         )
 
         let bridge = IRLayoutBridge()
-        let document = bridge.importLibrary(irLib, tech: tech)
-        return (document, tech)
+        do {
+            let document = try bridge.checkedImportLibrary(irLib, tech: tech)
+            return (document, tech)
+        } catch {
+            preconditionFailure("Built-in FC OTA preview IR is invalid: \(error)")
+        }
     }
 }

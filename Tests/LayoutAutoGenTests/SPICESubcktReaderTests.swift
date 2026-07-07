@@ -72,6 +72,112 @@ struct SPICESubcktReaderTests {
         }
     }
 
+    @Test func rejectsAmbiguousSubcircuitBoundaries() {
+        #expect(throws: SPICESubcktReaderError.duplicateSubcircuit("t")) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            M1 a b b b nmos W=1u L=1u
+            .ends t
+            .subckt t a b
+            M2 a b b b nmos W=1u L=1u
+            .ends t
+            """)
+        }
+        #expect(throws: SPICESubcktReaderError.mismatchedSubcircuitEnd(
+            expected: "t",
+            observed: "other"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            M1 a b b b nmos W=1u L=1u
+            .ends other
+            """)
+        }
+        #expect(throws: SPICESubcktReaderError.duplicatePort(subcircuit: "t", port: "a")) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a a
+            M1 a a a a nmos W=1u L=1u
+            .ends t
+            """)
+        }
+    }
+
+    @Test func rejectsCardsThatCannotBelongToTheReferenceBlock() {
+        #expect(throws: SPICESubcktReaderError.malformedCard(
+            line: 1,
+            text: "+ M1 a b b b nmos W=1u L=1u"
+        )) {
+            _ = try SPICESubcktReader().read("+ M1 a b b b nmos W=1u L=1u")
+        }
+        #expect(throws: SPICESubcktReaderError.malformedCard(
+            line: 1,
+            text: "M1 a b b b nmos W=1u L=1u"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            M1 a b b b nmos W=1u L=1u
+            .subckt t a b
+            .ends t
+            """)
+        }
+        #expect(throws: SPICESubcktReaderError.malformedCard(
+            line: 2,
+            text: ".subckt child a b"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            .subckt child a b
+            .ends child
+            .ends t
+            """)
+        }
+    }
+
+    @Test func requiresPositiveMOSGeometryAndMultiplier() {
+        #expect(throws: SPICESubcktReaderError.missingDeviceParameter(
+            instance: "M1",
+            parameter: "w"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            M1 a b b b nmos L=1u
+            .ends t
+            """)
+        }
+        #expect(throws: SPICESubcktReaderError.invalidDeviceParameter(
+            instance: "M1",
+            parameter: "l",
+            value: "0"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            M1 a b b b nmos W=1u L=0
+            .ends t
+            """)
+        }
+        #expect(throws: SPICESubcktReaderError.invalidDeviceParameter(
+            instance: "M1",
+            parameter: "m",
+            value: "1.5"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            M1 a b b b nmos W=1u L=1u M=1.5
+            .ends t
+            """)
+        }
+        #expect(throws: SPICESubcktReaderError.invalidDeviceParameter(
+            instance: "M1",
+            parameter: "nf",
+            value: "0"
+        )) {
+            _ = try SPICESubcktReader().read("""
+            .subckt t a b
+            M1 a b b b nmos W=1u L=1u nf=0
+            .ends t
+            """)
+        }
+    }
+
     /// The real currency test: a hand-written reference for the generated
     /// MOSFET cell must compare clean against the geometric extraction.
     @Test func referenceFromSubcktMatchesGeometricExtraction() throws {

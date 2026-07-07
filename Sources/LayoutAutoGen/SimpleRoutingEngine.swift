@@ -2,6 +2,22 @@ import Foundation
 import LayoutCore
 import LayoutTech
 
+private struct SimpleRoutingLayerContext {
+    let m1ID: LayoutLayerID
+    let m2ID: LayoutLayerID
+    let m1Width: Double
+    let m2Width: Double
+    let m1Spacing: Double
+    let m2Spacing: Double
+    let grid: Double
+    let viaDef: LayoutViaDefinition
+}
+
+private struct SimpleRoutingNetOutcome {
+    var route: RoutedNet?
+    var unroutedName: String?
+}
+
 /// L/Z-shape routing engine using Manhattan MST.
 ///
 /// Algorithm:
@@ -27,22 +43,17 @@ public struct SimpleRoutingEngine: RoutingEngine {
         let m2Rules = try tech.requiredRuleSet(for: m2ID)
 
         guard let rawViaDef = tech.vias.first else {
-            return RoutingResult(
-                routes: [],
-                unroutedNets: nets.map(\.name)
-            )
+            return RoutingResultContracts.resultWithoutViaDefinition(for: nets)
         }
-        // Landing pads sized from the raw enclosure can fall below the
-        // metal min-area/min-width rules; widen the enclosure up front so
-        // every via this engine drops is legal on its own.
-        let viaDef = ViaLandingRule.sized(rawViaDef, bottomRules: m1Rules, topRules: m2Rules)
-        let minM1Width = m1Rules.minWidth
-        let minM2Width = m2Rules.minWidth
-        let m1Width = max(minM1Width, viaDef.cutSize.width + 2 * viaDef.enclosure.bottom)
-        let m2Width = max(minM2Width, viaDef.cutSize.width + 2 * viaDef.enclosure.top)
-        let m1Spacing = m1Rules.minSpacing
-        let m2Spacing = m2Rules.minSpacing
-        let grid = tech.grid
+
+        let context = makeLayerContext(
+            m1ID: m1ID,
+            m2ID: m2ID,
+            m1Rules: m1Rules,
+            m2Rules: m2Rules,
+            rawViaDef: rawViaDef,
+            grid: tech.grid
+        )
 
         var obstMap = ObstructionMap()
         for obs in obstructions {
@@ -50,22 +61,63 @@ public struct SimpleRoutingEngine: RoutingEngine {
         }
         registerPinObstructions(nets: nets, obstacleMap: &obstMap)
 
-        // Identify power rail Y positions from obstructions.
-        // Convention: VSS rail = lowest Y center, VDD rail = highest Y center.
+        let (vssRailY, vddRailY) = powerRailYPositions(
+            obstructions: obstructions,
+            m1ID: m1ID
+        )
+        let orderedNets = orderedRoutingNets(nets)
+        let routingBBox = computeRoutingBoundingBox(nets: orderedNets, obstructions: obstructions)
+        let congestion = try CongestionGrid(boundingBox: routingBBox, tech: tech)
+
+        return try routeOrderedNets(
+            orderedNets,
+            context: context,
+            vddRailY: vddRailY,
+            vssRailY: vssRailY,
+            routingBBox: routingBBox,
+            tech: tech,
+            congestion: congestion,
+            obstMap: &obstMap
+        )
+    }
+
+    private func makeLayerContext(
+        m1ID: LayoutLayerID,
+        m2ID: LayoutLayerID,
+        m1Rules: LayoutLayerRuleSet,
+        m2Rules: LayoutLayerRuleSet,
+        rawViaDef: LayoutViaDefinition,
+        grid: Double
+    ) -> SimpleRoutingLayerContext {
+        let viaDef = ViaLandingRule.sized(rawViaDef, bottomRules: m1Rules, topRules: m2Rules)
+        return SimpleRoutingLayerContext(
+            m1ID: m1ID,
+            m2ID: m2ID,
+            m1Width: max(m1Rules.minWidth, viaDef.cutSize.width + 2 * viaDef.enclosure.bottom),
+            m2Width: max(m2Rules.minWidth, viaDef.cutSize.width + 2 * viaDef.enclosure.top),
+            m1Spacing: m1Rules.minSpacing,
+            m2Spacing: m2Rules.minSpacing,
+            grid: grid,
+            viaDef: viaDef
+        )
+    }
+
+    private func powerRailYPositions(
+        obstructions: [LayoutShape],
+        m1ID: LayoutLayerID
+    ) -> (vss: Double?, vdd: Double?) {
         let railYPositions = obstructions.compactMap { shape -> Double? in
             guard shape.layer == m1ID else { return nil }
             switch shape.geometry {
-            case .rect(let r): return r.origin.y + r.size.height / 2
+            case .rect(let rect): return rect.origin.y + rect.size.height / 2
             default: return nil
             }
         }.sorted()
-        let vssRailY = railYPositions.first
-        let vddRailY = railYPositions.last
+        return (railYPositions.first, railYPositions.last)
+    }
 
-        var routes: [RoutedNet] = []
-        var unroutedNets: [String] = []
-
-        let orderedNets = nets.sorted { lhs, rhs in
+    private func orderedRoutingNets(_ nets: [RoutingNet]) -> [RoutingNet] {
+        nets.sorted { lhs, rhs in
             if lhs.isPower != rhs.isPower {
                 return lhs.isPower && !rhs.isPower
             }
@@ -82,114 +134,204 @@ public struct SimpleRoutingEngine: RoutingEngine {
             }
             return lhs.name < rhs.name
         }
+    }
 
-        let routingBBox = computeRoutingBoundingBox(nets: orderedNets, obstructions: obstructions)
-        let congestion = try CongestionGrid(boundingBox: routingBBox, tech: tech)
+    private func routeOrderedNets(
+        _ orderedNets: [RoutingNet],
+        context: SimpleRoutingLayerContext,
+        vddRailY: Double?,
+        vssRailY: Double?,
+        routingBBox: LayoutRect,
+        tech: LayoutTechDatabase,
+        congestion: CongestionGrid,
+        obstMap: inout ObstructionMap
+    ) throws -> RoutingResult {
+        var routes: [RoutedNet] = []
+        var unroutedNets: [String] = []
 
         for net in orderedNets {
-            guard net.pins.count >= 1 else { continue }
-
-            if net.isPower {
-                guard net.pins.count >= 2 else {
-                    routes.append(RoutedNet(netID: net.id))
-                    continue
-                }
-                // Power net: connect each pin to the nearest power rail via M2 vertical drop.
-                let targetRailY = powerRailTarget(
-                    netName: net.name, vddRailY: vddRailY, vssRailY: vssRailY
-                )
-                guard let railY = targetRailY else {
-                    unroutedNets.append(net.name)
-                    continue
-                }
-                let result = routePowerNet(
-                    net: net, railY: railY,
-                    m1ID: m1ID, m2ID: m2ID,
-                    m1Width: m1Width, m2Width: m2Width,
-                    viaDef: viaDef, grid: grid, obstMap: &obstMap
-                )
-                routes.append(result)
-                continue
-            }
-
-            guard net.pins.count >= 2 else {
-                if net.pins.count == 1 {
-                    routes.append(RoutedNet(netID: net.id))
-                }
-                continue
-            }
-
-            let positions = net.pins.map(\.absolutePosition)
-            let edges = manhattanMST(points: positions)
-
-            var routedNet = RoutedNet(netID: net.id)
-            var allRouted = true
-
-            for (i, j) in edges {
-                let from = positions[i]
-                let to = positions[j]
-
-                let result = try routeEdge(
-                    netID: net.id,
-                    from: from,
-                    to: to,
-                    m1ID: m1ID,
-                    m2ID: m2ID,
-                    m1Width: m1Width,
-                    m2Width: m2Width,
-                    m1Spacing: m1Spacing,
-                    m2Spacing: m2Spacing,
-                    viaDef: viaDef,
-                    grid: grid,
-                    tech: tech,
-                    congestion: congestion,
-                    obstMap: &obstMap
-                )
-
-                if let (shapes, vias) = result {
-                    routedNet.shapes.append(contentsOf: shapes)
-                    routedNet.vias.append(contentsOf: vias)
-                } else {
-                    allRouted = false
-                }
-            }
-
-            if !allRouted, let trunkResult = routeExternalM2Trunk(
-                net: net,
-                routingBounds: routingBBox,
-                m1ID: m1ID,
-                m2ID: m2ID,
-                m2Width: m2Width,
-                m1Spacing: m1Spacing,
-                m2Spacing: m2Spacing,
-                viaDef: viaDef,
-                grid: grid,
-                obstMap: &obstMap
-            ) {
-                routedNet.shapes.append(contentsOf: trunkResult.shapes)
-                routedNet.vias.append(contentsOf: trunkResult.vias)
-                allRouted = true
-            }
-
-            addLayerCrossingVias(
-                to: &routedNet,
-                netID: net.id,
-                m1ID: m1ID,
-                m2ID: m2ID,
-                m1Spacing: m1Spacing,
-                m2Spacing: m2Spacing,
-                viaDef: viaDef,
-                grid: grid,
+            let outcome = try routeNet(
+                net,
+                context: context,
+                vddRailY: vddRailY,
+                vssRailY: vssRailY,
+                routingBBox: routingBBox,
+                tech: tech,
+                congestion: congestion,
                 obstMap: &obstMap
             )
-
-            routes.append(routedNet)
-            if !allRouted {
-                unroutedNets.append(net.name)
+            if let route = outcome.route {
+                routes.append(route)
+            }
+            if let unroutedName = outcome.unroutedName {
+                unroutedNets.append(unroutedName)
             }
         }
 
         return RoutingResult(routes: routes, unroutedNets: unroutedNets)
+    }
+
+    private func routeNet(
+        _ net: RoutingNet,
+        context: SimpleRoutingLayerContext,
+        vddRailY: Double?,
+        vssRailY: Double?,
+        routingBBox: LayoutRect,
+        tech: LayoutTechDatabase,
+        congestion: CongestionGrid,
+        obstMap: inout ObstructionMap
+    ) throws -> SimpleRoutingNetOutcome {
+        guard !net.pins.isEmpty else {
+            return SimpleRoutingNetOutcome(route: nil, unroutedName: net.name)
+        }
+
+        if net.isPower {
+            guard let railY = powerRailTarget(
+                netName: net.name, vddRailY: vddRailY, vssRailY: vssRailY
+            ) else {
+                return SimpleRoutingNetOutcome(route: nil, unroutedName: net.name)
+            }
+            let route = routePowerNet(
+                net: net,
+                railY: railY,
+                m1ID: context.m1ID,
+                m2ID: context.m2ID,
+                m1Width: context.m1Width,
+                m2Width: context.m2Width,
+                viaDef: context.viaDef,
+                grid: context.grid,
+                obstMap: &obstMap
+            )
+            return SimpleRoutingNetOutcome(route: route, unroutedName: nil)
+        }
+
+        guard net.pins.count >= 2 else {
+            return SimpleRoutingNetOutcome(route: RoutedNet(netID: net.id), unroutedName: nil)
+        }
+
+        var (route, allRouted) = try routeSignalNet(
+            net,
+            context: context,
+            routingBBox: routingBBox,
+            tech: tech,
+            congestion: congestion,
+            obstMap: &obstMap
+        )
+
+        addLayerCrossingVias(
+            to: &route,
+            netID: net.id,
+            m1ID: context.m1ID,
+            m2ID: context.m2ID,
+            m1Spacing: context.m1Spacing,
+            m2Spacing: context.m2Spacing,
+            viaDef: context.viaDef,
+            grid: context.grid,
+            obstMap: &obstMap
+        )
+
+        return SimpleRoutingNetOutcome(
+            route: route,
+            unroutedName: allRouted ? nil : net.name
+        )
+    }
+
+    private func routeSignalNet(
+        _ net: RoutingNet,
+        context: SimpleRoutingLayerContext,
+        routingBBox: LayoutRect,
+        tech: LayoutTechDatabase,
+        congestion: CongestionGrid,
+        obstMap: inout ObstructionMap
+    ) throws -> (route: RoutedNet, allRouted: Bool) {
+        var (routedNet, allRouted) = try routeSignalEdges(
+            net,
+            context: context,
+            tech: tech,
+            congestion: congestion,
+            obstMap: &obstMap
+        )
+
+        if !allRouted {
+            allRouted = appendExternalTrunkIfPossible(
+                to: &routedNet,
+                net: net,
+                context: context,
+                routingBBox: routingBBox,
+                obstMap: &obstMap
+            )
+        }
+
+        return (routedNet, allRouted)
+    }
+
+    private func routeSignalEdges(
+        _ net: RoutingNet,
+        context: SimpleRoutingLayerContext,
+        tech: LayoutTechDatabase,
+        congestion: CongestionGrid,
+        obstMap: inout ObstructionMap
+    ) throws -> (route: RoutedNet, allRouted: Bool) {
+        let positions = net.pins.map(\.absolutePosition)
+        let edges = manhattanMST(points: positions)
+
+        var routedNet = RoutedNet(netID: net.id)
+        var allRouted = true
+
+        for (i, j) in edges {
+            let result = try routeEdge(
+                netID: net.id,
+                from: positions[i],
+                to: positions[j],
+                m1ID: context.m1ID,
+                m2ID: context.m2ID,
+                m1Width: context.m1Width,
+                m2Width: context.m2Width,
+                m1Spacing: context.m1Spacing,
+                m2Spacing: context.m2Spacing,
+                viaDef: context.viaDef,
+                grid: context.grid,
+                tech: tech,
+                congestion: congestion,
+                obstMap: &obstMap
+            )
+
+            if let (shapes, vias) = result {
+                routedNet.shapes.append(contentsOf: shapes)
+                routedNet.vias.append(contentsOf: vias)
+            } else {
+                allRouted = false
+            }
+        }
+
+        return (routedNet, allRouted)
+    }
+
+    private func appendExternalTrunkIfPossible(
+        to routedNet: inout RoutedNet,
+        net: RoutingNet,
+        context: SimpleRoutingLayerContext,
+        routingBBox: LayoutRect,
+        obstMap: inout ObstructionMap
+    ) -> Bool {
+        guard let trunkResult = routeExternalM2Trunk(
+            net: net,
+            routingBounds: routingBBox,
+            m1ID: context.m1ID,
+            m2ID: context.m2ID,
+            m2Width: context.m2Width,
+            m1Spacing: context.m1Spacing,
+            m2Spacing: context.m2Spacing,
+            viaDef: context.viaDef,
+            grid: context.grid,
+            obstMap: &obstMap
+        ) else {
+            return false
+        }
+
+        routedNet.shapes.append(contentsOf: trunkResult.shapes)
+        routedNet.vias.append(contentsOf: trunkResult.vias)
+        return true
     }
 
     // MARK: - Power Net Routing

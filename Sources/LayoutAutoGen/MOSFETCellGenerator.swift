@@ -22,7 +22,7 @@ import LayoutTech
 /// ```
 /// [Source][Gate1][SharedSD][Gate2][SharedSD]...[GateN][Drain]
 /// ```
-/// All source/drain fingers with even index (0, 2, ...) connect to source,
+/// All source/drain regions with even index (0, 2, ...) connect to source,
 /// odd index (1, 3, ...) connect to drain. A horizontal M1 bus bar connects
 /// all gate contacts outside the active region.
 public struct MOSFETCellGenerator: DeviceCellGenerator {
@@ -38,16 +38,15 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         parameters: [String: Double],
         tech: LayoutTechDatabase
     ) throws -> LayoutCell {
-        let isPMOS = deviceKindID.hasPrefix("pmos")
-
-        guard let w = parameters["w"] else {
-            throw AutoGenError.missingParameter(device: instanceName, parameter: "w")
-        }
-        guard let l = parameters["l"] else {
-            throw AutoGenError.missingParameter(device: instanceName, parameter: "l")
-        }
-
-        let nf = max(1, Int(parameters["nf"] ?? 1.0))
+        let isPMOS = try DeviceParameterValidation.requireMOSKind(deviceKindID)
+        let w = try DeviceParameterValidation.requirePositive(parameters, "w", device: instanceName)
+        let l = try DeviceParameterValidation.requirePositive(parameters, "l", device: instanceName)
+        let nf = try DeviceParameterValidation.requirePositiveInteger(
+            parameters,
+            "nf",
+            defaultValue: 1,
+            device: instanceName
+        )
 
         let context = try MOSFETContext(
             isPMOS: isPMOS,
@@ -112,6 +111,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         let m1Width: Double
 
         init(isPMOS: Bool, w: Double, l: Double, nf: Int, tech: LayoutTechDatabase) throws {
+            let layerContext = try Self.makeLayerContext(isPMOS: isPMOS, tech: tech)
             self.isPMOS = isPMOS
             self.w = w
             self.l = l
@@ -119,118 +119,266 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             self.tech = tech
             self.grid = tech.grid
 
-            activeID = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
-            polyID   = LayoutLayerID(name: "POLY", purpose: "drawing")
-            impID    = isPMOS
-                ? LayoutLayerID(name: "PIMP", purpose: "drawing")
-                : LayoutLayerID(name: "NIMP", purpose: "drawing")
-            tapImpID = isPMOS
-                ? LayoutLayerID(name: "NIMP", purpose: "drawing")
-                : LayoutLayerID(name: "PIMP", purpose: "drawing")
-            contID   = LayoutLayerID(name: "CONTACT", purpose: "cut")
-            m1ID     = LayoutLayerID(name: "M1", purpose: "drawing")
+            activeID = layerContext.activeID
+            polyID = layerContext.polyID
+            impID = layerContext.impID
+            tapImpID = layerContext.tapImpID
+            contID = layerContext.contID
+            m1ID = layerContext.m1ID
+            activeRules = layerContext.activeRules
+            polyRules = layerContext.polyRules
+            contDef = layerContext.contDef
+            m1Rules = layerContext.m1Rules
+            polyContDef = layerContext.polyContDef
+            impEnclosure = layerContext.impEnclosure
 
-            guard let ar = tech.ruleSet(for: activeID) else {
-                throw AutoGenError.missingLayerRule("ACTIVE")
-            }
-            activeRules = ar
-
-            guard let pr = tech.ruleSet(for: polyID) else {
-                throw AutoGenError.missingLayerRule("POLY")
-            }
-            polyRules = pr
-
-            guard let cd = tech.contactDefinition(for: "CONT_ACTIVE") else {
-                throw AutoGenError.missingContactDefinition("CONT_ACTIVE")
-            }
-            contDef = cd
-
-            guard let mr = tech.ruleSet(for: m1ID) else {
-                throw AutoGenError.missingLayerRule("M1")
-            }
-            m1Rules = mr
-
-            polyContDef = tech.contactDefinition(for: "CONT_POLY")
-            impEnclosure = try tech.requiredEnclosureRule(outer: impID, inner: activeID).minEnclosure
-
-            contSize = cd.cutSize.width
-            contEnc = cd.enclosure.bottom
-            m1Enc = cd.enclosure.top
-            contSpacing = cd.cutSpacing
-            polyContEnc = polyContDef?.enclosure.bottom ?? 0.08
+            contSize = layerContext.contDef.cutSize.width
+            contEnc = layerContext.contDef.enclosure.bottom
+            m1Enc = layerContext.contDef.enclosure.top
+            contSpacing = layerContext.contDef.cutSpacing
+            polyContEnc = layerContext.polyContDef?.enclosure.bottom ?? 0.08
             polyExtension = ContactArrayHelper.snap(
-                max(pr.minWidth, 0.20, (polyContDef?.enclosure.bottom ?? 0.08) + cd.cutSize.width + (polyContDef?.enclosure.bottom ?? 0.08)),
+                max(
+                    layerContext.polyRules.minWidth,
+                    0.20,
+                    (layerContext.polyContDef?.enclosure.bottom ?? 0.08)
+                        + layerContext.contDef.cutSize.width
+                        + (layerContext.polyContDef?.enclosure.bottom ?? 0.08)
+                ),
                 grid: tech.grid
             )
             contactRegionLength = contSize + 2 * contEnc
-            sdSpacing = max(ar.minSpacing, cd.cutSpacing)
-            m1Width = max(mr.minWidth, contSize + 2 * cd.enclosure.top)
+            sdSpacing = max(layerContext.activeRules.minSpacing, layerContext.contDef.cutSpacing)
+            m1Width = max(layerContext.m1Rules.minWidth, contSize + 2 * layerContext.contDef.enclosure.top)
+        }
+
+        private struct LayerContext {
+            let activeID: LayoutLayerID
+            let polyID: LayoutLayerID
+            let impID: LayoutLayerID
+            let tapImpID: LayoutLayerID
+            let contID: LayoutLayerID
+            let m1ID: LayoutLayerID
+            let activeRules: LayoutLayerRuleSet
+            let polyRules: LayoutLayerRuleSet
+            let contDef: LayoutContactDefinition
+            let m1Rules: LayoutLayerRuleSet
+            let polyContDef: LayoutContactDefinition?
+            let impEnclosure: Double
+        }
+
+        private static func makeLayerContext(isPMOS: Bool, tech: LayoutTechDatabase) throws -> LayerContext {
+            let activeID = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
+            let polyID = LayoutLayerID(name: "POLY", purpose: "drawing")
+            let impID = isPMOS
+                ? LayoutLayerID(name: "PIMP", purpose: "drawing")
+                : LayoutLayerID(name: "NIMP", purpose: "drawing")
+            let tapImpID = isPMOS
+                ? LayoutLayerID(name: "NIMP", purpose: "drawing")
+                : LayoutLayerID(name: "PIMP", purpose: "drawing")
+            let contID = LayoutLayerID(name: "CONTACT", purpose: "cut")
+            let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
+            return LayerContext(
+                activeID: activeID,
+                polyID: polyID,
+                impID: impID,
+                tapImpID: tapImpID,
+                contID: contID,
+                m1ID: m1ID,
+                activeRules: try requireLayerRule(tech, activeID, name: "ACTIVE"),
+                polyRules: try requireLayerRule(tech, polyID, name: "POLY"),
+                contDef: try requireContactDefinition(tech, "CONT_ACTIVE"),
+                m1Rules: try requireLayerRule(tech, m1ID, name: "M1"),
+                polyContDef: tech.contactDefinition(for: "CONT_POLY"),
+                impEnclosure: try tech.requiredEnclosureRule(outer: impID, inner: activeID).minEnclosure
+            )
+        }
+
+        private static func requireLayerRule(
+            _ tech: LayoutTechDatabase,
+            _ layerID: LayoutLayerID,
+            name: String
+        ) throws -> LayoutLayerRuleSet {
+            guard let rule = tech.ruleSet(for: layerID) else {
+                throw AutoGenError.missingLayerRule(name)
+            }
+            return rule
+        }
+
+        private static func requireContactDefinition(
+            _ tech: LayoutTechDatabase,
+            _ contactID: String
+        ) throws -> LayoutContactDefinition {
+            guard let contact = tech.contactDefinition(for: contactID) else {
+                throw AutoGenError.missingContactDefinition(contactID)
+            }
+            return contact
         }
     }
 
     // MARK: - Single-Finger Generation
 
-    /// Generates a single-finger MOSFET cell. This is the original layout logic,
-    /// preserved exactly for backward compatibility when nf == 1.
     private func generateSingleFinger(
         context c: MOSFETContext,
         deviceKindID: String,
         instanceName: String
     ) throws -> LayoutCell {
+        let base = makeSingleFingerBaseLayout(context: c)
+        let terminals = makeSingleFingerTerminalLayout(
+            context: c,
+            activeL: base.activeL,
+            activeW: base.activeW
+        )
+        let gate = makeSingleFingerGateLayout(
+            context: c,
+            polyRect: base.polyRect,
+            gateContY: base.gateContY
+        )
+        let tap = makeSingleFingerTapLayout(
+            context: c,
+            activeL: base.activeL,
+            activeW: base.activeW
+        )
+
+        var shapes = base.shapes
+        shapes += terminals.shapes
+        shapes += gate.shapes
+        shapes += tap.shapes
+        if c.isPMOS {
+            shapes.append(try makePMOSWellShape(context: c, activeRect: base.activeRect, tapActiveRect: tap.tapActiveRect))
+        }
+
+        let pins = makeSingleFingerPins(
+            context: c,
+            activeW: base.activeW,
+            sourceM1Rect: terminals.sourceM1Rect,
+            drainM1Rect: terminals.drainM1Rect,
+            gateM1Rect: gate.gateM1Rect,
+            tapM1Rect: tap.tapM1Rect
+        )
+        let labels = [
+            LayoutLabel(
+                text: instanceName,
+                position: base.activeRect.center,
+                layer: c.m1ID
+            )
+        ]
+
+        return LayoutCell(
+            name: "\(instanceName)_\(deviceKindID)",
+            shapes: shapes,
+            labels: labels,
+            pins: pins
+        )
+    }
+
+    private struct SingleFingerBaseLayout {
+        let activeL: Double
+        let activeW: Double
+        let activeRect: LayoutRect
+        let polyRect: LayoutRect
+        let gateContY: Double
+        let shapes: [LayoutShape]
+    }
+
+    private struct SingleFingerTerminalLayout {
+        let shapes: [LayoutShape]
+        let sourceM1Rect: LayoutRect
+        let drainM1Rect: LayoutRect
+    }
+
+    private struct SingleFingerGateLayout {
+        let shapes: [LayoutShape]
+        let gateM1Rect: LayoutRect
+    }
+
+    private struct SingleFingerTapLayout {
+        let shapes: [LayoutShape]
+        let tapActiveRect: LayoutRect
+        let tapM1Rect: LayoutRect
+    }
+
+    private struct GateVerticalLayout {
+        let polyOriginY: Double
+        let polyHeight: Double
+        let gateContactY: Double
+    }
+
+    private func makeSingleFingerBaseLayout(context c: MOSFETContext) -> SingleFingerBaseLayout {
         let activeLength = c.contactRegionLength + c.sdSpacing + c.l + c.sdSpacing + c.contactRegionLength
         let activeL = snap(activeLength, grid: c.grid)
         let activeW = snap(c.w, grid: c.grid)
-
-        var shapes: [LayoutShape] = []
-        var pins: [LayoutPin] = []
-        var labels: [LayoutLabel] = []
-
         let activeRect = LayoutRect(
             origin: .zero,
             size: LayoutSize(width: activeL, height: activeW)
         )
-
-        // 1. ACTIVE
-        shapes.append(LayoutShape(layer: c.activeID, geometry: .rect(activeRect)))
-
-        // 2. Implant enclosing ACTIVE
         let impRect = activeRect.expanded(by: c.impEnclosure, c.impEnclosure)
-        shapes.append(LayoutShape(layer: c.impID, geometry: .rect(impRect)))
-
-        // 3. POLY gate. The gate M1 connector must keep the full M1
-        // spacing to the source/drain bars VERTICALLY — corner-to-corner
-        // distance dips below the rule otherwise once the connector is
-        // widened to the M1 minimum — so the contact stack may sit higher
-        // (NMOS) or lower (PMOS) than the bare enclosure math, and the
-        // poly is extended by the same shift to keep the cut enclosed.
         let polyX = snap(c.contactRegionLength + c.sdSpacing, grid: c.grid)
-        let gateContY: Double
-        let polyRect: LayoutRect
+        let gateLayout = makeSingleFingerPolyLayout(context: c, activeW: activeW, polyX: polyX)
+        let shapes = [
+            LayoutShape(layer: c.activeID, geometry: .rect(activeRect)),
+            LayoutShape(layer: c.impID, geometry: .rect(impRect)),
+            LayoutShape(layer: c.polyID, geometry: .rect(gateLayout.polyRect)),
+        ]
+        return SingleFingerBaseLayout(
+            activeL: activeL,
+            activeW: activeW,
+            activeRect: activeRect,
+            polyRect: gateLayout.polyRect,
+            gateContY: gateLayout.gateContY,
+            shapes: shapes
+        )
+    }
+
+    private func makeSingleFingerPolyLayout(
+        context c: MOSFETContext,
+        activeW: Double,
+        polyX: Double
+    ) -> (polyRect: LayoutRect, gateContY: Double) {
+        let vertical = makeGateVerticalLayout(context: c, activeW: activeW)
+        let polyRect = LayoutRect(
+            origin: LayoutPoint(x: polyX, y: vertical.polyOriginY),
+            size: LayoutSize(
+                width: snap(c.l, grid: c.grid),
+                height: vertical.polyHeight
+            )
+        )
+        return (polyRect, vertical.gateContactY)
+    }
+
+    private func makeGateVerticalLayout(context c: MOSFETContext, activeW: Double) -> GateVerticalLayout {
         if c.isPMOS {
             let base = snap(-c.polyExtension + c.polyContEnc, grid: c.grid)
             var bound = snap(-(c.m1Rules.minSpacing + c.m1Width), grid: c.grid)
             if bound > -(c.m1Rules.minSpacing + c.m1Width) { bound -= c.grid }
-            gateContY = min(base, bound)
-            let shift = base - gateContY
-            polyRect = LayoutRect(
-                origin: LayoutPoint(x: polyX, y: -c.polyExtension - shift),
-                size: LayoutSize(width: snap(c.l, grid: c.grid), height: activeW + c.polyExtension + c.polyRules.minWidth + shift)
-            )
-        } else {
-            let base = snap(activeW + c.polyExtension - c.polyContEnc - c.contSize, grid: c.grid)
-            var bound = snap(activeW + c.m1Rules.minSpacing, grid: c.grid)
-            if bound < activeW + c.m1Rules.minSpacing { bound += c.grid }
-            gateContY = max(base, bound)
-            let shift = gateContY - base
-            polyRect = LayoutRect(
-                origin: LayoutPoint(x: polyX, y: -c.polyRules.minWidth),
-                size: LayoutSize(width: snap(c.l, grid: c.grid), height: activeW + c.polyExtension + c.polyRules.minWidth + shift)
+            let gateContactY = min(base, bound)
+            let shift = base - gateContactY
+            return GateVerticalLayout(
+                polyOriginY: snap(-c.polyExtension - shift, grid: c.grid),
+                polyHeight: snap(activeW + c.polyExtension + c.polyRules.minWidth + shift, grid: c.grid),
+                gateContactY: gateContactY
             )
         }
-        shapes.append(LayoutShape(layer: c.polyID, geometry: .rect(polyRect)))
 
-        // 4. Source contacts (left)
+        let base = snap(activeW + c.polyExtension - c.polyContEnc - c.contSize, grid: c.grid)
+        var bound = snap(activeW + c.m1Rules.minSpacing, grid: c.grid)
+        if bound < activeW + c.m1Rules.minSpacing { bound += c.grid }
+        let gateContactY = max(base, bound)
+        let shift = gateContactY - base
+        return GateVerticalLayout(
+            polyOriginY: snap(-c.polyRules.minWidth, grid: c.grid),
+            polyHeight: snap(activeW + c.polyExtension + c.polyRules.minWidth + shift, grid: c.grid),
+            gateContactY: gateContactY
+        )
+    }
+
+    private func makeSingleFingerTerminalLayout(
+        context c: MOSFETContext,
+        activeL: Double,
+        activeW: Double
+    ) -> SingleFingerTerminalLayout {
         let sourceContX = snap(c.contEnc, grid: c.grid)
+        let drainContX = snap(activeL - c.contactRegionLength + c.contEnc, grid: c.grid)
         let sourceContacts = ContactArrayHelper.generateContacts1D(
             regionX: sourceContX,
             regionY: snap(c.contEnc, grid: c.grid),
@@ -240,10 +388,6 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             contLayer: c.contID,
             grid: c.grid
         )
-        shapes.append(contentsOf: sourceContacts)
-
-        // 5. Drain contacts (right)
-        let drainContX = snap(activeL - c.contactRegionLength + c.contEnc, grid: c.grid)
         let drainContacts = ContactArrayHelper.generateContacts1D(
             regionX: drainContX,
             regionY: snap(c.contEnc, grid: c.grid),
@@ -253,25 +397,25 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             contLayer: c.contID,
             grid: c.grid
         )
-        shapes.append(contentsOf: drainContacts)
-
-        // 6. M1 bars
         let sourceM1Rect = LayoutRect(
             origin: LayoutPoint(x: snap(sourceContX - c.m1Enc, grid: c.grid), y: 0),
             size: LayoutSize(width: snap(c.m1Width, grid: c.grid), height: activeW)
         )
-        shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(sourceM1Rect)))
-
         let drainM1Rect = LayoutRect(
             origin: LayoutPoint(x: snap(drainContX - c.m1Enc, grid: c.grid), y: 0),
             size: LayoutSize(width: snap(c.m1Width, grid: c.grid), height: activeW)
         )
+        var shapes = sourceContacts + drainContacts
+        shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(sourceM1Rect)))
         shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(drainM1Rect)))
+        return SingleFingerTerminalLayout(shapes: shapes, sourceM1Rect: sourceM1Rect, drainM1Rect: drainM1Rect)
+    }
 
-        // 7. Gate M1 + contact (gateContY computed with the poly in
-        // step 3 so the clearance shift extends both consistently).
-        // The connector must satisfy the M1 width rule even when the
-        // channel length is narrower; widen symmetrically around the poly.
+    private func makeSingleFingerGateLayout(
+        context c: MOSFETContext,
+        polyRect: LayoutRect,
+        gateContY: Double
+    ) -> SingleFingerGateLayout {
         let gateM1Width = snap(max(polyRect.size.width, c.m1Width), grid: c.grid)
         let gateM1Rect = LayoutRect(
             origin: LayoutPoint(
@@ -280,8 +424,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             ),
             size: LayoutSize(width: gateM1Width, height: snap(c.m1Width, grid: c.grid))
         )
-        shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(gateM1Rect)))
-
+        var shapes = [LayoutShape(layer: c.m1ID, geometry: .rect(gateM1Rect))]
         if let pcd = c.polyContDef {
             let gateContRect = LayoutRect(
                 origin: LayoutPoint(
@@ -292,27 +435,24 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             )
             shapes.append(LayoutShape(layer: c.contID, geometry: .rect(gateContRect)))
         }
+        return SingleFingerGateLayout(shapes: shapes, gateM1Rect: gateM1Rect)
+    }
 
-        // 8. Well/Substrate tap
+    private func makeSingleFingerTapLayout(
+        context c: MOSFETContext,
+        activeL: Double,
+        activeW: Double
+    ) -> SingleFingerTapLayout {
         let tapSpacing = snap(max(c.activeRules.minSpacing, 2 * c.impEnclosure + c.grid), grid: c.grid)
         let tapHeight = snap(c.contSize + 2 * c.contEnc, grid: c.grid)
-
-        let tapY: Double
-        if c.isPMOS {
-            tapY = snap(activeW + tapSpacing, grid: c.grid)
-        } else {
-            tapY = snap(-tapSpacing - tapHeight, grid: c.grid)
-        }
-
+        let tapY = c.isPMOS
+            ? snap(activeW + tapSpacing, grid: c.grid)
+            : snap(-tapSpacing - tapHeight, grid: c.grid)
         let tapActiveRect = LayoutRect(
             origin: LayoutPoint(x: 0, y: tapY),
             size: LayoutSize(width: activeL, height: tapHeight)
         )
-        shapes.append(LayoutShape(layer: c.activeID, geometry: .rect(tapActiveRect)))
-
         let tapImpRect = tapActiveRect.expanded(by: c.impEnclosure, c.impEnclosure)
-        shapes.append(LayoutShape(layer: c.tapImpID, geometry: .rect(tapImpRect)))
-
         let tapContacts = ContactArrayHelper.generateContacts2D(
             regionX: c.contEnc,
             regionY: tapY + c.contEnc,
@@ -323,66 +463,69 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             contLayer: c.contID,
             grid: c.grid
         )
-        shapes.append(contentsOf: tapContacts)
-
         let tapM1Rect = LayoutRect(
             origin: LayoutPoint(x: snap(-c.m1Enc, grid: c.grid), y: tapY),
             size: LayoutSize(width: snap(activeL + 2 * c.m1Enc, grid: c.grid), height: tapHeight)
         )
+        var shapes = [
+            LayoutShape(layer: c.activeID, geometry: .rect(tapActiveRect)),
+            LayoutShape(layer: c.tapImpID, geometry: .rect(tapImpRect)),
+        ]
+        shapes += tapContacts
         shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(tapM1Rect)))
+        return SingleFingerTapLayout(shapes: shapes, tapActiveRect: tapActiveRect, tapM1Rect: tapM1Rect)
+    }
 
-        // 9. NWELL (PMOS only)
-        if c.isPMOS {
-            let nwellID = LayoutLayerID(name: "NWELL", purpose: "drawing")
-            let nwellEnc = try c.tech.requiredEnclosureRule(outer: nwellID, inner: c.activeID).minEnclosure
-            let combinedRect = activeRect.union(tapActiveRect)
-            let nwellRect = combinedRect.expanded(by: nwellEnc, nwellEnc)
-            shapes.append(LayoutShape(layer: nwellID, geometry: .rect(nwellRect)))
-        }
+    private func makePMOSWellShape(
+        context c: MOSFETContext,
+        activeRect: LayoutRect,
+        tapActiveRect: LayoutRect
+    ) throws -> LayoutShape {
+        let nwellID = LayoutLayerID(name: "NWELL", purpose: "drawing")
+        let nwellEnc = try c.tech.requiredEnclosureRule(outer: nwellID, inner: c.activeID).minEnclosure
+        let combinedRect = activeRect.union(tapActiveRect)
+        let nwellRect = combinedRect.expanded(by: nwellEnc, nwellEnc)
+        return LayoutShape(layer: nwellID, geometry: .rect(nwellRect))
+    }
 
-        // 10. Pins
-        pins.append(LayoutPin(
-            name: "source",
-            position: sourceM1Rect.center,
-            size: LayoutSize(width: c.m1Width, height: activeW),
-            layer: c.m1ID,
-            role: .source
-        ))
-        pins.append(LayoutPin(
-            name: "drain",
-            position: drainM1Rect.center,
-            size: LayoutSize(width: c.m1Width, height: activeW),
-            layer: c.m1ID,
-            role: .drain
-        ))
-        pins.append(LayoutPin(
-            name: "gate",
-            position: gateM1Rect.center,
-            size: gateM1Rect.size,
-            layer: c.m1ID,
-            role: .gate
-        ))
-        pins.append(LayoutPin(
-            name: "bulk",
-            position: tapM1Rect.center,
-            size: tapM1Rect.size,
-            layer: c.m1ID,
-            role: .bulk
-        ))
-
-        // 11. Labels
-        labels.append(LayoutLabel(
-            text: instanceName,
-            position: activeRect.center,
-            layer: c.m1ID
-        ))
-
-        return LayoutCell(
-            name: "\(instanceName)_\(deviceKindID)",
-            shapes: shapes,
-            labels: labels,
-            pins: pins
-        )
+    private func makeSingleFingerPins(
+        context c: MOSFETContext,
+        activeW: Double,
+        sourceM1Rect: LayoutRect,
+        drainM1Rect: LayoutRect,
+        gateM1Rect: LayoutRect,
+        tapM1Rect: LayoutRect
+    ) -> [LayoutPin] {
+        [
+            LayoutPin(
+                name: "source",
+                position: sourceM1Rect.center,
+                size: LayoutSize(width: c.m1Width, height: activeW),
+                layer: c.m1ID,
+                role: .source
+            ),
+            LayoutPin(
+                name: "drain",
+                position: drainM1Rect.center,
+                size: LayoutSize(width: c.m1Width, height: activeW),
+                layer: c.m1ID,
+                role: .drain
+            ),
+            LayoutPin(
+                name: "gate",
+                position: gateM1Rect.center,
+                size: gateM1Rect.size,
+                layer: c.m1ID,
+                role: .gate
+            ),
+            LayoutPin(
+                name: "bulk",
+                position: tapM1Rect.center,
+                size: tapM1Rect.size,
+                layer: c.m1ID,
+                role: .bulk
+            ),
+        ]
     }
 
     // MARK: - Multi-Finger Generation
@@ -395,8 +538,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
     /// ```
     ///
     /// Between each pair of adjacent gate fingers there is a shared source/drain
-    /// diffusion region with contacts. The leftmost S/D region is always source,
-    /// the rightmost is always drain. Intermediate shared regions alternate:
+    /// diffusion region with contacts. S/D regions alternate by index:
     /// index 0 = source (left edge), index 1 = drain, index 2 = source, ...
     ///
     /// All gate poly fingers are connected by a horizontal M1 bus bar placed
@@ -452,6 +594,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         //   gate0_x = contactRegionLength + sdSpacing
         //   gate_i_x = gate0_x + i * fingerPitch
         let gate0X = snap(c.contactRegionLength + c.sdSpacing, grid: c.grid)
+        let gateVertical = makeGateVerticalLayout(context: c, activeW: activeW)
         var polyXPositions: [Double] = []
         for i in 0..<nf {
             polyXPositions.append(snap(gate0X + Double(i) * fingerPitch, grid: c.grid))
@@ -470,18 +613,10 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         // 3. POLY fingers
         for i in 0..<nf {
             let px = polyXPositions[i]
-            let polyRect: LayoutRect
-            if c.isPMOS {
-                polyRect = LayoutRect(
-                    origin: LayoutPoint(x: px, y: -c.polyExtension),
-                    size: LayoutSize(width: snappedL, height: activeW + c.polyExtension + c.polyRules.minWidth)
-                )
-            } else {
-                polyRect = LayoutRect(
-                    origin: LayoutPoint(x: px, y: -c.polyRules.minWidth),
-                    size: LayoutSize(width: snappedL, height: activeW + c.polyExtension + c.polyRules.minWidth)
-                )
-            }
+            let polyRect = LayoutRect(
+                origin: LayoutPoint(x: px, y: gateVertical.polyOriginY),
+                size: LayoutSize(width: snappedL, height: gateVertical.polyHeight)
+            )
             shapes.append(LayoutShape(layer: c.polyID, geometry: .rect(polyRect)))
         }
 
@@ -532,8 +667,10 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         if sourceM1Rects.count == 1 {
             sourceM1Bus = sourceM1Rects[0]
         } else {
-            let leftmostX = sourceM1Rects.map(\.origin.x).min()!
-            let rightmostMaxX = sourceM1Rects.map(\.maxX).max()!
+            guard let leftmostX = sourceM1Rects.map(\.origin.x).min(),
+                  let rightmostMaxX = sourceM1Rects.map(\.maxX).max() else {
+                throw AutoGenError.placementFailed("MOSFET source terminal has no metal rectangles")
+            }
             sourceM1Bus = LayoutRect(
                 origin: LayoutPoint(x: snap(leftmostX, grid: c.grid), y: 0),
                 size: LayoutSize(
@@ -549,8 +686,10 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         if drainM1Rects.count == 1 {
             drainM1Bus = drainM1Rects[0]
         } else {
-            let leftmostX = drainM1Rects.map(\.origin.x).min()!
-            let rightmostMaxX = drainM1Rects.map(\.maxX).max()!
+            guard let leftmostX = drainM1Rects.map(\.origin.x).min(),
+                  let rightmostMaxX = drainM1Rects.map(\.maxX).max() else {
+                throw AutoGenError.placementFailed("MOSFET drain terminal has no metal rectangles")
+            }
             drainM1Bus = LayoutRect(
                 origin: LayoutPoint(
                     x: snap(leftmostX, grid: c.grid),
@@ -568,16 +707,15 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         //    Position: outside ACTIVE, on the side away from the tap.
         //    NMOS: gate contacts above active (tap is below)
         //    PMOS: gate contacts below active (tap is above)
-        let gateContY: Double
-        if c.isPMOS {
-            gateContY = snap(-c.polyExtension + c.polyContEnc, grid: c.grid)
-        } else {
-            gateContY = snap(activeW + c.polyExtension - c.polyContEnc - c.contSize, grid: c.grid)
-        }
+        let gateContY = gateVertical.gateContactY
 
         // Gate bus bar spans from leftmost poly to rightmost poly
-        let gateBusLeftX = snap(polyXPositions.first!, grid: c.grid)
-        let gateBusRightX = snap(polyXPositions.last! + snappedL, grid: c.grid)
+        guard let firstPolyX = polyXPositions.first,
+              let lastPolyX = polyXPositions.last else {
+            throw AutoGenError.placementFailed("MOSFET gate terminal has no polysilicon positions")
+        }
+        let gateBusLeftX = snap(firstPolyX, grid: c.grid)
+        let gateBusRightX = snap(lastPolyX + snappedL, grid: c.grid)
         let gateBusM1Rect = LayoutRect(
             origin: LayoutPoint(x: gateBusLeftX, y: gateContY),
             size: LayoutSize(

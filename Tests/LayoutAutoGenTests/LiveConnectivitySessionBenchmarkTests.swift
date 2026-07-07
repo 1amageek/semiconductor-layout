@@ -107,6 +107,7 @@ struct LiveConnectivitySessionBenchmarkTests {
     }
 
     @Test func liveApplyLatencyAtScale() throws {
+        try BenchmarkExecutionGate.run {
         let document = makeDocument(rows: 80, cols: 80)
         let tech = makeTech()
         let topCell = try #require(document.cells.first)
@@ -175,10 +176,8 @@ struct LiveConnectivitySessionBenchmarkTests {
         report("padNudge", nudgeSamples)
         report("openCloseCycle", cycleSamples)
 
-        // Hard caps with generous headroom so regressions fail loudly
-        // without flaking; the honest 10ms verdict is in the printed
-        // report.
-        #expect(nudgeSamples[nudgeSamples.count / 2] < 100, "neutral-edit live apply regressed")
-        #expect(cycleSamples[cycleSamples.count / 2] < 100, "open/close live apply regressed")
+        #expect(nudgeSamples[nudgeSamples.count / 2] < 10, "neutral-edit live apply missed the interactive target")
+        #expect(cycleSamples[cycleSamples.count / 2] < 10, "open/close live apply missed the interactive target")
+        }
     }
 }

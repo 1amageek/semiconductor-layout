@@ -62,14 +62,53 @@ struct IRTechLayoutBridgeTests {
                     cutWidth: 0.1,
                     cutHeight: 0.1,
                     enclosure: IRTechEnclosureValues(overhang1: 0.05, overhang2: 0.04),
-                    spacing: 0.12
+                    spacing: 0.12,
+                    layers: [
+                        IRTechViaLayerGeometry(
+                            layerName: "M1",
+                            rects: [IRTechRect(x1: -0.09, y1: -0.08, x2: 0.09, y2: 0.08)]
+                        ),
+                        IRTechViaLayerGeometry(
+                            layerName: "CONT",
+                            rects: [IRTechRect(x1: -0.05, y1: -0.05, x2: 0.05, y2: 0.05)]
+                        ),
+                        IRTechViaLayerGeometry(
+                            layerName: "M2",
+                            rects: [IRTechRect(x1: -0.1, y1: -0.09, x2: 0.1, y2: 0.09)]
+                        ),
+                    ]
                 )
             ],
             designRules: [
-                IRTechDesignRule(layerName: "M1", minWidth: 0.14, minSpacing: 0.14, minArea: 0.058)
+                IRTechDesignRule(
+                    layerName: "M1",
+                    minWidth: 0.14,
+                    minSpacing: 0.14,
+                    minArea: 0.058,
+                    minEnclosedArea: 0.14,
+                    requiresRectangular: true,
+                    allowedAngleStepDegrees: 45
+                )
             ],
             enclosureRules: [
                 IRTechEnclosureRule(outerLayerName: "M1", innerLayerName: "CONT", minEnclosure: 0.05)
+            ],
+            extensionRules: [
+                IRTechExtensionRule(
+                    extendingLayerName: "POLY",
+                    enclosedLayerName: "ACTIVE",
+                    minExtension: 0.13,
+                    direction: .horizontal
+                )
+            ],
+            minimumCutRules: [
+                IRTechMinimumCutRule(
+                    name: "mincut.CONT",
+                    cutLayerName: "CONT",
+                    bottomLayerName: "M1",
+                    topLayerName: "M2",
+                    minimumCount: 2
+                )
             ],
             antennaRules: [
                 IRTechAntennaRule(layerName: "M1", maxRatio: 400)
@@ -124,6 +163,10 @@ struct IRTechLayoutBridgeTests {
         #expect(via.enclosure.top == 0.05)
         #expect(via.enclosure.bottom == 0.04)
         #expect(via.cutSpacing == 0.12)
+        #expect(via.layerGeometries.count == 3)
+        #expect(via.layerGeometries[1].layer.name == "CONT")
+        #expect(via.layerGeometries[1].layer.purpose == "cut")
+        #expect(via.layerGeometries[1].rects.first?.size.width == 0.1)
     }
 
     @Test func importDesignRules() {
@@ -136,6 +179,9 @@ struct IRTechLayoutBridgeTests {
         #expect(rule.minWidth == 0.14)
         #expect(rule.minSpacing == 0.14)
         #expect(rule.minArea == 0.058)
+        #expect(rule.minEnclosedArea == 0.14)
+        #expect(rule.requiresRectangular)
+        #expect(rule.allowedAngleStepDegrees == 45)
     }
 
     @Test func importEnclosureRules() {
@@ -146,6 +192,29 @@ struct IRTechLayoutBridgeTests {
         #expect(tech.enclosureRules[0].outerLayer.name == "M1")
         #expect(tech.enclosureRules[0].innerLayer.name == "CONT")
         #expect(tech.enclosureRules[0].minEnclosure == 0.05)
+    }
+
+    @Test func importExtensionRules() {
+        let lib = sampleIRTechLibrary()
+        let tech = bridge.importTechLibrary(lib)
+
+        #expect(tech.extensionRules.count == 1)
+        #expect(tech.extensionRules[0].extendingLayer.name == "POLY")
+        #expect(tech.extensionRules[0].enclosedLayer.name == "ACTIVE")
+        #expect(tech.extensionRules[0].minExtension == 0.13)
+        #expect(tech.extensionRules[0].direction == .horizontal)
+    }
+
+    @Test func importMinimumCutRules() {
+        let lib = sampleIRTechLibrary()
+        let tech = bridge.importTechLibrary(lib)
+
+        #expect(tech.minimumCutRules.count == 1)
+        #expect(tech.minimumCutRules[0].id == "mincut.CONT")
+        #expect(tech.minimumCutRules[0].cutLayer.name == "CONT")
+        #expect(tech.minimumCutRules[0].bottomLayer.name == "M1")
+        #expect(tech.minimumCutRules[0].topLayer.name == "M2")
+        #expect(tech.minimumCutRules[0].minimumCount == 2)
     }
 
     @Test func importAntennaRules() {
@@ -166,6 +235,27 @@ struct IRTechLayoutBridgeTests {
         #expect(tech.layerRules.isEmpty)
         #expect(tech.antennaRules.isEmpty)
         #expect(tech.enclosureRules.isEmpty)
+        #expect(tech.extensionRules.isEmpty)
+        #expect(tech.minimumCutRules.isEmpty)
+    }
+
+    @Test func layoutViaDefinitionDecodesLegacyPayloadWithoutLayerGeometries() throws {
+        let json = """
+        {
+          "id": "VIA1",
+          "cutLayer": { "name": "CONT", "purpose": "cut" },
+          "topLayer": { "name": "M2", "purpose": "drawing" },
+          "bottomLayer": { "name": "M1", "purpose": "drawing" },
+          "cutSize": { "width": 0.1, "height": 0.1 },
+          "enclosure": { "top": 0.05, "bottom": 0.04 },
+          "cutSpacing": 0.12
+        }
+        """
+
+        let via = try JSONDecoder().decode(LayoutViaDefinition.self, from: Data(json.utf8))
+
+        #expect(via.id == "VIA1")
+        #expect(via.layerGeometries.isEmpty)
     }
 
     // MARK: - Export Tests
@@ -184,9 +274,20 @@ struct IRTechLayoutBridgeTests {
         #expect(exported.vias.count == 1)
         #expect(exported.vias[0].name == "VIA1")
         #expect(exported.vias[0].cutLayerName == "CONT")
+        #expect(exported.vias[0].layers.count == 3)
+        #expect(exported.vias[0].layers[1].layerName == "CONT")
+        #expect(exported.vias[0].layers[1].rects.first?.x1 == -0.05)
         #expect(exported.designRules.count == 1)
         #expect(exported.designRules[0].minWidth == 0.14)
+        #expect(exported.designRules[0].minEnclosedArea == 0.14)
+        #expect(exported.designRules[0].requiresRectangular == true)
+        #expect(exported.designRules[0].allowedAngleStepDegrees == 45)
         #expect(exported.enclosureRules.count == 1)
+        #expect(exported.extensionRules.count == 1)
+        #expect(exported.extensionRules[0].direction == .horizontal)
+        #expect(exported.minimumCutRules.count == 1)
+        #expect(exported.minimumCutRules[0].name == "mincut.CONT")
+        #expect(exported.minimumCutRules[0].minimumCount == 2)
         #expect(exported.antennaRules.count == 1)
     }
 

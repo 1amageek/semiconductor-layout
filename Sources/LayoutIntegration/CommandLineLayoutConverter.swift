@@ -89,28 +89,13 @@ public struct CommandLineLayoutConverter: LayoutFormatConverter {
     }
 
     private func run(command: ExternalToolCommand, input: URL, output: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: command.executable)
-        process.arguments = command.arguments.map {
-            $0.replacingOccurrences(of: "{input}", with: input.path)
-                .replacingOccurrences(of: "{output}", with: output.path)
-        }
-
-        let pipe = Pipe()
-        process.standardError = pipe
-        process.standardOutput = pipe
-
-        do {
-            try process.run()
-        } catch {
-            throw LayoutIOError.conversionFailed("Failed to run command: \(error)")
-        }
-
-        process.waitUntilExit()
-        if process.terminationStatus != 0 {
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let outputText = String(data: data, encoding: .utf8) ?? ""
-            throw LayoutIOError.conversionFailed("Command failed: \(outputText)")
+        let result = try ExternalToolProcessRunner.run(
+            command: command,
+            input: input.path,
+            output: output.path
+        )
+        if result.terminationStatus != 0 {
+            throw LayoutIOError.conversionFailed("Command failed: \(result.outputText)")
         }
     }
 

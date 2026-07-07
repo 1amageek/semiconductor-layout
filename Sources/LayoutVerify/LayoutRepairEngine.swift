@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LayoutCore
 import LayoutTech
@@ -14,6 +15,16 @@ import LayoutTech
 ///   width (and length for area), same verification.
 /// - `enclosure`: add landing pads (cut size + enclosure + one grid step)
 ///   on the via's top and bottom layers.
+/// - `minimumCut`: add the missing cut instances inside the reported
+///   conductor overlap, using a via/contact definition that matches the
+///   rule.
+/// - `overlapShort`: displace one editable top-level participant by the
+///   smallest rule-clean clearance that removes the same-layer short.
+/// - `exactOverlap`: currently reported as an explicit manual repair
+///   requirement; automated resize/create semantics are a separate rule
+///   family milestone.
+/// - `forbiddenLayer`: reported as an explicit manual repair requirement
+///   because the marker source geometry must be repaired or removed.
 /// - everything else: infeasible with the manual path named.
 ///
 /// Every candidate is validated against a private incremental-DRC mirror
@@ -53,15 +64,15 @@ public struct LayoutRepairEngine {
             return try growthRepair(for: violation, shapesByID: shapesByID)
         case .enclosure:
             return try enclosureRepair(for: violation)
+        case .minimumCut:
+            return try minimumCutRepair(for: violation)
         case .overlapShort:
-            return .infeasible(.unsupportedKind(
-                "a short needs a cut or a reroute — use subtract or finish-net"
-            ))
+            return try shortRepair(for: violation, shapesByID: shapesByID)
         case .disconnectedOpen:
             return .infeasible(.unsupportedKind(
                 "an open needs routing — use the route tool or finish-net"
             ))
-        case .notch, .minEnclosedArea, .density, .ruleCoverage, .antenna:
+        case .exactOverlap, .forbiddenLayer, .notch, .rectOnly, .angle, .minEnclosedArea, .density, .extension, .ruleCoverage, .antenna:
             return .infeasible(.unsupportedKind(
                 "no automated strategy for \(violation.kind.rawValue) yet"
             ))
@@ -261,6 +272,15 @@ public struct LayoutRepairEngine {
             let width = definition.cutSize.width + 2 * total
             let height = definition.cutSize.height + 2 * total
             return LayoutShape(
+                id: deterministicUUID(
+                    kind: "enclosure-pad",
+                    parts: [
+                        violation.id.uuidString,
+                        definition.id,
+                        layer.name,
+                        layer.purpose,
+                    ]
+                ),
                 layer: layer,
                 netID: via.netID,
                 geometry: .rect(LayoutRect(
@@ -284,6 +304,242 @@ public struct LayoutRepairEngine {
             ))
         }
         return .infeasible(.blockedByNeighbours)
+    }
+
+    private struct MinimumCutRepairDefinition {
+        var id: String
+        var cutSize: LayoutSize
+        var cutSpacing: Double
+    }
+
+    private func minimumCutRepair(for violation: LayoutViolation) throws -> LayoutRepairOutcome {
+        guard let ruleID = violation.ruleID,
+              let rule = tech.minimumCutRules.first(where: { LayoutDRCService().minimumCutRuleID($0) == ruleID }) else {
+            return .infeasible(.missingContext("minimum-cut violation carries no known rule ID"))
+        }
+        guard let definition = minimumCutRepairDefinition(for: rule) else {
+            return .infeasible(.missingContext("no via/contact definition matches the minimum-cut rule"))
+        }
+        guard let required = violation.required, let measured = violation.measured else {
+            return .infeasible(.missingContext("minimum-cut violation carries no count measurement"))
+        }
+        let missingCount = max(1, Int(ceil(required - measured)))
+        guard let netID = violation.netIDs.first else {
+            return .infeasible(.missingContext("minimum-cut violation carries no net ID"))
+        }
+        let centers = cutCenters(
+            count: missingCount,
+            cutSize: definition.cutSize,
+            cutSpacing: definition.cutSpacing,
+            region: violation.region
+        )
+        guard centers.count == missingCount else {
+            return .infeasible(.blockedByNeighbours)
+        }
+        let delta = LayoutEditDelta(addedVias: centers.enumerated().map { index, center in
+            LayoutVia(
+                id: deterministicUUID(
+                    kind: "minimum-cut-via",
+                    parts: [
+                        violation.id.uuidString,
+                        definition.id,
+                        String(index),
+                        String(describing: center.x),
+                        String(describing: center.y),
+                    ]
+                ),
+                viaDefinitionID: definition.id,
+                position: center,
+                netID: netID
+            )
+        })
+        if try resolves(violation, delta: delta) {
+            return .repair(LayoutRepair(
+                violationID: violation.id,
+                delta: delta,
+                summary: "Add \(missingCount) \(definition.id) cut\(missingCount == 1 ? "" : "s") inside the conductor overlap"
+            ))
+        }
+        return .infeasible(.blockedByNeighbours)
+    }
+
+    private struct ShortRepairCandidate {
+        var shape: LayoutShape
+        var offset: LayoutPoint
+
+        var score: Double {
+            hypot(offset.x, offset.y)
+        }
+    }
+
+    private func shortRepair(
+        for violation: LayoutViolation,
+        shapesByID: [UUID: LayoutShape]
+    ) throws -> LayoutRepairOutcome {
+        guard violation.shapeIDs.count == 2,
+              let firstID = violation.shapeIDs.first,
+              let secondID = violation.shapeIDs.last else {
+            return .infeasible(.missingContext("same-layer short repair needs exactly two editable shapes"))
+        }
+        guard let first = shapesByID[firstID],
+              let second = shapesByID[secondID] else {
+            return .infeasible(.childGeometry)
+        }
+        guard first.layer == second.layer else {
+            return .infeasible(.missingContext("same-layer short repair received different layers"))
+        }
+
+        let clearance = shortRepairClearance(for: first.layer)
+        let firstBounds = LayoutGeometryAnalysis.boundingBox(for: first.geometry)
+        let secondBounds = LayoutGeometryAnalysis.boundingBox(for: second.geometry)
+        let candidates = shortRepairCandidates(
+            first: first,
+            firstBounds: firstBounds,
+            second: second,
+            secondBounds: secondBounds,
+            clearance: clearance
+        )
+
+        for candidate in candidates {
+            var moved = candidate.shape
+            moved.geometry = moved.geometry.translated(by: candidate.offset)
+            let delta = LayoutEditDelta(updatedShapes: [moved])
+            if try resolves(violation, delta: delta) {
+                return .repair(LayoutRepair(
+                    violationID: violation.id,
+                    delta: delta,
+                    summary: String(
+                        format: "Move shorted shape by (%.3f, %.3f) to restore %.3f um clearance",
+                        candidate.offset.x,
+                        candidate.offset.y,
+                        clearance
+                    )
+                ))
+            }
+        }
+        return .infeasible(.blockedByNeighbours)
+    }
+
+    private func shortRepairClearance(for layer: LayoutLayerID) -> Double {
+        let ruleClearance = tech.ruleSet(for: layer)?.minSpacing ?? 0
+        let gridClearance = tech.grid > 0 ? tech.grid : 1e-3
+        return quantizeUp(max(ruleClearance, gridClearance))
+    }
+
+    private func shortRepairCandidates(
+        first: LayoutShape,
+        firstBounds: LayoutRect,
+        second: LayoutShape,
+        secondBounds: LayoutRect,
+        clearance: Double
+    ) -> [ShortRepairCandidate] {
+        var candidates: [ShortRepairCandidate] = []
+        candidates.append(contentsOf: shortSeparationOffsets(
+            moving: firstBounds,
+            fixed: secondBounds,
+            clearance: clearance
+        ).map { ShortRepairCandidate(shape: first, offset: $0) })
+        candidates.append(contentsOf: shortSeparationOffsets(
+            moving: secondBounds,
+            fixed: firstBounds,
+            clearance: clearance
+        ).map { ShortRepairCandidate(shape: second, offset: $0) })
+        return candidates
+            .filter { abs($0.offset.x) > 1.0e-12 || abs($0.offset.y) > 1.0e-12 }
+            .sorted {
+                if abs($0.score - $1.score) > 1.0e-12 {
+                    return $0.score < $1.score
+                }
+                if abs(abs($0.offset.x) - abs($1.offset.x)) > 1.0e-12 {
+                    return abs($0.offset.x) < abs($1.offset.x)
+                }
+                return abs($0.offset.y) < abs($1.offset.y)
+            }
+    }
+
+    private func shortSeparationOffsets(
+        moving: LayoutRect,
+        fixed: LayoutRect,
+        clearance: Double
+    ) -> [LayoutPoint] {
+        [
+            LayoutPoint(x: fixed.minX - clearance - moving.maxX, y: 0),
+            LayoutPoint(x: fixed.maxX + clearance - moving.minX, y: 0),
+            LayoutPoint(x: 0, y: fixed.minY - clearance - moving.maxY),
+            LayoutPoint(x: 0, y: fixed.maxY + clearance - moving.minY),
+        ]
+    }
+
+    private func minimumCutRepairDefinition(for rule: LayoutMinimumCutRule) -> MinimumCutRepairDefinition? {
+        for via in tech.vias where cutStackMatches(
+            cutLayer: via.cutLayer,
+            bottomLayer: via.bottomLayer,
+            topLayer: via.topLayer,
+            rule: rule
+        ) {
+            return MinimumCutRepairDefinition(id: via.id, cutSize: via.cutSize, cutSpacing: via.cutSpacing)
+        }
+        for contact in tech.contacts where cutStackMatches(
+            cutLayer: contact.cutLayer,
+            bottomLayer: contact.bottomLayer,
+            topLayer: contact.topLayer,
+            rule: rule
+        ) {
+            return MinimumCutRepairDefinition(id: contact.id, cutSize: contact.cutSize, cutSpacing: contact.cutSpacing)
+        }
+        return nil
+    }
+
+    private func cutStackMatches(
+        cutLayer: LayoutLayerID,
+        bottomLayer: LayoutLayerID,
+        topLayer: LayoutLayerID,
+        rule: LayoutMinimumCutRule
+    ) -> Bool {
+        guard cutLayer == rule.cutLayer else { return false }
+        let sameOrientation = bottomLayer == rule.bottomLayer && topLayer == rule.topLayer
+        let reversedOrientation = bottomLayer == rule.topLayer && topLayer == rule.bottomLayer
+        return sameOrientation || reversedOrientation
+    }
+
+    private func cutCenters(
+        count: Int,
+        cutSize: LayoutSize,
+        cutSpacing: Double,
+        region: LayoutRect
+    ) -> [LayoutPoint] {
+        guard count > 0 else { return [] }
+        let marginX = cutSize.width / 2
+        let marginY = cutSize.height / 2
+        let minX = region.minX + marginX
+        let maxX = region.maxX - marginX
+        let minY = region.minY + marginY
+        let maxY = region.maxY - marginY
+        guard minX <= maxX, minY <= maxY else { return [] }
+
+        let pitch = max(cutSize.width, cutSize.height) + max(cutSpacing, tech.grid)
+        let columns = max(1, Int(floor((maxX - minX) / pitch)) + 1)
+        let rows = max(1, Int(ceil(Double(count) / Double(columns))))
+        guard Double(rows - 1) * pitch <= maxY - minY + 1.0e-12 else { return [] }
+
+        var centers: [LayoutPoint] = []
+        centers.reserveCapacity(count)
+        let usedColumns = min(columns, count)
+        let startX = clamp(region.center.x - (Double(usedColumns - 1) * pitch / 2), minX, maxX)
+        let startY = clamp(region.center.y - (Double(rows - 1) * pitch / 2), minY, maxY)
+        for row in 0..<rows {
+            for column in 0..<columns {
+                guard centers.count < count else { return centers }
+                let x = clamp(startX + Double(column) * pitch, minX, maxX)
+                let y = clamp(startY + Double(row) * pitch, minY, maxY)
+                centers.append(LayoutPoint(x: x, y: y))
+            }
+        }
+        return centers
+    }
+
+    private func clamp(_ value: Double, _ minimum: Double, _ maximum: Double) -> Double {
+        min(max(value, minimum), maximum)
     }
 
     // MARK: - Verification
@@ -333,5 +589,19 @@ public struct LayoutRepairEngine {
     private func quantizeUp(_ value: Double) -> Double {
         let grid = tech.grid > 0 ? tech.grid : 1e-3
         return (value / grid).rounded(.up) * grid
+    }
+
+    private func deterministicUUID(kind: String, parts: [String]) -> UUID {
+        let input = (["layout-repair", kind] + parts).joined(separator: "|")
+        let digest = SHA256.hash(data: Data(input.utf8))
+        var bytes = Array(digest)
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 }

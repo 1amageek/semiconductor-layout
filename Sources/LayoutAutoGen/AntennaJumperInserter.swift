@@ -28,119 +28,173 @@ public struct AntennaJumperInserter {
         cellID: UUID,
         tech: LayoutTechDatabase
     ) throws -> AntennaJumperResult {
-        guard var cell = document.cell(withID: cellID) else {
+        guard let cell = document.cell(withID: cellID) else {
             throw AutoGenError.antennaMitigationFailed(
                 "target cell \(cellID) does not exist in document '\(document.name)'"
             )
         }
 
-        var insertedJumpers = 0
-        var failures: [AntennaJumperFailure] = []
-
+        var state = InsertionState(cell: cell)
         for request in requests {
-            guard let rawViaDef = tech.vias.first(where: { $0.bottomLayer == request.layer }) else {
-                failures.append(contentsOf: request.gates.map {
-                    AntennaJumperFailure(
-                        layer: request.layer,
-                        gatePosition: $0.position,
-                        reason: .noBridgeLayerAbove(request.layer)
-                    )
-                })
-                continue
-            }
-            guard let bottomRules = tech.ruleSet(for: request.layer) else {
-                failures.append(contentsOf: request.gates.map {
-                    AntennaJumperFailure(
-                        layer: request.layer,
-                        gatePosition: $0.position,
-                        reason: .missingLayerRules(request.layer)
-                    )
-                })
-                continue
-            }
-            guard let topRules = tech.ruleSet(for: rawViaDef.topLayer) else {
-                failures.append(contentsOf: request.gates.map {
-                    AntennaJumperFailure(
-                        layer: request.layer,
-                        gatePosition: $0.position,
-                        reason: .missingLayerRules(rawViaDef.topLayer)
-                    )
-                })
-                continue
-            }
-
-            let viaDef = ViaLandingRule.sized(rawViaDef, bottomRules: bottomRules, topRules: topRules)
-            let grid = tech.grid
-            let bottomLanding = snapUp(viaDef.cutSize.width + 2 * viaDef.enclosure.bottom, grid: grid)
-            let topLanding = snapUp(viaDef.cutSize.width + 2 * viaDef.enclosure.top, grid: grid)
-            let gap = snapUp(max(bottomRules.minSpacing, grid), grid: grid)
-            let shapeIDSet = Set(request.shapeIDs)
-
-            for gate in request.gates {
-                // Recompute candidates per gate: earlier jumpers in this
-                // pass have already mutated the cell's shapes.
-                let candidates = cell.shapes.indices.compactMap { index -> (index: Int, rect: LayoutRect)? in
-                    let shape = cell.shapes[index]
-                    guard shapeIDSet.contains(shape.id), shape.layer == request.layer else { return nil }
-                    guard case .rect(let rect) = shape.geometry else { return nil }
-                    return (index, rect)
-                }.sorted {
-                    distance(from: $0.rect, to: gate.position) < distance(from: $1.rect, to: gate.position)
-                }
-
-                var placed = false
-                for candidate in candidates {
-                    guard let surgery = jumperSurgery(
-                        splitting: candidate.rect,
-                        near: gate,
-                        bottomLanding: bottomLanding,
-                        topLanding: topLanding,
-                        gap: gap,
-                        grid: grid
-                    ) else { continue }
-
-                    let original = cell.shapes[candidate.index]
-                    // The stub keeps the original shape ID so follow-up
-                    // requests built from the same violation still find it.
-                    var stub = original
-                    stub.geometry = .rect(surgery.stub)
-                    cell.shapes[candidate.index] = stub
-                    cell.shapes.append(LayoutShape(
-                        layer: original.layer, netID: original.netID, geometry: .rect(surgery.far)
-                    ))
-                    cell.shapes.append(LayoutShape(
-                        layer: original.layer, netID: original.netID, geometry: .rect(surgery.stubPad)
-                    ))
-                    cell.shapes.append(LayoutShape(
-                        layer: original.layer, netID: original.netID, geometry: .rect(surgery.farPad)
-                    ))
-                    cell.shapes.append(LayoutShape(
-                        layer: viaDef.topLayer, netID: original.netID, geometry: .rect(surgery.bridge)
-                    ))
-                    cell.vias.append(LayoutVia(
-                        viaDefinitionID: rawViaDef.id, position: surgery.stubVia, netID: original.netID
-                    ))
-                    cell.vias.append(LayoutVia(
-                        viaDefinitionID: rawViaDef.id, position: surgery.farVia, netID: original.netID
-                    ))
-
-                    insertedJumpers += 1
-                    placed = true
-                    break
-                }
-
-                if !placed {
-                    failures.append(AntennaJumperFailure(
-                        layer: request.layer,
-                        gatePosition: gate.position,
-                        reason: .noSplittableWireNearGate
-                    ))
-                }
-            }
+            apply(request, to: &state, tech: tech)
         }
 
-        document.updateCell(cell)
-        return AntennaJumperResult(insertedJumpers: insertedJumpers, failures: failures)
+        document.updateCell(state.cell)
+        return AntennaJumperResult(insertedJumpers: state.insertedJumpers, failures: state.failures)
+    }
+
+    private struct InsertionState {
+        var cell: LayoutCell
+        var insertedJumpers = 0
+        var failures: [AntennaJumperFailure] = []
+    }
+
+    private struct BridgeContext {
+        var request: AntennaJumperRequest
+        var rawViaDef: LayoutViaDefinition
+        var viaDef: LayoutViaDefinition
+        var grid: Double
+        var bottomLanding: Double
+        var topLanding: Double
+        var gap: Double
+        var shapeIDSet: Set<UUID>
+    }
+
+    private struct CandidateWire {
+        var index: Int
+        var rect: LayoutRect
+    }
+
+    private func apply(
+        _ request: AntennaJumperRequest,
+        to state: inout InsertionState,
+        tech: LayoutTechDatabase
+    ) {
+        guard let context = bridgeContext(for: request, tech: tech) else {
+            state.failures.append(contentsOf: requestFailures(for: request, tech: tech))
+            return
+        }
+
+        for gate in request.gates {
+            if insertJumper(for: gate, context: context, cell: &state.cell) {
+                state.insertedJumpers += 1
+            } else {
+                state.failures.append(AntennaJumperFailure(
+                    layer: request.layer,
+                    gatePosition: gate.position,
+                    reason: .noSplittableWireNearGate
+                ))
+            }
+        }
+    }
+
+    private func bridgeContext(
+        for request: AntennaJumperRequest,
+        tech: LayoutTechDatabase
+    ) -> BridgeContext? {
+        guard let rawViaDef = tech.vias.first(where: { $0.bottomLayer == request.layer }),
+              let bottomRules = tech.ruleSet(for: request.layer),
+              let topRules = tech.ruleSet(for: rawViaDef.topLayer) else {
+            return nil
+        }
+        let viaDef = ViaLandingRule.sized(rawViaDef, bottomRules: bottomRules, topRules: topRules)
+        let grid = tech.grid
+        return BridgeContext(
+            request: request,
+            rawViaDef: rawViaDef,
+            viaDef: viaDef,
+            grid: grid,
+            bottomLanding: snapUp(viaDef.cutSize.width + 2 * viaDef.enclosure.bottom, grid: grid),
+            topLanding: snapUp(viaDef.cutSize.width + 2 * viaDef.enclosure.top, grid: grid),
+            gap: snapUp(max(bottomRules.minSpacing, grid), grid: grid),
+            shapeIDSet: Set(request.shapeIDs)
+        )
+    }
+
+    private func requestFailures(
+        for request: AntennaJumperRequest,
+        tech: LayoutTechDatabase
+    ) -> [AntennaJumperFailure] {
+        let reason: AntennaJumperFailure.Reason
+        if tech.vias.first(where: { $0.bottomLayer == request.layer }) == nil {
+            reason = .noBridgeLayerAbove(request.layer)
+        } else if tech.ruleSet(for: request.layer) == nil {
+            reason = .missingLayerRules(request.layer)
+        } else {
+            let missingTopLayer = tech.vias.first { $0.bottomLayer == request.layer }?.topLayer ?? request.layer
+            reason = .missingLayerRules(missingTopLayer)
+        }
+        return request.gates.map {
+            AntennaJumperFailure(layer: request.layer, gatePosition: $0.position, reason: reason)
+        }
+    }
+
+    private func insertJumper(
+        for gate: AntennaJumperGate,
+        context: BridgeContext,
+        cell: inout LayoutCell
+    ) -> Bool {
+        for candidate in candidates(in: cell, context: context, gate: gate) {
+            guard let surgery = jumperSurgery(
+                splitting: candidate.rect,
+                near: gate,
+                bottomLanding: context.bottomLanding,
+                topLanding: context.topLanding,
+                gap: context.gap,
+                grid: context.grid
+            ) else { continue }
+            apply(surgery: surgery, candidate: candidate, context: context, cell: &cell)
+            return true
+        }
+        return false
+    }
+
+    private func candidates(
+        in cell: LayoutCell,
+        context: BridgeContext,
+        gate: AntennaJumperGate
+    ) -> [CandidateWire] {
+        cell.shapes.indices.compactMap { index -> CandidateWire? in
+            let shape = cell.shapes[index]
+            guard context.shapeIDSet.contains(shape.id), shape.layer == context.request.layer else {
+                return nil
+            }
+            guard case .rect(let rect) = shape.geometry else { return nil }
+            return CandidateWire(index: index, rect: rect)
+        }.sorted {
+            distance(from: $0.rect, to: gate.position) < distance(from: $1.rect, to: gate.position)
+        }
+    }
+
+    private func apply(
+        surgery: JumperSurgery,
+        candidate: CandidateWire,
+        context: BridgeContext,
+        cell: inout LayoutCell
+    ) {
+        let original = cell.shapes[candidate.index]
+        var stub = original
+        stub.geometry = .rect(surgery.stub)
+        cell.shapes[candidate.index] = stub
+        appendJumperGeometry(surgery: surgery, original: original, context: context, cell: &cell)
+    }
+
+    private func appendJumperGeometry(
+        surgery: JumperSurgery,
+        original: LayoutShape,
+        context: BridgeContext,
+        cell: inout LayoutCell
+    ) {
+        cell.shapes.append(LayoutShape(layer: original.layer, netID: original.netID, geometry: .rect(surgery.far)))
+        cell.shapes.append(LayoutShape(layer: original.layer, netID: original.netID, geometry: .rect(surgery.stubPad)))
+        cell.shapes.append(LayoutShape(layer: original.layer, netID: original.netID, geometry: .rect(surgery.farPad)))
+        cell.shapes.append(LayoutShape(layer: context.viaDef.topLayer, netID: original.netID, geometry: .rect(surgery.bridge)))
+        cell.vias.append(LayoutVia(
+            viaDefinitionID: context.rawViaDef.id, position: surgery.stubVia, netID: original.netID
+        ))
+        cell.vias.append(LayoutVia(
+            viaDefinitionID: context.rawViaDef.id, position: surgery.farVia, netID: original.netID
+        ))
     }
 
     // MARK: - Rectangle Surgery

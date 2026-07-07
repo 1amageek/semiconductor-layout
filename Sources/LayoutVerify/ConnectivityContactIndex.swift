@@ -18,7 +18,7 @@ struct ConnectivityContactIndex {
     }
 
     private let cellSize: Double
-    private var cells: [CellKey: Set<ConnectivityElementKey>] = [:]
+    private var cells: [CellKey: [ConnectivityElementKey]] = [:]
 
     init(cellSize: Double) {
         self.cellSize = max(cellSize, 1e-9)
@@ -28,7 +28,7 @@ struct ConnectivityContactIndex {
         guard let span = cellSpan(of: boundingBox) else { return }
         for cx in span.x {
             for cy in span.y {
-                cells[CellKey(x: cx, y: cy), default: []].insert(key)
+                cells[CellKey(x: cx, y: cy), default: []].append(key)
             }
         }
     }
@@ -38,11 +38,10 @@ struct ConnectivityContactIndex {
         for cx in span.x {
             for cy in span.y {
                 let cellKey = CellKey(x: cx, y: cy)
-                guard let removed = cells[cellKey]?.remove(key) else {
-                    assertionFailure("removing an element from a cell it was never inserted into")
+                guard let index = cells[cellKey]?.firstIndex(of: key) else {
                     continue
                 }
-                _ = removed
+                cells[cellKey]?.remove(at: index)
                 if cells[cellKey]?.isEmpty == true {
                     cells.removeValue(forKey: cellKey)
                 }

@@ -92,7 +92,7 @@ struct EditorDogfoodTests {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("dogfood-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { Self.removeTemporaryDirectory(directory) }
         let gds = directory.appendingPathComponent("chain.gds")
         let converter = GDSFormatConverter(tech: tech)
         try converter.exportDocument(viewModel.editor.document, to: gds, format: .gds)
@@ -155,5 +155,13 @@ struct EditorDogfoodTests {
         #expect(replayed.liveLVSPassed == true)
         #expect(replayed.violations.isEmpty)
         #expect(replayed.goalLog == viewModel.goalLog)
+    }
+
+    private static func removeTemporaryDirectory(_ directory: URL) {
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            Issue.record("Failed to remove temporary directory: \(error)")
+        }
     }
 }

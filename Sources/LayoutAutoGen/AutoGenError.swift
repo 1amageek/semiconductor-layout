@@ -3,6 +3,7 @@ import Foundation
 public enum AutoGenError: Error, Sendable, LocalizedError {
     case unsupportedDevice(String)
     case missingParameter(device: String, parameter: String)
+    case invalidParameter(device: String, parameter: String, value: Double, reason: String)
     case missingLayerRule(String)
     case missingEnclosureRule(outer: String, inner: String)
     case missingContactDefinition(String)
@@ -16,6 +17,8 @@ public enum AutoGenError: Error, Sendable, LocalizedError {
             return "Unsupported device type: \(device)"
         case .missingParameter(let device, let parameter):
             return "Device '\(device)' is missing required parameter '\(parameter)'"
+        case .invalidParameter(let device, let parameter, let value, let reason):
+            return "Device '\(device)' has invalid parameter '\(parameter)' value '\(value)': \(reason)"
         case .missingLayerRule(let layer):
             return "Missing design rules for layer '\(layer)' in technology database"
         case .missingEnclosureRule(let outer, let inner):

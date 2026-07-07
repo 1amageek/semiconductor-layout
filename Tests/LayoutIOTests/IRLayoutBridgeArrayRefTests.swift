@@ -28,7 +28,7 @@ struct IRLayoutBridgeArrayRefTests {
         )
 
         let bridge = IRLayoutBridge()
-        let document = bridge.importLibrary(library, tech: .standard())
+        let document = try bridge.checkedImportLibrary(library, tech: .standard())
         let topCell = document.cells.first { $0.name == "TOP" }
         let instance = topCell?.instances.first
 

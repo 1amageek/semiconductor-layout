@@ -134,56 +134,61 @@ public final class LiveConstraintSession {
     /// Validates the delta against the overlaid state and records it.
     /// O(delta): nothing here touches the cell's arrays.
     private func absorb(_ delta: LayoutEditDelta) throws {
+        try delta.validateAgainstKnownElements(
+            shapeIDs: knownShapeIDs,
+            viaIDs: knownViaIDs
+        )
+        absorbShapeDelta(delta)
+        absorbViaDelta(delta)
+    }
+
+    private func absorbShapeDelta(_ delta: LayoutEditDelta) {
         for shape in delta.updatedShapes {
-            guard knownShapeIDs.contains(shape.id) else {
-                throw LayoutCoreError.shapeNotFound(shape.id)
-            }
             pendingShapeValues[shape.id] = shape
         }
         for id in delta.removedShapeIDs {
-            guard knownShapeIDs.contains(id) else {
-                throw LayoutCoreError.shapeNotFound(id)
-            }
             knownShapeIDs.remove(id)
-            if let addIndex = pendingShapeAddOrder.firstIndex(of: id) {
-                // Added and removed within one overlay window: it never
-                // reaches the materialized cell at all.
-                pendingShapeAddOrder.remove(at: addIndex)
-                pendingShapeValues[id] = nil
-            } else {
-                pendingShapeValues[id] = nil
-                pendingShapeRemovals.insert(id)
-            }
+            removePendingShape(id)
         }
         for shape in delta.addedShapes {
             knownShapeIDs.insert(shape.id)
             pendingShapeAddOrder.append(shape.id)
             pendingShapeValues[shape.id] = shape
         }
+    }
 
+    private func absorbViaDelta(_ delta: LayoutEditDelta) {
         for via in delta.updatedVias {
-            guard knownViaIDs.contains(via.id) else {
-                throw LayoutCoreError.viaNotFound(via.id)
-            }
             pendingViaValues[via.id] = via
         }
         for id in delta.removedViaIDs {
-            guard knownViaIDs.contains(id) else {
-                throw LayoutCoreError.viaNotFound(id)
-            }
             knownViaIDs.remove(id)
-            if let addIndex = pendingViaAddOrder.firstIndex(of: id) {
-                pendingViaAddOrder.remove(at: addIndex)
-                pendingViaValues[id] = nil
-            } else {
-                pendingViaValues[id] = nil
-                pendingViaRemovals.insert(id)
-            }
+            removePendingVia(id)
         }
         for via in delta.addedVias {
             knownViaIDs.insert(via.id)
             pendingViaAddOrder.append(via.id)
             pendingViaValues[via.id] = via
+        }
+    }
+
+    private func removePendingShape(_ id: UUID) {
+        if let addIndex = pendingShapeAddOrder.firstIndex(of: id) {
+            pendingShapeAddOrder.remove(at: addIndex)
+            pendingShapeValues[id] = nil
+        } else {
+            pendingShapeValues[id] = nil
+            pendingShapeRemovals.insert(id)
+        }
+    }
+
+    private func removePendingVia(_ id: UUID) {
+        if let addIndex = pendingViaAddOrder.firstIndex(of: id) {
+            pendingViaAddOrder.remove(at: addIndex)
+            pendingViaValues[id] = nil
+        } else {
+            pendingViaValues[id] = nil
+            pendingViaRemovals.insert(id)
         }
     }
 

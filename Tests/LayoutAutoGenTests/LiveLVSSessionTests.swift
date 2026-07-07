@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import LayoutAutoGen
 import LayoutCore
@@ -209,6 +210,146 @@ struct LiveLVSSessionTests {
         #expect(!result.issues.contains { $0.kind == .conflictingPort && $0.message.contains("'B'") })
     }
 
+    @Test func terminalConflictsBecomeExtractionIssues() throws {
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let childShape = LayoutShape(
+            layer: m1,
+            geometry: .rect(LayoutRect(
+                origin: .zero,
+                size: LayoutSize(width: 1, height: 1)
+            ))
+        )
+        let child = LayoutCell(
+            name: "SHORTED_TERMINALS",
+            shapes: [childShape],
+            pins: [
+                LayoutPin(
+                    name: "A",
+                    position: LayoutPoint(x: 0.3, y: 0.5),
+                    size: LayoutSize(width: 0.2, height: 0.2),
+                    layer: m1
+                ),
+                LayoutPin(
+                    name: "B",
+                    position: LayoutPoint(x: 0.7, y: 0.5),
+                    size: LayoutSize(width: 0.2, height: 0.2),
+                    layer: m1
+                ),
+            ]
+        )
+        let netA = LayoutNet(name: "A")
+        let netB = LayoutNet(name: "B")
+        let instance = LayoutInstance(
+            cellID: child.id,
+            name: "X0",
+            terminalNetIDs: ["A": netA.id, "B": netB.id]
+        )
+        let top = LayoutCell(
+            name: "TOP",
+            instances: [instance],
+            nets: [netA, netB]
+        )
+        let document = LayoutDocument(name: "terminal-conflict", cells: [child, top], topCellID: top.id)
+
+        let result = try DeviceExtractor().extract(
+            document: document,
+            tech: LayoutTechDatabase.sampleProcess()
+        )
+
+        #expect(result.issues.contains {
+            $0.kind == .shortedNet && $0.message.contains("Instance terminal mapping")
+        })
+    }
+
+    @Test func extractionIssuesCarryPolicyAwareDiagnostics() throws {
+        let activeLayer = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
+        let polyLayer = LayoutLayerID(name: "POLY", purpose: "drawing")
+        let active = LayoutShape(
+            layer: activeLayer,
+            geometry: .rect(LayoutRect(
+                origin: .zero,
+                size: LayoutSize(width: 2.0, height: 1.0)
+            ))
+        )
+        let poly = LayoutShape(
+            layer: polyLayer,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 0.9, y: -0.1),
+                size: LayoutSize(width: 0.2, height: 1.2)
+            ))
+        )
+        let cell = LayoutCell(name: "AMBIGUOUS_MOS", shapes: [active, poly])
+        let document = LayoutDocument(name: "ambiguous-mos", cells: [cell], topCellID: cell.id)
+
+        let result = try DeviceExtractor().extract(
+            document: document,
+            tech: LayoutTechDatabase.sampleProcess()
+        )
+
+        #expect(result.netlist.devices.isEmpty)
+        let issue = try #require(result.issues.first)
+        #expect(issue.kind == .ambiguousDeviceType)
+        #expect(issue.severity == .error)
+        #expect(issue.code == "layout.extraction.ambiguous-device-type")
+        #expect(issue.policyApplicability == .layerMappingReviewRequired)
+        #expect(issue.affectedLayers.map(DeviceExtractionSummary.layerIdentifier) == [
+            "ACTIVE/drawing",
+            "NIMP/drawing",
+            "PIMP/drawing",
+            "POLY/drawing",
+        ])
+        #expect(issue.suggestedActions.contains("fix-implant-coverage"))
+        #expect(issue.suggestedActions.contains("review-device-extraction-profile"))
+        #expect(result.summary.issueCount == 1)
+        #expect(result.summary.errorCount == 1)
+        #expect(result.summary.issueCountsByKind["ambiguousDeviceType"] == 1)
+        #expect(result.summary.issueCountsByCode["layout.extraction.ambiguous-device-type"] == 1)
+        #expect(result.summary.issueCountsByPolicyApplicability["layerMappingReviewRequired"] == 1)
+        #expect(result.summary.affectedLayers == [
+            "ACTIVE/drawing",
+            "NIMP/drawing",
+            "PIMP/drawing",
+            "POLY/drawing",
+        ])
+        #expect(result.summary.suggestedActions.contains("review-device-extraction-profile"))
+    }
+
+    @Test func legacyExtractionIssueArtifactsDecodeWithPolicySummary() throws {
+        let legacyJSON = """
+        {
+          "netlist": {
+            "devices": [],
+            "ports": {}
+          },
+          "issues": [
+            {
+              "kind": "missingTerminal",
+              "message": "legacy terminal issue",
+              "region": {
+                "origin": { "x": 0, "y": 0 },
+                "size": { "width": 1, "height": 1 }
+              },
+              "shapeIDs": []
+            }
+          ]
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(
+            DeviceExtractionResult.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        let issue = try #require(decoded.issues.first)
+        #expect(issue.severity == .error)
+        #expect(issue.code == "layout.extraction.missing-terminal")
+        #expect(issue.policyApplicability == .layoutRepairRequired)
+        #expect(issue.suggestedActions.contains("repair-terminal-connectivity"))
+        #expect(decoded.summary.issueCount == 1)
+        #expect(decoded.summary.issueCountsByCode["layout.extraction.missing-terminal"] == 1)
+        #expect(decoded.summary.issueCountsByPolicyApplicability["layoutRepairRequired"] == 1)
+    }
+
     @Test func comparatorPairsParameterExactCandidateOverFirstTopologicalOne() {
         func device(_ id: String, width: Double) -> ComparisonNetlist.Device {
             ComparisonNetlist.Device(
@@ -236,6 +377,25 @@ struct LiveLVSSessionTests {
         #expect(comparison.parameterMismatches.isEmpty)
     }
 
+    @Test func comparatorReportsPortMismatches() {
+        let extracted = ComparisonNetlist(
+            devices: [],
+            ports: ["A": ComparisonNetID("pin:A")]
+        )
+        let reference = ComparisonNetlist(
+            devices: [],
+            ports: [
+                "A": ComparisonNetID("pin:B"),
+                "B": ComparisonNetID("pin:B"),
+            ]
+        )
+
+        let comparison = NetlistComparator().compare(extracted: extracted, reference: reference)
+
+        #expect(!comparison.passed)
+        #expect(comparison.portMismatches.map(\.portName) == ["A", "B"])
+    }
+
     @Test func emptyDeltaReportsSkippedComparison() throws {
         let tech = LayoutTechDatabase.sampleProcess()
         let document = try generatedDocument(kind: "nmos", width: 1.5, length: 0.2)
@@ -246,6 +406,35 @@ struct LiveLVSSessionTests {
 
         #expect(update.skippedComparison)
         #expect(update.passed)
+    }
+
+    @Test func duplicateShapeAddIsRejectedBeforeExtraction() throws {
+        let tech = LayoutTechDatabase.sampleProcess()
+        let document = try generatedDocument(kind: "nmos", width: 1.5, length: 0.2)
+        let reference = try DeviceExtractor().extract(document: document, tech: tech).netlist
+        let session = try LiveLVSSession(document: document, tech: tech, reference: reference)
+        let existing = try #require(document.cells.first?.shapes.first)
+
+        #expect(throws: LayoutEditDeltaValidationError.duplicateShapeID(existing.id)) {
+            try session.apply(LayoutEditDelta(addedShapes: [existing]))
+        }
+        #expect(session.passed)
+    }
+
+    @Test func conflictingShapeDeltaEntryIsRejectedBeforeMutation() throws {
+        let tech = LayoutTechDatabase.sampleProcess()
+        let document = try generatedDocument(kind: "nmos", width: 1.5, length: 0.2)
+        let reference = try DeviceExtractor().extract(document: document, tech: tech).netlist
+        let session = try LiveLVSSession(document: document, tech: tech, reference: reference)
+        let existing = try #require(document.cells.first?.shapes.first)
+
+        #expect(throws: LayoutEditDeltaValidationError.conflictingDeltaEntry(existing.id)) {
+            try session.apply(LayoutEditDelta(
+                updatedShapes: [existing],
+                removedShapeIDs: [existing.id]
+            ))
+        }
+        #expect(session.passed)
     }
 
     @MainActor

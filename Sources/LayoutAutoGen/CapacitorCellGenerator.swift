@@ -27,10 +27,88 @@ public struct CapacitorCellGenerator: DeviceCellGenerator {
         parameters: [String: Double],
         tech: LayoutTechDatabase
     ) throws -> LayoutCell {
-        guard let c = parameters["c"] else {
-            throw AutoGenError.missingParameter(device: instanceName, parameter: "c")
-        }
+        try DeviceParameterValidation.requireSupported(deviceKindID, supported: supportedDeviceKindIDs)
+        let context = try makeContext(
+            instanceName: instanceName,
+            parameters: parameters,
+            tech: tech
+        )
+        let deviceShapes = makeDeviceShapes(context)
+        let contacts = makeContactShapes(context)
+        let metal = makeMetalAndPins(context)
 
+        return LayoutCell(
+            name: "\(instanceName)_capacitor",
+            shapes: deviceShapes.shapes + contacts + metal.shapes,
+            labels: [
+                LayoutLabel(text: instanceName, position: deviceShapes.activeRect.center, layer: context.m1ID)
+            ],
+            pins: metal.pins
+        )
+    }
+
+    private struct CapacitorCellContext {
+        let activeID: LayoutLayerID
+        let polyID: LayoutLayerID
+        let contID: LayoutLayerID
+        let m1ID: LayoutLayerID
+        let nimpID: LayoutLayerID
+        let nwellID: LayoutLayerID
+        let grid: Double
+        let overlapSize: Double
+        let cellWidth: Double
+        let cellHeight: Double
+        let activeContactRegion: Double
+        let polyContactRegion: Double
+        let actContSize: Double
+        let actContEnc: Double
+        let actM1Enc: Double
+        let actContSpacing: Double
+        let polyContSize: Double
+        let polyContEnc: Double
+        let polyM1Enc: Double
+        let polyContSpacing: Double
+        let impEnclosure: Double
+        let nwellEnclosure: Double
+        let m1MinWidth: Double
+    }
+
+    private struct CapacitorLayerContext {
+        let activeID: LayoutLayerID
+        let polyID: LayoutLayerID
+        let contID: LayoutLayerID
+        let m1ID: LayoutLayerID
+        let nimpID: LayoutLayerID
+        let nwellID: LayoutLayerID
+        let contActiveDef: LayoutContactDefinition
+        let contPolyDef: LayoutContactDefinition
+        let m1Rules: LayoutLayerRuleSet
+        let impEnclosure: Double
+        let nwellEnclosure: Double
+    }
+
+    private func makeContext(
+        instanceName: String,
+        parameters: [String: Double],
+        tech: LayoutTechDatabase
+    ) throws -> CapacitorCellContext {
+        let c = try DeviceParameterValidation.requirePositive(parameters, "c", device: instanceName)
+        let configuredOxideCapDensity = try DeviceParameterValidation.requirePositiveValue(
+            oxideCapDensity,
+            "oxideCapDensity",
+            device: instanceName
+        )
+
+        let layerContext = try makeLayerContext(tech: tech)
+        return makeContext(
+            capacitance: c,
+            oxideCapDensity: configuredOxideCapDensity,
+            layerContext: layerContext,
+            grid: tech.grid
+        )
+    }
+
+    private func makeLayerContext(tech: LayoutTechDatabase) throws -> CapacitorLayerContext {
         let activeID = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
         let polyID   = LayoutLayerID(name: "POLY", purpose: "drawing")
         let contID   = LayoutLayerID(name: "CONTACT", purpose: "cut")
@@ -48,26 +126,46 @@ public struct CapacitorCellGenerator: DeviceCellGenerator {
             throw AutoGenError.missingLayerRule("M1")
         }
 
-        let grid = tech.grid
         let impEnclosure = try tech.requiredEnclosureRule(outer: nimpID, inner: activeID).minEnclosure
         let nwellEnclosure = try tech.requiredEnclosureRule(outer: nwellID, inner: activeID).minEnclosure
 
+        return CapacitorLayerContext(
+            activeID: activeID,
+            polyID: polyID,
+            contID: contID,
+            m1ID: m1ID,
+            nimpID: nimpID,
+            nwellID: nwellID,
+            contActiveDef: contActiveDef,
+            contPolyDef: contPolyDef,
+            m1Rules: m1Rules,
+            impEnclosure: impEnclosure,
+            nwellEnclosure: nwellEnclosure
+        )
+    }
+
+    private func makeContext(
+        capacitance: Double,
+        oxideCapDensity: Double,
+        layerContext: CapacitorLayerContext,
+        grid: Double
+    ) -> CapacitorCellContext {
         // Calculate overlap area: C = Cox × A → A = C / Cox
-        let areaUm2 = c / oxideCapDensity
+        let areaUm2 = capacitance / oxideCapDensity
         let side = snap(max(sqrt(areaUm2), 0.50), grid: grid)
 
         // Active-side contact geometry (CONT_ACTIVE)
-        let actContSize = contActiveDef.cutSize.width
-        let actContEnc = contActiveDef.enclosure.bottom
-        let actM1Enc = contActiveDef.enclosure.top
-        let actContSpacing = contActiveDef.cutSpacing
+        let actContSize = layerContext.contActiveDef.cutSize.width
+        let actContEnc = layerContext.contActiveDef.enclosure.bottom
+        let actM1Enc = layerContext.contActiveDef.enclosure.top
+        let actContSpacing = layerContext.contActiveDef.cutSpacing
         let activeContactRegion = actContSize + 2 * actContEnc
 
         // Poly-side contact geometry (CONT_POLY)
-        let polyContSize = contPolyDef.cutSize.width
-        let polyContEnc = contPolyDef.enclosure.bottom
-        let polyM1Enc = contPolyDef.enclosure.top
-        let polyContSpacing = contPolyDef.cutSpacing
+        let polyContSize = layerContext.contPolyDef.cutSize.width
+        let polyContEnc = layerContext.contPolyDef.enclosure.bottom
+        let polyM1Enc = layerContext.contPolyDef.enclosure.top
+        let polyContSpacing = layerContext.contPolyDef.cutSpacing
         let polyContactRegion = polyContSize + 2 * polyContEnc
 
         // Layout: [active contact region] [overlap region] [poly contact region]
@@ -75,109 +173,155 @@ public struct CapacitorCellGenerator: DeviceCellGenerator {
         let cellWidth = snap(activeContactRegion + overlapSize + polyContactRegion, grid: grid)
         let cellHeight = snap(overlapSize, grid: grid)
 
-        var shapes: [LayoutShape] = []
-        var pins: [LayoutPin] = []
+        return CapacitorCellContext(
+            activeID: layerContext.activeID,
+            polyID: layerContext.polyID,
+            contID: layerContext.contID,
+            m1ID: layerContext.m1ID,
+            nimpID: layerContext.nimpID,
+            nwellID: layerContext.nwellID,
+            grid: grid,
+            overlapSize: overlapSize,
+            cellWidth: cellWidth,
+            cellHeight: cellHeight,
+            activeContactRegion: activeContactRegion,
+            polyContactRegion: polyContactRegion,
+            actContSize: actContSize,
+            actContEnc: actContEnc,
+            actM1Enc: actM1Enc,
+            actContSpacing: actContSpacing,
+            polyContSize: polyContSize,
+            polyContEnc: polyContEnc,
+            polyM1Enc: polyM1Enc,
+            polyContSpacing: polyContSpacing,
+            impEnclosure: layerContext.impEnclosure,
+            nwellEnclosure: layerContext.nwellEnclosure,
+            m1MinWidth: layerContext.m1Rules.minWidth
+        )
+    }
 
+    private func makeDeviceShapes(
+        _ context: CapacitorCellContext
+    ) -> (shapes: [LayoutShape], activeRect: LayoutRect) {
+        var shapes: [LayoutShape] = []
         // 1. ACTIVE region (left part: active contact + overlap)
         let activeRect = LayoutRect(
             origin: .zero,
-            size: LayoutSize(width: snap(activeContactRegion + overlapSize, grid: grid), height: cellHeight)
+            size: LayoutSize(
+                width: snap(context.activeContactRegion + context.overlapSize, grid: context.grid),
+                height: context.cellHeight
+            )
         )
-        shapes.append(LayoutShape(layer: activeID, geometry: .rect(activeRect)))
+        shapes.append(LayoutShape(layer: context.activeID, geometry: .rect(activeRect)))
 
         // 2. N-Implant enclosing ACTIVE
-        let impRect = activeRect.expanded(by: impEnclosure, impEnclosure)
-        shapes.append(LayoutShape(layer: nimpID, geometry: .rect(impRect)))
+        let impRect = activeRect.expanded(by: context.impEnclosure, context.impEnclosure)
+        shapes.append(LayoutShape(layer: context.nimpID, geometry: .rect(impRect)))
 
         // 3. NWELL enclosing ACTIVE (for accumulation-mode MOS capacitor)
-        let nwellRect = activeRect.expanded(by: nwellEnclosure, nwellEnclosure)
-        shapes.append(LayoutShape(layer: nwellID, geometry: .rect(nwellRect)))
+        let nwellRect = activeRect.expanded(by: context.nwellEnclosure, context.nwellEnclosure)
+        shapes.append(LayoutShape(layer: context.nwellID, geometry: .rect(nwellRect)))
 
         // 4. POLY region (overlap + poly contact)
-        let polyX = snap(activeContactRegion, grid: grid)
+        let polyX = snap(context.activeContactRegion, grid: context.grid)
         let polyRect = LayoutRect(
             origin: LayoutPoint(x: polyX, y: 0),
-            size: LayoutSize(width: snap(overlapSize + polyContactRegion, grid: grid), height: cellHeight)
+            size: LayoutSize(
+                width: snap(context.overlapSize + context.polyContactRegion, grid: context.grid),
+                height: context.cellHeight
+            )
         )
-        shapes.append(LayoutShape(layer: polyID, geometry: .rect(polyRect)))
+        shapes.append(LayoutShape(layer: context.polyID, geometry: .rect(polyRect)))
+        return (shapes, activeRect)
+    }
 
-        // 5. Active contacts (left, neg terminal - bottom plate) — arrayed
-        let actContX = snap(actContEnc, grid: grid)
+    private func makeContactShapes(_ context: CapacitorCellContext) -> [LayoutShape] {
+        let actContX = snap(context.actContEnc, grid: context.grid)
         let actContacts = ContactArrayHelper.generateContacts1D(
             regionX: actContX,
-            regionY: snap(actContEnc, grid: grid),
-            regionHeight: max(actContSize, cellHeight - 2 * actContEnc),
-            contSize: actContSize,
-            contSpacing: actContSpacing,
-            contLayer: contID,
-            grid: grid
+            regionY: snap(context.actContEnc, grid: context.grid),
+            regionHeight: max(context.actContSize, context.cellHeight - 2 * context.actContEnc),
+            contSize: context.actContSize,
+            contSpacing: context.actContSpacing,
+            contLayer: context.contID,
+            grid: context.grid
         )
-        shapes.append(contentsOf: actContacts)
 
-        // 6. Poly contacts (right, pos terminal - top plate) — arrayed
-        let polyContX = snap(cellWidth - polyContactRegion + polyContEnc, grid: grid)
+        let polyContX = snap(
+            context.cellWidth - context.polyContactRegion + context.polyContEnc,
+            grid: context.grid
+        )
         let polyContacts = ContactArrayHelper.generateContacts1D(
             regionX: polyContX,
-            regionY: snap(polyContEnc, grid: grid),
-            regionHeight: max(polyContSize, cellHeight - 2 * polyContEnc),
-            contSize: polyContSize,
-            contSpacing: polyContSpacing,
-            contLayer: contID,
-            grid: grid
+            regionY: snap(context.polyContEnc, grid: context.grid),
+            regionHeight: max(context.polyContSize, context.cellHeight - 2 * context.polyContEnc),
+            contSize: context.polyContSize,
+            contSpacing: context.polyContSpacing,
+            contLayer: context.contID,
+            grid: context.grid
         )
-        shapes.append(contentsOf: polyContacts)
+        return actContacts + polyContacts
+    }
 
-        // 7. M1 pads (sized to each contact's M1 enclosure)
-        let negM1Width = max(m1Rules.minWidth, actContSize + 2 * actM1Enc)
-        let negM1Height = max(m1Rules.minWidth, actContSize + 2 * actM1Enc)
-        let actContY = snap(actContEnc, grid: grid)
+    private func makeMetalAndPins(
+        _ context: CapacitorCellContext
+    ) -> (shapes: [LayoutShape], pins: [LayoutPin]) {
+        let actContX = snap(context.actContEnc, grid: context.grid)
+        let polyContX = snap(
+            context.cellWidth - context.polyContactRegion + context.polyContEnc,
+            grid: context.grid
+        )
+        let negM1Width = max(context.m1MinWidth, context.actContSize + 2 * context.actM1Enc)
+        let negM1Height = max(context.m1MinWidth, context.actContSize + 2 * context.actM1Enc)
+        let actContY = snap(context.actContEnc, grid: context.grid)
 
         let negM1 = LayoutRect(
             origin: LayoutPoint(
-                x: snap(actContX - actM1Enc, grid: grid),
-                y: snap(actContY - actM1Enc, grid: grid)
+                x: snap(actContX - context.actM1Enc, grid: context.grid),
+                y: snap(actContY - context.actM1Enc, grid: context.grid)
             ),
-            size: LayoutSize(width: snap(negM1Width, grid: grid), height: snap(negM1Height, grid: grid))
+            size: LayoutSize(
+                width: snap(negM1Width, grid: context.grid),
+                height: snap(negM1Height, grid: context.grid)
+            )
         )
-        shapes.append(LayoutShape(layer: m1ID, geometry: .rect(negM1)))
 
-        let posM1Width = max(m1Rules.minWidth, polyContSize + 2 * polyM1Enc)
-        let posM1Height = max(m1Rules.minWidth, polyContSize + 2 * polyM1Enc)
-        let polyContY = snap(polyContEnc, grid: grid)
+        let posM1Width = max(context.m1MinWidth, context.polyContSize + 2 * context.polyM1Enc)
+        let posM1Height = max(context.m1MinWidth, context.polyContSize + 2 * context.polyM1Enc)
+        let polyContY = snap(context.polyContEnc, grid: context.grid)
 
         let posM1 = LayoutRect(
             origin: LayoutPoint(
-                x: snap(polyContX - polyM1Enc, grid: grid),
-                y: snap(polyContY - polyM1Enc, grid: grid)
+                x: snap(polyContX - context.polyM1Enc, grid: context.grid),
+                y: snap(polyContY - context.polyM1Enc, grid: context.grid)
             ),
-            size: LayoutSize(width: snap(posM1Width, grid: grid), height: snap(posM1Height, grid: grid))
+            size: LayoutSize(
+                width: snap(posM1Width, grid: context.grid),
+                height: snap(posM1Height, grid: context.grid)
+            )
         )
-        shapes.append(LayoutShape(layer: m1ID, geometry: .rect(posM1)))
 
-        // 8. Pins
-        pins.append(LayoutPin(
-            name: "neg",
-            position: negM1.center,
-            size: negM1.size,
-            layer: m1ID,
-            role: .signal
-        ))
-        pins.append(LayoutPin(
-            name: "pos",
-            position: posM1.center,
-            size: posM1.size,
-            layer: m1ID,
-            role: .signal
-        ))
-
-        return LayoutCell(
-            name: "\(instanceName)_capacitor",
-            shapes: shapes,
-            labels: [
-                LayoutLabel(text: instanceName, position: activeRect.center, layer: m1ID)
-            ],
-            pins: pins
-        )
+        let shapes = [
+            LayoutShape(layer: context.m1ID, geometry: .rect(negM1)),
+            LayoutShape(layer: context.m1ID, geometry: .rect(posM1)),
+        ]
+        let pins = [
+            LayoutPin(
+                name: "neg",
+                position: negM1.center,
+                size: negM1.size,
+                layer: context.m1ID,
+                role: .signal
+            ),
+            LayoutPin(
+                name: "pos",
+                position: posM1.center,
+                size: posM1.size,
+                layer: context.m1ID,
+                role: .signal
+            ),
+        ]
+        return (shapes, pins)
     }
 
     private func snap(_ value: Double, grid: Double) -> Double {

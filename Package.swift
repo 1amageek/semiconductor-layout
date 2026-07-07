@@ -13,6 +13,8 @@ let package = Package(
         .library(name: "LayoutEditor", targets: ["LayoutEditor"]),
         .library(name: "LayoutAutoGen", targets: ["LayoutAutoGen"]),
         .library(name: "LayoutEngine", targets: ["LayoutEngine"]),
+        .library(name: "LayoutCommands", targets: ["LayoutCommands"]),
+        .executable(name: "layout-command", targets: ["LayoutCommandCLI"]),
     ],
     dependencies: [
         .package(path: "../swift-mask-data"),
@@ -45,6 +47,7 @@ let package = Package(
                 .product(name: "OASIS", package: "swift-mask-data"),
                 .product(name: "CIF", package: "swift-mask-data"),
                 .product(name: "DXF", package: "swift-mask-data"),
+                .product(name: "DEF", package: "swift-mask-data"),
                 .product(name: "FormatDetector", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
@@ -75,6 +78,14 @@ let package = Package(
             name: "LayoutEngine",
             dependencies: ["LayoutCore", "LayoutTech", "LayoutAutoGen"]
         ),
+        .target(
+            name: "LayoutCommands",
+            dependencies: ["LayoutCore", "LayoutIO", "LayoutTech", "LayoutVerify"]
+        ),
+        .executableTarget(
+            name: "LayoutCommandCLI",
+            dependencies: ["LayoutCommands"]
+        ),
         .testTarget(
             name: "LayoutIOTests",
             dependencies: [
@@ -84,6 +95,15 @@ let package = Package(
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
+            ]
+        ),
+        .testTarget(
+            name: "LayoutIntegrationTests",
+            dependencies: [
+                "LayoutIntegration",
+                "LayoutCore",
+                "LayoutIO",
+                "LayoutTech",
             ]
         ),
         .testTarget(
@@ -104,6 +124,19 @@ let package = Package(
                 "LayoutAutoGen",
                 "LayoutCore",
                 "LayoutTech",
+            ]
+        ),
+        .testTarget(
+            name: "LayoutCommandsTests",
+            dependencies: [
+                "LayoutCommands",
+                "LayoutCore",
+                "LayoutIO",
+                "LayoutTech",
+                "LayoutVerify",
+            ],
+            resources: [
+                .process("Fixtures"),
             ]
         ),
     ]

@@ -111,6 +111,40 @@ struct LiveConnectivitySessionTests {
         )
     }
 
+    @Test func explicitViaCutGeometryRejectsBoundingBoxOnlyContactLive() throws {
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let m2 = LayoutLayerID(name: "M2", purpose: "drawing")
+        let via1 = LayoutLayerID(name: "VIA1", purpose: "cut")
+        let net = UUID()
+        let bottom = LayoutShape(
+            layer: m1,
+            netID: net,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 0.6, y: 0.9),
+                size: LayoutSize(width: 0.3, height: 0.2)
+            ))
+        )
+        let topGap = LayoutShape(
+            layer: m2,
+            netID: net,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 0.95, y: 0.9),
+                size: LayoutSize(width: 0.1, height: 0.2)
+            ))
+        )
+        let via = LayoutVia(viaDefinitionID: "VIA1", position: LayoutPoint(x: 1, y: 1), netID: net)
+        let cell = LayoutCell(name: "TOP", shapes: [bottom, topGap], vias: [via])
+        let document = LayoutDocument(name: "explicit-via-live", cells: [cell], topCellID: cell.id)
+        let tech = Self.explicitViaTech(m1: m1, m2: m2, via1: via1)
+
+        let session = try LiveConnectivitySession(document: document, tech: tech)
+        let batch = try LayoutConnectivityExtractor().extract(document: document, tech: tech)
+
+        let open = try #require(session.currentAnalysis.opens.first { $0.netID == net })
+        #expect(open.islands.count == 2)
+        #expect(session.currentAnalysis == batch)
+    }
+
     @Test func bridgeShapeMergesOpenIslands() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let harness = try LiveConnectivityEquivalenceHarness(
@@ -208,9 +242,7 @@ struct LiveConnectivitySessionTests {
 
         // Drop the second child instance — not expressible as a delta.
         var structural = harness.document
-        guard let topIndex = structural.cells.firstIndex(where: { $0.id == structural.topCellID }) else {
-            preconditionFailure("fixture document declares a top cell")
-        }
+        let topIndex = try #require(structural.cells.firstIndex(where: { $0.id == structural.topCellID }))
         structural.cells[topIndex].instances.removeLast()
         try harness.rebuildAndVerify(
             document: structural,
@@ -265,6 +297,71 @@ struct LiveConnectivitySessionTests {
         )
         #expect(throws: LiveConnectivitySessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
             try session.apply(LayoutEditDelta(addedShapes: [colliding]))
+        }
+    }
+
+    @Test func failedRebuildDoesNotPoisonSubsequentDeltas() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        let harness = try LiveConnectivityEquivalenceHarness(
+            document: fixture.document,
+            tech: fixture.tech
+        )
+        let removable = try #require(harness.topShapes.dropFirst().first)
+        var invalid = harness.document
+        let topIndex = try #require(invalid.cells.firstIndex(where: { $0.id == invalid.topCellID }))
+        invalid.cells[topIndex].shapes = [
+            LayoutShape(
+                id: fixture.childShapeID,
+                layer: fixture.m1,
+                geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 1)))
+            )
+        ]
+
+        #expect(throws: LiveConnectivitySessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
+            try harness.session.rebuild(document: invalid)
+        }
+
+        try harness.applyAndVerify(
+            LayoutEditDelta(removedShapeIDs: [removable.id]),
+            context: "remove shape after failed rebuild"
+        )
+        var nudged = fixture.wireA
+        nudged.geometry = .rect(LayoutRect(
+            origin: LayoutPoint(x: 0, y: 0.02),
+            size: LayoutSize(width: 8, height: 0.4)
+        ))
+        try harness.applyAndVerify(
+            LayoutEditDelta(updatedShapes: [nudged]),
+            context: "update shape after failed rebuild"
+        )
+    }
+
+    @Test func duplicateTopShapeIDsAreRejectedAtInit() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        var duplicate = fixture.document
+        let topIndex = try #require(duplicate.cells.firstIndex(where: { $0.id == duplicate.topCellID }))
+        var second = fixture.wireA
+        second.geometry = .rect(LayoutRect(
+            origin: LayoutPoint(x: 10, y: 10),
+            size: LayoutSize(width: 1, height: 1)
+        ))
+        duplicate.cells[topIndex].shapes.append(second)
+
+        #expect(throws: LiveConnectivitySessionError.duplicateShapeID(fixture.wireA.id)) {
+            try LiveConnectivitySession(document: duplicate, tech: fixture.tech)
+        }
+    }
+
+    @Test func duplicateTopViaIDsAreRejectedAtInit() throws {
+        let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
+        var duplicate = fixture.document
+        let topIndex = try #require(duplicate.cells.firstIndex(where: { $0.id == duplicate.topCellID }))
+        var second = fixture.viaB
+        second.position = LayoutPoint(x: 10, y: 10)
+        duplicate.cells[topIndex].vias.append(second)
+
+        #expect(throws: LiveConnectivitySessionError.duplicateViaID(fixture.viaB.id)) {
+            try LiveConnectivitySession(document: duplicate, tech: fixture.tech)
         }
     }
 
@@ -371,5 +468,48 @@ struct LiveConnectivitySessionTests {
     ) -> UUID? {
         if Double.random(in: 0..<1, using: &rng) < 0.2 { return nil }
         return fixture.netPool.randomElement(using: &rng)
+    }
+
+    private static func explicitViaTech(
+        m1: LayoutLayerID,
+        m2: LayoutLayerID,
+        via1: LayoutLayerID
+    ) -> LayoutTechDatabase {
+        LayoutTechDatabase(
+            units: .defaultUnits,
+            layers: [m1, m2, via1].enumerated().map { index, id in
+                LayoutLayerDefinition(
+                    id: id,
+                    displayName: id.name,
+                    gdsLayer: index + 1,
+                    gdsDatatype: 0,
+                    color: LayoutColor(red: 0.3, green: 0.5, blue: 0.9)
+                )
+            },
+            vias: [
+                LayoutViaDefinition(
+                    id: "VIA1",
+                    cutLayer: via1,
+                    topLayer: m2,
+                    bottomLayer: m1,
+                    cutSize: LayoutSize(width: 0.2, height: 0.2),
+                    enclosure: LayoutViaEnclosure(top: 0.05, bottom: 0.05),
+                    cutSpacing: 0.25,
+                    layerGeometries: [
+                        LayoutViaLayerGeometry(layer: via1, rects: [
+                            LayoutRect(
+                                origin: LayoutPoint(x: -0.35, y: -0.1),
+                                size: LayoutSize(width: 0.2, height: 0.2)
+                            ),
+                            LayoutRect(
+                                origin: LayoutPoint(x: 0.15, y: -0.1),
+                                size: LayoutSize(width: 0.2, height: 0.2)
+                            ),
+                        ])
+                    ]
+                )
+            ],
+            layerRules: []
+        )
     }
 }

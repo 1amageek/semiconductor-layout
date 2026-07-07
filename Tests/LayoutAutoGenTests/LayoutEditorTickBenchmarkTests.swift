@@ -19,6 +19,7 @@ struct LayoutEditorTickBenchmarkTests {
     private static let via1 = LayoutLayerID(name: "VIA1", purpose: "drawing")
 
     @Test func editorTickStaysInteractiveAtScale() throws {
+        try BenchmarkExecutionGate.run {
         let rows = 500
         let cols = 500
         #if DEBUG
@@ -72,9 +73,13 @@ struct LayoutEditorTickBenchmarkTests {
         print("[bench] (\(configuration), \(shapeCount)s editor) open: \(String(format: "%.0f", Self.milliseconds(openDuration)))ms")
         print("[bench] (\(configuration)) integrated tick: median \(String(format: "%.2f", median))ms, max \(String(format: "%.2f", worst))ms (\(verdict(median, 10)) 10ms tick target)")
 
-        // Generous caps over observed numbers; the honest verdict is in
-        // the printed report.
-        #expect(median < 500, "integrated editor tick regressed at scale")
+        #if DEBUG
+        let tickMedianCap = 75.0
+        #else
+        let tickMedianCap = 10.0
+        #endif
+        #expect(median < tickMedianCap, "integrated editor tick regressed at scale")
+        }
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {

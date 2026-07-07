@@ -9,3 +9,4 @@ DerivedData/
 .swiftpm/xcode/xcuserdata/
 .netrc
 *.xcuserstate
+build/

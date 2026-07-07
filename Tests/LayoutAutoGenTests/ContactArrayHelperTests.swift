@@ -54,6 +54,32 @@ struct ContactArrayHelperTests {
         })
     }
 
+    @Test func generatedMultiFingerMOSFETsPassSampleProcessDRC() throws {
+        let tech = LayoutTechDatabase.sampleProcess()
+        let generator = MOSFETCellGenerator()
+        let cells = [
+            try generator.generateCell(
+                deviceKindID: "nmos",
+                instanceName: "MN2",
+                parameters: ["w": 2.0, "l": 0.18, "nf": 2.0],
+                tech: tech
+            ),
+            try generator.generateCell(
+                deviceKindID: "pmos",
+                instanceName: "MP4",
+                parameters: ["w": 3.0, "l": 0.25, "nf": 4.0],
+                tech: tech
+            )
+        ]
+
+        for cell in cells {
+            let document = LayoutDocument(name: cell.name, cells: [cell], topCellID: cell.id)
+            let result = LayoutDRCService().run(document: document, tech: tech)
+
+            #expect(result.violations.isEmpty, "\(cell.name) should be DRC clean, got \(result.violations)")
+        }
+    }
+
     private enum Axis {
         case x
         case y

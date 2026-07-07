@@ -7,8 +7,14 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
     public var layers: [LayoutLayerDefinition]
     public var vias: [LayoutViaDefinition]
     public var layerRules: [LayoutLayerRuleSet]
+    public var derivedLayerRules: [LayoutDerivedLayerRule]
+    public var spacingRules: [LayoutSpacingRule]
     public var antennaRules: [LayoutAntennaRule]
     public var enclosureRules: [LayoutEnclosureRule]
+    public var extensionRules: [LayoutExtensionRule]
+    public var minimumCutRules: [LayoutMinimumCutRule]
+    public var exactOverlapRules: [LayoutExactOverlapRule]
+    public var forbiddenLayerRules: [LayoutForbiddenLayerRule]
     public var contacts: [LayoutContactDefinition]
 
     public init(
@@ -17,8 +23,14 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
         layers: [LayoutLayerDefinition],
         vias: [LayoutViaDefinition],
         layerRules: [LayoutLayerRuleSet],
+        derivedLayerRules: [LayoutDerivedLayerRule] = [],
+        spacingRules: [LayoutSpacingRule] = [],
         antennaRules: [LayoutAntennaRule] = [],
         enclosureRules: [LayoutEnclosureRule] = [],
+        extensionRules: [LayoutExtensionRule] = [],
+        minimumCutRules: [LayoutMinimumCutRule] = [],
+        exactOverlapRules: [LayoutExactOverlapRule] = [],
+        forbiddenLayerRules: [LayoutForbiddenLayerRule] = [],
         contacts: [LayoutContactDefinition] = []
     ) {
         self.units = units
@@ -26,9 +38,56 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
         self.layers = layers
         self.vias = vias
         self.layerRules = layerRules
+        self.derivedLayerRules = derivedLayerRules
+        self.spacingRules = spacingRules
         self.antennaRules = antennaRules
         self.enclosureRules = enclosureRules
+        self.extensionRules = extensionRules
+        self.minimumCutRules = minimumCutRules
+        self.exactOverlapRules = exactOverlapRules
+        self.forbiddenLayerRules = forbiddenLayerRules
         self.contacts = contacts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case units
+        case grid
+        case layers
+        case vias
+        case layerRules
+        case derivedLayerRules
+        case spacingRules
+        case antennaRules
+        case enclosureRules
+        case extensionRules
+        case minimumCutRules
+        case exactOverlapRules
+        case forbiddenLayerRules
+        case contacts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.units = try container.decodeIfPresent(LayoutUnits.self, forKey: .units) ?? .defaultUnits
+        self.grid = try container.decode(Double.self, forKey: .grid)
+        self.layers = try container.decode([LayoutLayerDefinition].self, forKey: .layers)
+        self.vias = try container.decode([LayoutViaDefinition].self, forKey: .vias)
+        self.layerRules = try container.decode([LayoutLayerRuleSet].self, forKey: .layerRules)
+        self.derivedLayerRules = try container.decodeIfPresent(
+            [LayoutDerivedLayerRule].self,
+            forKey: .derivedLayerRules
+        ) ?? []
+        self.spacingRules = try container.decodeIfPresent([LayoutSpacingRule].self, forKey: .spacingRules) ?? []
+        self.antennaRules = try container.decodeIfPresent([LayoutAntennaRule].self, forKey: .antennaRules) ?? []
+        self.enclosureRules = try container.decodeIfPresent([LayoutEnclosureRule].self, forKey: .enclosureRules) ?? []
+        self.extensionRules = try container.decodeIfPresent([LayoutExtensionRule].self, forKey: .extensionRules) ?? []
+        self.minimumCutRules = try container.decodeIfPresent([LayoutMinimumCutRule].self, forKey: .minimumCutRules) ?? []
+        self.exactOverlapRules = try container.decodeIfPresent([LayoutExactOverlapRule].self, forKey: .exactOverlapRules) ?? []
+        self.forbiddenLayerRules = try container.decodeIfPresent(
+            [LayoutForbiddenLayerRule].self,
+            forKey: .forbiddenLayerRules
+        ) ?? []
+        self.contacts = try container.decodeIfPresent([LayoutContactDefinition].self, forKey: .contacts) ?? []
     }
 
     public func layerDefinition(for id: LayoutLayerID) -> LayoutLayerDefinition? {
@@ -51,8 +110,32 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
         contacts.first { $0.id == id }
     }
 
+    public func minimumCutRule(for id: String) -> LayoutMinimumCutRule? {
+        minimumCutRules.first { $0.id == id }
+    }
+
+    public func exactOverlapRule(for id: String) -> LayoutExactOverlapRule? {
+        exactOverlapRules.first { $0.id == id }
+    }
+
+    public func forbiddenLayerRule(for id: String) -> LayoutForbiddenLayerRule? {
+        forbiddenLayerRules.first { $0.id == id }
+    }
+
     public func enclosureRule(outer: LayoutLayerID, inner: LayoutLayerID) -> LayoutEnclosureRule? {
         enclosureRules.first { $0.outerLayer == outer && $0.innerLayer == inner }
+    }
+
+    public func extensionRule(
+        extending: LayoutLayerID,
+        enclosed: LayoutLayerID,
+        direction: LayoutExtensionRule.Direction
+    ) -> LayoutExtensionRule? {
+        extensionRules.first {
+            $0.extendingLayer == extending
+                && $0.enclosedLayer == enclosed
+                && $0.direction == direction
+        }
     }
 
     // MARK: - Standard (M1/M2/VIA1 only)
@@ -100,6 +183,14 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             minDensity: 0.0,
             maxDensity: 1.0
         )
+        let rulesVia1 = LayoutLayerRuleSet(
+            layerID: via1.id,
+            minWidth: 0.05,
+            minSpacing: 0.05,
+            minArea: 0.0,
+            minDensity: 0.0,
+            maxDensity: 1.0
+        )
         let viaDef = LayoutViaDefinition(
             id: "VIA1",
             cutLayer: via1.id,
@@ -120,7 +211,7 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             grid: 0.01,
             layers: [m1, m2, via1],
             vias: [viaDef],
-            layerRules: [rulesM1, rulesM2],
+            layerRules: [rulesM1, rulesM2, rulesVia1],
             antennaRules: antennaRules
         )
     }
@@ -230,6 +321,10 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
             LayoutLayerRuleSet(
                 layerID: m2ID, minWidth: 0.28, minSpacing: 0.28,
                 minArea: 0.01, minDensity: 0.0, maxDensity: 1.0
+            ),
+            LayoutLayerRuleSet(
+                layerID: via1ID, minWidth: 0.22, minSpacing: 0.25,
+                minArea: 0.0, minDensity: 0.0, maxDensity: 1.0
             ),
             LayoutLayerRuleSet(
                 layerID: resiID, minWidth: 0.44, minSpacing: 0.44,

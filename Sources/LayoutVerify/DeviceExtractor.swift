@@ -67,6 +67,7 @@ public struct DeviceExtractor: Sendable {
         )
 
         var issues: [DeviceExtractionIssue] = []
+        appendTerminalConflictIssues(conflicts, to: &issues)
 
         let actives = recognizeActives(shapes: shapes, issues: &issues)
         let channelsByActive = discoverChannels(
@@ -135,13 +136,33 @@ public struct DeviceExtractor: Sendable {
                 pins.enumerated().map { ($0.element.id, $0.offset) },
                 uniquingKeysWith: { first, _ in first }
             ),
+            labelsByIsland: labelsByIsland,
+            declaredNetsByIsland: connectivity.declaredNetsByIsland,
+            netNameByID: netNameByID,
             islandNames: islandNames,
+            connectivity: connectivity,
             issues: &issues
         )
         return DeviceExtractionResult(
             netlist: ComparisonNetlist(devices: devices, ports: ports),
             issues: issues
         )
+    }
+
+    private func appendTerminalConflictIssues(
+        _ conflicts: [LayoutDRCService.TerminalConnectivityConflict],
+        to issues: inout [DeviceExtractionIssue]
+    ) {
+        for conflict in conflicts {
+            issues.append(DeviceExtractionIssue(
+                kind: .shortedNet,
+                message: "Instance terminal mapping shorts \(conflict.netIDs.count) declared nets.",
+                region: conflict.region,
+                shapeIDs: conflict.shapeIDs,
+                policyApplicability: .layoutRepairRequired,
+                suggestedActions: ["split-shorted-conductors", "inspect-net-annotations"]
+            ))
+        }
     }
 
     // MARK: - Geometry recognition
@@ -221,7 +242,10 @@ public struct DeviceExtractor: Sendable {
                     kind: .unrecognizedChannel,
                     message: "ACTIVE geometry is not an axis-aligned rectangle.",
                     region: LayoutGeometryAnalysis.boundingBox(for: shape.geometry),
-                    shapeIDs: [shape.id]
+                    shapeIDs: [shape.id],
+                    affectedLayers: [activeLayer],
+                    policyApplicability: .layoutRepairRequired,
+                    suggestedActions: ["replace-active-with-rectangular-geometry", "inspect-layer-mapping"]
                 ))
                 continue
             }
@@ -256,7 +280,10 @@ public struct DeviceExtractor: Sendable {
                         kind: .unrecognizedChannel,
                         message: "POLY covers the whole ACTIVE; no source/drain regions remain.",
                         region: channel,
-                        shapeIDs: [shapes[active.flatIndex].id, shape.id]
+                        shapeIDs: [shapes[active.flatIndex].id, shape.id],
+                        affectedLayers: [activeLayer, polyLayer],
+                        policyApplicability: .layoutRepairRequired,
+                        suggestedActions: ["repair-channel-geometry", "inspect-active-poly-crossing"]
                     ))
                     invalid = true
                 case (false, false):
@@ -264,7 +291,10 @@ public struct DeviceExtractor: Sendable {
                         kind: .unrecognizedChannel,
                         message: "POLY only partially crosses ACTIVE; the channel is not a full crossing.",
                         region: channel,
-                        shapeIDs: [shapes[active.flatIndex].id, shape.id]
+                        shapeIDs: [shapes[active.flatIndex].id, shape.id],
+                        affectedLayers: [activeLayer, polyLayer],
+                        policyApplicability: .layoutRepairRequired,
+                        suggestedActions: ["repair-channel-geometry", "inspect-active-poly-crossing"]
                     ))
                     invalid = true
                 case (true, false):
@@ -295,7 +325,10 @@ public struct DeviceExtractor: Sendable {
                     kind: .unrecognizedChannel,
                     message: "ACTIVE carries channels of mixed orientation.",
                     region: actives[activeOrdinal].rect,
-                    shapeIDs: [shapes[active.flatIndex].id]
+                    shapeIDs: [shapes[active.flatIndex].id] + channels.map { shapes[$0.polyFlatIndex].id },
+                    affectedLayers: [activeLayer, polyLayer],
+                    policyApplicability: .layoutRepairRequired,
+                    suggestedActions: ["repair-channel-geometry", "inspect-active-poly-crossing"]
                 ))
                 result[activeOrdinal] = Optional<[Channel]>.none
                 continue
@@ -317,7 +350,10 @@ public struct DeviceExtractor: Sendable {
                     kind: .unrecognizedChannel,
                     message: "Channels overlap on one ACTIVE.",
                     region: actives[activeOrdinal].rect,
-                    shapeIDs: [shapes[active.flatIndex].id]
+                    shapeIDs: [shapes[active.flatIndex].id] + channels.map { shapes[$0.polyFlatIndex].id },
+                    affectedLayers: [activeLayer, polyLayer],
+                    policyApplicability: .layoutRepairRequired,
+                    suggestedActions: ["repair-channel-geometry", "inspect-active-poly-crossing"]
                 ))
                 result[activeOrdinal] = Optional<[Channel]>.none
                 continue
@@ -385,6 +421,8 @@ public struct DeviceExtractor: Sendable {
                 geometry: geometry,
                 layer: shape.layer,
                 viaDefinition: nil,
+                viaCutRects: [],
+                viaContactRectsByLayer: [:],
                 boundingBox: LayoutGeometryAnalysis.boundingBox(for: geometry)
             )
             return key
@@ -423,6 +461,8 @@ public struct DeviceExtractor: Sendable {
                             enclosure: definition.enclosure,
                             cutSpacing: definition.cutSpacing
                         ),
+                        viaCutRects: [],
+                        viaContactRectsByLayer: [:],
                         boundingBox: LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
                     )
                 }
@@ -473,16 +513,20 @@ public struct DeviceExtractor: Sendable {
         for via in vias {
             let key = ConnectivityElementKey.via(.child(viaOrdinal))
             viaOrdinal += 1
-            let cut = service.viaCutRect(for: via, tech: tech)
+            let cuts = service.viaCutRects(for: via, tech: tech)
+            let conductors = service.viaConductorRects(for: via, tech: tech)
+            let bounds = service.union(rects: conductors) ?? service.viaCutBoundingBox(for: via, tech: tech)
             elements[key] = ConnectivityElement(
                 key: key,
                 elementID: via.id,
                 isVia: true,
                 netID: via.netID,
-                geometry: .rect(cut),
+                geometry: .rect(bounds),
                 layer: nil,
                 viaDefinition: tech.viaDefinition(for: via.viaDefinitionID),
-                boundingBox: cut
+                viaCutRects: cuts,
+                viaContactRectsByLayer: service.viaContactRectsByLayer(for: via, tech: tech),
+                boundingBox: bounds
             )
         }
 
@@ -624,7 +668,11 @@ public struct DeviceExtractor: Sendable {
                 issues.append(DeviceExtractionIssue(
                     kind: .shortedNet,
                     message: "One connected island carries \(declared.count) declared nets.",
-                    region: islandBounds(island, connectivity: connectivity) ?? .zero
+                    region: islandBounds(island, connectivity: connectivity) ?? .zero,
+                    shapeIDs: islandShapeIDs(island, connectivity: connectivity),
+                    affectedLayers: islandLayers(island, connectivity: connectivity),
+                    policyApplicability: .layoutRepairRequired,
+                    suggestedActions: ["split-shorted-conductors", "inspect-net-annotations"]
                 ))
             }
             let base: ComparisonNetID
@@ -656,7 +704,12 @@ public struct DeviceExtractor: Sendable {
                 issues.append(DeviceExtractionIssue(
                     kind: .openNet,
                     message: "Net '\(base.rawValue)' spans \(priorUses + 1) disconnected islands.",
-                    region: islandBounds(island, connectivity: connectivity) ?? .zero
+                    region: islandBounds(island, connectivity: connectivity) ?? .zero,
+                    shapeIDs: islandShapeIDs(island, connectivity: connectivity),
+                    affectedNet: base,
+                    affectedLayers: islandLayers(island, connectivity: connectivity),
+                    policyApplicability: .layoutRepairRequired,
+                    suggestedActions: ["connect-open-net", "inspect-net-annotations"]
                 ))
                 usedNames[base] = priorUses + 1
                 names.append(ComparisonNetID("\(base.rawValue):split:\(priorUses)"))
@@ -675,6 +728,31 @@ public struct DeviceExtractor: Sendable {
             .reduce(nil as LayoutRect?) { partial, box in
                 partial.map { $0.union(box) } ?? box
             }
+    }
+
+    private func islandShapeIDs(_ island: Int, connectivity: Connectivity) -> [UUID] {
+        connectivity.elements.values
+            .filter { connectivity.islandIndexByKey[$0.key] == island }
+            .map(\.elementID)
+            .sorted { $0.uuidString < $1.uuidString }
+    }
+
+    private func islandLayers(_ island: Int, connectivity: Connectivity) -> [LayoutLayerID] {
+        var layers = Set<LayoutLayerID>()
+        for element in connectivity.elements.values where connectivity.islandIndexByKey[element.key] == island {
+            if let layer = element.layer {
+                layers.insert(layer)
+            }
+            if let viaDefinition = element.viaDefinition {
+                layers.insert(viaDefinition.cutLayer)
+                layers.insert(viaDefinition.topLayer)
+                layers.insert(viaDefinition.bottomLayer)
+            }
+        }
+        return layers.sorted {
+            if $0.name != $1.name { return $0.name < $1.name }
+            return $0.purpose < $1.purpose
+        }
     }
 
     // MARK: - Device assembly
@@ -742,25 +820,38 @@ public struct DeviceExtractor: Sendable {
                         kind: .ambiguousDeviceType,
                         message: "Channel overlaps neither or both MOS implants.",
                         region: channel.rect,
-                        shapeIDs: [shapes[active.flatIndex].id, shapes[channel.polyFlatIndex].id]
+                        shapeIDs: [shapes[active.flatIndex].id, shapes[channel.polyFlatIndex].id],
+                        affectedLayers: [activeLayer, nimpLayer, pimpLayer, polyLayer],
+                        policyApplicability: .layerMappingReviewRequired,
+                        suggestedActions: [
+                            "fix-implant-coverage",
+                            "inspect-layer-mapping",
+                            "review-device-extraction-profile"
+                        ]
                     ))
                     continue
                 }
 
                 func terminalNet(
                     slabOrdinal: Int,
-                    role: String
+                    role: ComparisonTerminalRole
                 ) -> ComparisonNetID {
                     if slabOrdinal < slabKeys.count, let name = islandName(of: slabKeys[slabOrdinal]) {
                         return name
                     }
+                    let side = role == .source ? "low" : "high"
                     issues.append(DeviceExtractionIssue(
                         kind: .missingTerminal,
-                        message: "Channel has no \(role) diffusion on its \(role == "source" ? "low" : "high") side.",
+                        message: "Channel has no \(role.rawValue) diffusion on its \(side) side.",
                         region: channel.rect,
-                        shapeIDs: [shapes[active.flatIndex].id]
+                        shapeIDs: [shapes[active.flatIndex].id],
+                        affectedDeviceKind: kind,
+                        affectedTerminal: role,
+                        affectedLayers: [activeLayer],
+                        policyApplicability: .layoutRepairRequired,
+                        suggestedActions: ["repair-terminal-diffusion", "inspect-contact-coverage"]
                     ))
-                    return ComparisonNetID("unconnected:\(active.flatIndex):\(channelOrdinal):\(role)")
+                    return ComparisonNetID("unconnected:\(active.flatIndex):\(channelOrdinal):\(role.rawValue)")
                 }
 
                 guard let gate = islandName(of: connectivity.polyKeyByFlatIndex[channel.polyFlatIndex]) else {
@@ -768,14 +859,20 @@ public struct DeviceExtractor: Sendable {
                         kind: .missingTerminal,
                         message: "Gate poly is missing from the connectivity table.",
                         region: channel.rect,
-                        shapeIDs: [shapes[channel.polyFlatIndex].id]
+                        shapeIDs: [shapes[channel.polyFlatIndex].id],
+                        affectedDeviceKind: kind,
+                        affectedTerminal: .gate,
+                        affectedLayers: [polyLayer],
+                        policyApplicability: .layoutRepairRequired,
+                        suggestedActions: ["repair-gate-poly-connectivity", "inspect-contact-coverage"]
                     ))
                     continue
                 }
-                let source = terminalNet(slabOrdinal: channelOrdinal, role: "source")
-                let drain = terminalNet(slabOrdinal: channelOrdinal + 1, role: "drain")
+                let source = terminalNet(slabOrdinal: channelOrdinal, role: .source)
+                let drain = terminalNet(slabOrdinal: channelOrdinal + 1, role: .drain)
                 let bulk = bulkTerminalNet(
                     activeRect: active.rect,
+                    deviceKind: kind,
                     pins: pins,
                     pinIslandByIndex: pinIslandByIndex,
                     islandNames: islandNames,
@@ -815,6 +912,7 @@ public struct DeviceExtractor: Sendable {
     /// tap's island answers instead — that diffusion IS the bulk tie.
     private func bulkTerminalNet(
         activeRect: LayoutRect,
+        deviceKind: ComparisonDeviceKind,
         pins: [LayoutPin],
         pinIslandByIndex: [Int: Int],
         islandNames: [ComparisonNetID],
@@ -838,7 +936,12 @@ public struct DeviceExtractor: Sendable {
             issues.append(DeviceExtractionIssue(
                 kind: .missingTerminal,
                 message: "No bulk pin or tap was available for device terminal extraction.",
-                region: activeRect
+                region: activeRect,
+                affectedDeviceKind: deviceKind,
+                affectedTerminal: .bulk,
+                affectedLayers: [activeLayer, nimpLayer, pimpLayer],
+                policyApplicability: .layoutRepairRequired,
+                suggestedActions: ["add-bulk-tap", "inspect-bulk-pin-or-tap"]
             ))
             return ComparisonNetID("bulk:default")
         }
@@ -881,8 +984,7 @@ public struct DeviceExtractor: Sendable {
             if groups[key] == nil {
                 order.append(key)
                 groups[key] = device
-            } else {
-                var grouped = groups[key]!
+            } else if var grouped = groups[key] {
                 grouped.id += "+\(device.id)"
                 grouped.parameters.multiplier += device.parameters.multiplier
                 grouped.region = grouped.region.union(device.region)
@@ -906,10 +1008,31 @@ public struct DeviceExtractor: Sendable {
         from pins: [LayoutPin],
         pinIslandByIndex: [Int: Int],
         pinIndexByID: [UUID: Int],
+        labelsByIsland: [Int: [LayoutLabel]],
+        declaredNetsByIsland: [Int: [UUID]],
+        netNameByID: [UUID: String],
         islandNames: [ComparisonNetID],
+        connectivity: Connectivity,
         issues: inout [DeviceExtractionIssue]
     ) -> [String: ComparisonNetID] {
         var ports: [String: ComparisonNetID] = [:]
+        func insertPort(name: String, net: ComparisonNetID, region: LayoutRect) {
+            if let existing = ports[name] {
+                if existing != net {
+                    issues.append(DeviceExtractionIssue(
+                        kind: .conflictingPort,
+                        message: "Port '\(name)' resolves to both \(existing.rawValue) and \(net.rawValue).",
+                        region: region,
+                        affectedNet: net,
+                        policyApplicability: .netAnnotationRequired,
+                        suggestedActions: ["deduplicate-port-labels", "inspect-net-annotations"]
+                    ))
+                }
+            } else {
+                ports[name] = net
+            }
+        }
+
         for pin in pins {
             let net: ComparisonNetID
             if let pinIndex = pinIndexByID[pin.id], let island = pinIslandByIndex[pinIndex] {
@@ -919,16 +1042,19 @@ public struct DeviceExtractor: Sendable {
             } else {
                 net = ComparisonNetID("pin:\(pin.name)")
             }
-            if let existing = ports[pin.name] {
-                if existing != net {
-                    issues.append(DeviceExtractionIssue(
-                        kind: .conflictingPort,
-                        message: "Port '\(pin.name)' resolves to both \(existing.rawValue) and \(net.rawValue).",
-                        region: pinRect(pin)
-                    ))
+            insertPort(name: pin.name, net: net, region: pinRect(pin))
+        }
+
+        for island in 0..<connectivity.islandCount {
+            let net = islandNames[island]
+            let region = islandBounds(island, connectivity: connectivity) ?? .zero
+            for label in labelsByIsland[island] ?? [] {
+                insertPort(name: label.text, net: net, region: region)
+            }
+            for netID in declaredNetsByIsland[island] ?? [] {
+                if let name = netNameByID[netID] {
+                    insertPort(name: name, net: net, region: region)
                 }
-            } else {
-                ports[pin.name] = net
             }
         }
         return ports

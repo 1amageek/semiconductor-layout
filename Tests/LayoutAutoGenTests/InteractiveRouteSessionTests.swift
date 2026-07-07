@@ -55,6 +55,8 @@ struct InteractiveRouteSessionTests {
 
         #expect(!preview.isLegal)
         #expect(preview.legalEnd.x < 1.0)
+        #expect(isOnGrid(preview.legalEnd.x, grid: makeTech().grid))
+        #expect(isOnGrid(preview.legalEnd.y, grid: makeTech().grid))
         #expect(!preview.violations.isEmpty)
 
         let delta = session.commit()
@@ -78,6 +80,55 @@ struct InteractiveRouteSessionTests {
         let delta = session.commit()
 
         #expect(delta.isEmpty)
+    }
+
+    @Test func proposedPathFailureRollsBackToLastLegalPreviewWithDiagnostics() throws {
+        let routeNet = UUID()
+        let blockerNet = UUID()
+        let blocker = LayoutShape(
+            layer: m1,
+            netID: blockerNet,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 1.0, y: -0.5),
+                size: LayoutSize(width: 0.2, height: 1.0)
+            ))
+        )
+        let cell = LayoutCell(name: "TOP", shapes: [blocker])
+        var document = LayoutDocument(name: "route-proposal-rollback", cells: [cell], topCellID: cell.id)
+        var session = try InteractiveRouteSession(
+            document: document,
+            cellID: cell.id,
+            tech: makeTech(),
+            start: RouteAnchor(point: LayoutPoint(x: 0, y: 0), layer: m1, netID: routeNet)
+        )
+
+        let legalPreview = try session.tick(to: LayoutPoint(x: 0.5, y: 0))
+        #expect(legalPreview.isLegal)
+        #expect(legalPreview.delta.addedShapes.count == 1)
+
+        let blockedPreview = try session.proposePath([LayoutPoint(x: 2.0, y: 0)])
+
+        #expect(!blockedPreview.isLegal)
+        #expect(blockedPreview.legalEnd == legalPreview.legalEnd)
+        #expect(blockedPreview.delta.addedShapes == legalPreview.delta.addedShapes)
+
+        guard case .blockedByViolations(let violations) = blockedPreview.stopReason else {
+            Issue.record("Expected blocking diagnostics for an illegal proposed path")
+            return
+        }
+        let short = try #require(violations.first { $0.kind == .overlapShort })
+        #expect(short.shapeIDs.contains(blocker.id))
+        #expect(Set(short.netIDs) == Set([routeNet, blockerNet]))
+        #expect(short.suggestedFix != nil)
+
+        let delta = session.commit()
+        #expect(delta.addedShapes == legalPreview.delta.addedShapes)
+        #expect(delta.updatedShapes.isEmpty)
+        #expect(delta.addedVias.isEmpty)
+        apply(delta, to: &document, cellID: cell.id)
+
+        let drc = LayoutDRCService().run(document: document, tech: makeTech())
+        #expect(drc.violations.isEmpty, "only the last legal preview may be committed")
     }
 
     @MainActor
@@ -382,6 +433,7 @@ struct InteractiveRouteSessionTests {
         let via1 = LayoutLayerID(name: "VIA1", purpose: "drawing")
         return LayoutTechDatabase(
             units: .defaultUnits,
+            grid: 0.01,
             layers: [m1, m2, via1].map { id in
                 LayoutLayerDefinition(
                     id: id,
@@ -415,6 +467,7 @@ struct InteractiveRouteSessionTests {
     private func makeTech() -> LayoutTechDatabase {
         LayoutTechDatabase(
             units: .defaultUnits,
+            grid: 0.01,
             layers: [
                 LayoutLayerDefinition(
                     id: m1,
@@ -455,5 +508,11 @@ struct InteractiveRouteSessionTests {
         }
         cell.vias.append(contentsOf: delta.addedVias)
         document.updateCell(cell)
+    }
+
+    private func isOnGrid(_ value: Double, grid: Double) -> Bool {
+        guard grid > 0 else { return true }
+        let snapped = (value / grid).rounded() * grid
+        return abs(value - snapped) < 1e-9
     }
 }

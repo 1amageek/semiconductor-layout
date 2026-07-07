@@ -3,11 +3,16 @@ import LayoutCore
 
 public enum SPICESubcktReaderError: Error, Equatable, Sendable {
     case missingSubcircuit(String)
+    case duplicateSubcircuit(String)
+    case duplicatePort(subcircuit: String, port: String)
+    case mismatchedSubcircuitEnd(expected: String, observed: String)
     case unterminatedSubcircuit(String)
     case malformedCard(line: Int, text: String)
     case unknownModel(String)
     case unresolvedSubcircuit(String)
     case recursionTooDeep(String)
+    case missingDeviceParameter(instance: String, parameter: String)
+    case invalidDeviceParameter(instance: String, parameter: String, value: String)
     case noSubcircuitsFound
 }
 
@@ -56,18 +61,16 @@ public struct SPICESubcktReader: Sendable {
         }
 
         var devices: [ComparisonNetlist.Device] = []
+        let targetPortMap = portMap(for: target.ports)
         try expand(
             block: target,
             blocks: blocks,
-            netMap: Dictionary(uniqueKeysWithValues: target.ports.map { ($0, netID(for: $0)) }),
+            netMap: targetPortMap,
             instancePath: "",
             depth: 0,
             into: &devices
         )
-        let ports = Dictionary(
-            uniqueKeysWithValues: target.ports.map { ($0, netID(for: $0)) }
-        )
-        return ComparisonNetlist(devices: devices, ports: ports)
+        return ComparisonNetlist(devices: devices, ports: targetPortMap)
     }
 
     // MARK: - Parsing
@@ -78,52 +81,16 @@ public struct SPICESubcktReader: Sendable {
         var cards: [(line: Int, fields: [String])]
     }
 
-    private func parseBlocks(_ text: String) throws -> [String: Block] {
-        // Fold + continuations, drop comments and blanks.
-        var logical: [(line: Int, text: String)] = []
-        for (index, rawLine) in text.components(separatedBy: .newlines).enumerated() {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty, !line.hasPrefix("*") else { continue }
-            if line.hasPrefix("+"), !logical.isEmpty {
-                logical[logical.count - 1].text += " " + line.dropFirst().trimmingCharacters(in: .whitespaces)
-            } else {
-                logical.append((index + 1, line))
-            }
-        }
+    private struct LogicalLine {
+        var line: Int
+        var text: String
+    }
 
+    private func parseBlocks(_ text: String) throws -> [String: Block] {
         var blocks: [String: Block] = [:]
         var current: Block? = nil
-        for (lineNumber, line) in logical {
-            let fields = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-            let keyword = fields[0].lowercased()
-            if keyword == ".subckt" {
-                guard fields.count >= 2 else {
-                    throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
-                }
-                current = Block(
-                    name: fields[1].lowercased(),
-                    ports: Array(fields.dropFirst(2)).map { $0.lowercased() },
-                    cards: []
-                )
-                continue
-            }
-            if keyword == ".ends" {
-                guard let block = current else {
-                    throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
-                }
-                blocks[block.name] = block
-                current = nil
-                continue
-            }
-            if keyword.hasPrefix(".") {
-                // Control cards outside the supported subset.
-                if current != nil {
-                    throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
-                }
-                continue
-            }
-            guard current != nil else { continue }
-            current?.cards.append((lineNumber, fields))
+        for logicalLine in try logicalLines(from: text) {
+            try parseBlockLine(logicalLine, blocks: &blocks, current: &current)
         }
         if let unterminated = current {
             throw SPICESubcktReaderError.unterminatedSubcircuit(unterminated.name)
@@ -131,7 +98,160 @@ public struct SPICESubcktReader: Sendable {
         return blocks
     }
 
+    private func parseBlockLine(
+        _ logicalLine: LogicalLine,
+        blocks: inout [String: Block],
+        current: inout Block?
+    ) throws {
+        let lineNumber = logicalLine.line
+        let line = logicalLine.text
+        let fields = fields(from: line)
+        let keyword = fields[0].lowercased()
+        if keyword == ".subckt" {
+            try startBlock(fields: fields, lineNumber: lineNumber, line: line, blocks: blocks, current: &current)
+        } else if keyword == ".ends" {
+            try finishBlock(fields: fields, lineNumber: lineNumber, line: line, blocks: &blocks, current: &current)
+        } else if keyword.hasPrefix(".") {
+            try acceptControlLineOutsideSubckt(lineNumber: lineNumber, line: line, current: current)
+        } else {
+            try appendDeviceCard(fields: fields, lineNumber: lineNumber, line: line, current: &current)
+        }
+    }
+
+    private func startBlock(
+        fields: [String],
+        lineNumber: Int,
+        line: String,
+        blocks: [String: Block],
+        current: inout Block?
+    ) throws {
+        guard current == nil else {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
+        }
+        let block = try makeBlock(fields: fields, lineNumber: lineNumber, line: line)
+        guard blocks[block.name] == nil else {
+            throw SPICESubcktReaderError.duplicateSubcircuit(block.name)
+        }
+        current = block
+    }
+
+    private func finishBlock(
+        fields: [String],
+        lineNumber: Int,
+        line: String,
+        blocks: inout [String: Block],
+        current: inout Block?
+    ) throws {
+        guard let block = current else {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
+        }
+        try validateEndCard(fields: fields, lineNumber: lineNumber, line: line, block: block)
+        guard blocks[block.name] == nil else {
+            throw SPICESubcktReaderError.duplicateSubcircuit(block.name)
+        }
+        blocks[block.name] = block
+        current = nil
+    }
+
+    private func validateEndCard(
+        fields: [String],
+        lineNumber: Int,
+        line: String,
+        block: Block
+    ) throws {
+        guard fields.count <= 2 else {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
+        }
+        guard fields.count == 2 else { return }
+        let observed = fields[1].lowercased()
+        guard observed == block.name else {
+            throw SPICESubcktReaderError.mismatchedSubcircuitEnd(
+                expected: block.name,
+                observed: observed
+            )
+        }
+    }
+
+    private func acceptControlLineOutsideSubckt(
+        lineNumber: Int,
+        line: String,
+        current: Block?
+    ) throws {
+        if current != nil {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
+        }
+    }
+
+    private func appendDeviceCard(
+        fields: [String],
+        lineNumber: Int,
+        line: String,
+        current: inout Block?
+    ) throws {
+        guard var block = current else {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
+        }
+        block.cards.append((lineNumber, fields))
+        current = block
+    }
+
+    private func logicalLines(from text: String) throws -> [LogicalLine] {
+        var result: [LogicalLine] = []
+        for (index, rawLine) in text.components(separatedBy: .newlines).enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("*") else { continue }
+            if line.hasPrefix("+") {
+                guard !result.isEmpty else {
+                    throw SPICESubcktReaderError.malformedCard(line: index + 1, text: line)
+                }
+                let continuation = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
+                guard !continuation.isEmpty else {
+                    throw SPICESubcktReaderError.malformedCard(line: index + 1, text: line)
+                }
+                result[result.count - 1].text += " " + continuation
+            } else {
+                result.append(LogicalLine(line: index + 1, text: line))
+            }
+        }
+        return result
+    }
+
+    private func makeBlock(
+        fields: [String],
+        lineNumber: Int,
+        line: String
+    ) throws -> Block {
+        guard fields.count >= 2 else {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: line)
+        }
+        let name = fields[1].lowercased()
+        let ports = Array(fields.dropFirst(2)).map { $0.lowercased() }
+        var seenPorts: Set<String> = []
+        for port in ports {
+            guard seenPorts.insert(port).inserted else {
+                throw SPICESubcktReaderError.duplicatePort(subcircuit: name, port: port)
+            }
+        }
+        return Block(name: name, ports: ports, cards: [])
+    }
+
+    private func fields(from line: String) -> [String] {
+        line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+    }
+
     // MARK: - Expansion
+
+    private struct MOSParameters {
+        var width: Double
+        var length: Double
+        var multiplier: Int
+    }
+
+    private struct MOSParameterAccumulator {
+        var width: Double?
+        var length: Double?
+        var multiplier = 1
+    }
 
     private func expand(
         block: Block,
@@ -145,90 +265,255 @@ public struct SPICESubcktReader: Sendable {
             throw SPICESubcktReaderError.recursionTooDeep(block.name)
         }
         for (lineNumber, fields) in block.cards {
-            let card = fields[0]
-            switch card.lowercased().first {
-            case "m":
-                guard fields.count >= 6 else {
-                    throw SPICESubcktReaderError.malformedCard(
-                        line: lineNumber, text: fields.joined(separator: " ")
-                    )
-                }
-                let model = fields[5].lowercased()
-                guard let kind = modelKinds[model] else {
-                    throw SPICESubcktReaderError.unknownModel(model)
-                }
-                var width = 0.0
-                var length = 0.0
-                var multiplier = 1
-                for parameter in fields.dropFirst(6) {
-                    let parts = parameter.split(separator: "=", maxSplits: 1)
-                    guard parts.count == 2 else {
-                        throw SPICESubcktReaderError.malformedCard(
-                            line: lineNumber, text: parameter
-                        )
-                    }
-                    let value = try number(String(parts[1]), line: lineNumber)
-                    switch parts[0].lowercased() {
-                    case "w": width = value * 1e6
-                    case "l": length = value * 1e6
-                    case "m", "nf": multiplier = Int(value.rounded())
-                    default:
-                        // Unknown device parameters (ad, as, pd, ...) do
-                        // not change the compared quantities.
-                        continue
-                    }
-                }
-                let terminals: [ComparisonTerminalRole: ComparisonNetID] = [
-                    .drain: try resolve(fields[1], netMap: netMap, instancePath: instancePath),
-                    .gate: try resolve(fields[2], netMap: netMap, instancePath: instancePath),
-                    .source: try resolve(fields[3], netMap: netMap, instancePath: instancePath),
-                    .bulk: try resolve(fields[4], netMap: netMap, instancePath: instancePath),
-                ]
-                devices.append(ComparisonNetlist.Device(
-                    id: instancePath + card,
-                    kind: kind,
-                    terminals: terminals,
-                    parameters: ComparisonDeviceParameters(
-                        width: width,
-                        length: length,
-                        multiplier: multiplier
-                    ),
-                    region: .zero
-                ))
-            case "x":
-                guard fields.count >= 2 else {
-                    throw SPICESubcktReaderError.malformedCard(
-                        line: lineNumber, text: fields.joined(separator: " ")
-                    )
-                }
-                let childName = fields[fields.count - 1].lowercased()
-                guard let child = blocks[childName] else {
-                    throw SPICESubcktReaderError.unresolvedSubcircuit(childName)
-                }
-                let actuals = Array(fields.dropFirst().dropLast())
-                guard actuals.count == child.ports.count else {
-                    throw SPICESubcktReaderError.malformedCard(
-                        line: lineNumber, text: fields.joined(separator: " ")
-                    )
-                }
-                var childMap: [String: ComparisonNetID] = [:]
-                for (port, actual) in zip(child.ports, actuals) {
-                    childMap[port] = try resolve(actual, netMap: netMap, instancePath: instancePath)
-                }
-                try expand(
-                    block: child,
-                    blocks: blocks,
-                    netMap: childMap,
-                    instancePath: instancePath + card + "/",
-                    depth: depth + 1,
-                    into: &devices
-                )
-            default:
-                throw SPICESubcktReaderError.malformedCard(
-                    line: lineNumber, text: fields.joined(separator: " ")
-                )
-            }
+            try expandCard(
+                lineNumber: lineNumber,
+                fields: fields,
+                blocks: blocks,
+                netMap: netMap,
+                instancePath: instancePath,
+                depth: depth,
+                into: &devices
+            )
         }
+    }
+
+    private func expandCard(
+        lineNumber: Int,
+        fields: [String],
+        blocks: [String: Block],
+        netMap: [String: ComparisonNetID],
+        instancePath: String,
+        depth: Int,
+        into devices: inout [ComparisonNetlist.Device]
+    ) throws {
+        let card = fields[0]
+        switch card.lowercased().first {
+        case "m":
+            try expandMOS(
+                lineNumber: lineNumber,
+                fields: fields,
+                netMap: netMap,
+                instancePath: instancePath,
+                into: &devices
+            )
+        case "x":
+            try expandInstance(
+                lineNumber: lineNumber,
+                fields: fields,
+                blocks: blocks,
+                netMap: netMap,
+                instancePath: instancePath,
+                depth: depth,
+                into: &devices
+            )
+        default:
+            throw SPICESubcktReaderError.malformedCard(
+                line: lineNumber, text: fields.joined(separator: " ")
+            )
+        }
+    }
+
+    private func expandMOS(
+        lineNumber: Int,
+        fields: [String],
+        netMap: [String: ComparisonNetID],
+        instancePath: String,
+        into devices: inout [ComparisonNetlist.Device]
+    ) throws {
+        guard fields.count >= 6 else {
+            throw SPICESubcktReaderError.malformedCard(
+                line: lineNumber, text: fields.joined(separator: " ")
+            )
+        }
+        let card = fields[0]
+        let model = fields[5].lowercased()
+        guard let kind = modelKinds[model] else {
+            throw SPICESubcktReaderError.unknownModel(model)
+        }
+        let parameters = try mosParameters(
+            fields: fields,
+            lineNumber: lineNumber,
+            instanceID: instancePath + card
+        )
+        let terminals: [ComparisonTerminalRole: ComparisonNetID] = [
+            .drain: try resolve(fields[1], netMap: netMap, instancePath: instancePath),
+            .gate: try resolve(fields[2], netMap: netMap, instancePath: instancePath),
+            .source: try resolve(fields[3], netMap: netMap, instancePath: instancePath),
+            .bulk: try resolve(fields[4], netMap: netMap, instancePath: instancePath),
+        ]
+        devices.append(ComparisonNetlist.Device(
+            id: instancePath + card,
+            kind: kind,
+            terminals: terminals,
+            parameters: ComparisonDeviceParameters(
+                width: parameters.width,
+                length: parameters.length,
+                multiplier: parameters.multiplier
+            ),
+            region: .zero
+        ))
+    }
+
+    private func expandInstance(
+        lineNumber: Int,
+        fields: [String],
+        blocks: [String: Block],
+        netMap: [String: ComparisonNetID],
+        instancePath: String,
+        depth: Int,
+        into devices: inout [ComparisonNetlist.Device]
+    ) throws {
+        guard fields.count >= 2 else {
+            throw SPICESubcktReaderError.malformedCard(
+                line: lineNumber, text: fields.joined(separator: " ")
+            )
+        }
+        let card = fields[0]
+        let childName = fields[fields.count - 1].lowercased()
+        guard let child = blocks[childName] else {
+            throw SPICESubcktReaderError.unresolvedSubcircuit(childName)
+        }
+        let actuals = Array(fields.dropFirst().dropLast())
+        guard actuals.count == child.ports.count else {
+            throw SPICESubcktReaderError.malformedCard(
+                line: lineNumber, text: fields.joined(separator: " ")
+            )
+        }
+        var childMap: [String: ComparisonNetID] = [:]
+        for (port, actual) in zip(child.ports, actuals) {
+            childMap[port] = try resolve(actual, netMap: netMap, instancePath: instancePath)
+        }
+        try expand(
+            block: child,
+            blocks: blocks,
+            netMap: childMap,
+            instancePath: instancePath + card + "/",
+            depth: depth + 1,
+            into: &devices
+        )
+    }
+
+    private func mosParameters(
+        fields: [String],
+        lineNumber: Int,
+        instanceID: String
+    ) throws -> MOSParameters {
+        var accumulator = MOSParameterAccumulator()
+        for parameter in fields.dropFirst(6) {
+            try applyMOSParameter(
+                parameter,
+                lineNumber: lineNumber,
+                instanceID: instanceID,
+                accumulator: &accumulator
+            )
+        }
+        return try completedMOSParameters(accumulator, instanceID: instanceID)
+    }
+
+    private func applyMOSParameter(
+        _ parameter: String,
+        lineNumber: Int,
+        instanceID: String,
+        accumulator: inout MOSParameterAccumulator
+    ) throws {
+        let parts = parameter.split(separator: "=", maxSplits: 1)
+        guard parts.count == 2 else {
+            throw SPICESubcktReaderError.malformedCard(line: lineNumber, text: parameter)
+        }
+        let key = String(parts[0]).lowercased()
+        let rawValue = String(parts[1])
+        let value = try number(rawValue, line: lineNumber)
+        switch key {
+        case "w":
+            accumulator.width = try positiveMicrons(
+                value: value,
+                rawValue: rawValue,
+                instanceID: instanceID,
+                parameter: key
+            )
+        case "l":
+            accumulator.length = try positiveMicrons(
+                value: value,
+                rawValue: rawValue,
+                instanceID: instanceID,
+                parameter: key
+            )
+        case "m", "nf":
+            accumulator.multiplier = try positiveInteger(
+                value: value,
+                rawValue: rawValue,
+                instanceID: instanceID,
+                parameter: key
+            )
+        default:
+            return
+        }
+    }
+
+    private func completedMOSParameters(
+        _ accumulator: MOSParameterAccumulator,
+        instanceID: String
+    ) throws -> MOSParameters {
+        let width = try requiredMOSParameter(
+            accumulator.width,
+            instanceID: instanceID,
+            parameter: "w"
+        )
+        let length = try requiredMOSParameter(
+            accumulator.length,
+            instanceID: instanceID,
+            parameter: "l"
+        )
+        return MOSParameters(width: width, length: length, multiplier: accumulator.multiplier)
+    }
+
+    private func requiredMOSParameter(
+        _ value: Double?,
+        instanceID: String,
+        parameter: String
+    ) throws -> Double {
+        guard let value else {
+            throw SPICESubcktReaderError.missingDeviceParameter(
+                instance: instanceID,
+                parameter: parameter
+            )
+        }
+        return value
+    }
+
+    private func positiveMicrons(
+        value: Double,
+        rawValue: String,
+        instanceID: String,
+        parameter: String
+    ) throws -> Double {
+        guard value.isFinite, value > 0 else {
+            throw SPICESubcktReaderError.invalidDeviceParameter(
+                instance: instanceID,
+                parameter: parameter,
+                value: rawValue
+            )
+        }
+        return value * 1e6
+    }
+
+    private func positiveInteger(
+        value: Double,
+        rawValue: String,
+        instanceID: String,
+        parameter: String
+    ) throws -> Int {
+        guard value.isFinite,
+              value > 0,
+              value <= Double(Int.max),
+              value.rounded(.towardZero) == value else {
+            throw SPICESubcktReaderError.invalidDeviceParameter(
+                instance: instanceID,
+                parameter: parameter,
+                value: rawValue
+            )
+        }
+        return Int(value)
     }
 
     /// Port nets map through the instance boundary; internal nets get a
@@ -247,6 +532,14 @@ public struct SPICESubcktReader: Sendable {
         ComparisonNetID("pin:\(name)")
     }
 
+    private func portMap(for ports: [String]) -> [String: ComparisonNetID] {
+        var map: [String: ComparisonNetID] = [:]
+        for port in ports {
+            map[port] = netID(for: port)
+        }
+        return map
+    }
+
     private func number(_ text: String, line: Int) throws -> Double {
         let lowered = text.lowercased()
         let suffixes: [(String, Double)] = [
@@ -255,11 +548,12 @@ public struct SPICESubcktReader: Sendable {
         ]
         for (suffix, scale) in suffixes {
             if lowered.hasSuffix(suffix),
-               let value = Double(lowered.dropLast(suffix.count)) {
+               let value = Double(lowered.dropLast(suffix.count)),
+               value.isFinite {
                 return value * scale
             }
         }
-        if let value = Double(lowered) { return value }
+        if let value = Double(lowered), value.isFinite { return value }
         throw SPICESubcktReaderError.malformedCard(line: line, text: text)
     }
 }

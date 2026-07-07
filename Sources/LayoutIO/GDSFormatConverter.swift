@@ -33,7 +33,7 @@ public struct GDSFormatConverter: LayoutFormatConverter {
         } catch {
             throw LayoutIOError.conversionFailed("Failed to parse GDS: \(error)")
         }
-        return bridge.importLibrary(irLibrary, tech: tech)
+        return try bridge.checkedImportLibrary(irLibrary, tech: tech)
     }
 
     public func exportDocument(_ document: LayoutDocument, to url: URL, format: LayoutFileFormat) throws {

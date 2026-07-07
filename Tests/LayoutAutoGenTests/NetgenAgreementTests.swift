@@ -136,6 +136,15 @@ struct NetgenAgreementTests {
         case unreadableReport
     }
 
+    private struct NetgenRunFiles {
+        var directory: URL
+        var extractedURL: URL
+        var referenceURL: URL
+        var reportURL: URL
+        var scriptURL: URL
+        var setupURL: URL
+    }
+
     /// Runs `netgen -batch lvs` on the pair and returns whether Netgen
     /// declares a match. Bounded by a hard timeout — a hung tool is a
     /// failure, not a wait.
@@ -144,21 +153,38 @@ struct NetgenAgreementTests {
         _ reference: ComparisonNetlist
     ) throws -> Bool {
         guard let netgenURL = netgenBinaryURL else { throw NetgenHarnessError.binaryUnavailable }
-        let writer = ComparisonNetlistSPICEWriter()
+        let files = try makeNetgenRunFiles()
+        defer { removeTemporaryDirectory(files.directory) }
+        try writeNetgenInputs(extracted: extracted, reference: reference, files: files)
+        try runNetgen(netgenURL: netgenURL, files: files)
+        let report = try readNetgenReport(files.reportURL)
+        return try netgenReportIndicatesMatch(report)
+    }
+
+    private static func makeNetgenRunFiles() throws -> NetgenRunFiles {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("netgen-gate-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        return NetgenRunFiles(
+            directory: directory,
+            extractedURL: directory.appendingPathComponent("extracted.spice"),
+            referenceURL: directory.appendingPathComponent("reference.spice"),
+            reportURL: directory.appendingPathComponent("compare.out"),
+            scriptURL: directory.appendingPathComponent("lvs.tcl"),
+            setupURL: directory.appendingPathComponent("setup.tcl")
+        )
+    }
 
-        let extractedURL = directory.appendingPathComponent("extracted.spice")
-        let referenceURL = directory.appendingPathComponent("reference.spice")
-        let reportURL = directory.appendingPathComponent("compare.out")
-        let scriptURL = directory.appendingPathComponent("lvs.tcl")
-        let setupURL = directory.appendingPathComponent("setup.tcl")
+    private static func writeNetgenInputs(
+        extracted: ComparisonNetlist,
+        reference: ComparisonNetlist,
+        files: NetgenRunFiles
+    ) throws {
+        let writer = ComparisonNetlistSPICEWriter()
         try writer.write(extracted, name: "top")
-            .write(to: extractedURL, atomically: true, encoding: .utf8)
+            .write(to: files.extractedURL, atomically: true, encoding: .utf8)
         try writer.write(reference, name: "top")
-            .write(to: referenceURL, atomically: true, encoding: .utf8)
+            .write(to: files.referenceURL, atomically: true, encoding: .utf8)
         // Netgen compares topology only unless told which device
         // properties matter; W/L/M is exactly what the comparator checks.
         try """
@@ -167,20 +193,21 @@ struct NetgenAgreementTests {
         property "-circuit1 pmos" w l m
         property "-circuit2 pmos" w l m
         permute default
-        """.write(to: setupURL, atomically: true, encoding: .utf8)
+        """.write(to: files.setupURL, atomically: true, encoding: .utf8)
         try """
-        lvs "\(extractedURL.path) top" "\(referenceURL.path) top" "\(setupURL.path)" "\(reportURL.path)"
+        lvs "\(files.extractedURL.path) top" "\(files.referenceURL.path) top" "\(files.setupURL.path)" "\(files.reportURL.path)"
         quit
-        """.write(to: scriptURL, atomically: true, encoding: .utf8)
+        """.write(to: files.scriptURL, atomically: true, encoding: .utf8)
+    }
 
+    private static func runNetgen(netgenURL: URL, files: NetgenRunFiles) throws {
         let process = Process()
         process.executableURL = netgenURL
-        process.arguments = ["-batch", "source", scriptURL.path]
-        process.currentDirectoryURL = directory
+        process.arguments = ["-batch", "source", files.scriptURL.path]
+        process.currentDirectoryURL = files.directory
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-
         let deadline = Date().addingTimeInterval(60)
         while process.isRunning {
             if Date() > deadline {
@@ -189,15 +216,30 @@ struct NetgenAgreementTests {
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
+    }
 
-        guard let report = try? String(contentsOf: reportURL, encoding: .utf8) else {
+    private static func readNetgenReport(_ reportURL: URL) throws -> String {
+        do {
+            return try String(contentsOf: reportURL, encoding: .utf8)
+        } catch {
             throw NetgenHarnessError.unreadableReport
         }
+    }
+
+    private static func netgenReportIndicatesMatch(_ report: String) throws -> Bool {
         // Netgen reports topology and properties separately: a unique
         // topological match WITH property errors is still an LVS failure.
         let propertyErrors = report.contains("Property errors were found")
         if report.contains("match uniquely") { return !propertyErrors }
         if report.contains("do not match") { return false }
         throw NetgenHarnessError.unreadableReport
+    }
+
+    private static func removeTemporaryDirectory(_ directory: URL) {
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            Issue.record("Failed to remove temporary directory: \(error)")
+        }
     }
 }

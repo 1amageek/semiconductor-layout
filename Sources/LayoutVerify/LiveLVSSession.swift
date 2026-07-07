@@ -88,51 +88,67 @@ public final class LiveLVSSession {
     }
 
     private func applyDelta(_ delta: LayoutEditDelta) throws {
-        let resolvedCellID: UUID
+        let resolvedCellID = try targetCellID()
+        var cell = try targetCell(resolvedCellID)
+        try delta.validateAgainstKnownElements(
+            shapeIDs: Set(cell.shapes.map(\.id)),
+            viaIDs: Set(cell.vias.map(\.id))
+        )
+        try Self.applyShapeDelta(delta, to: &cell)
+        try Self.applyViaDelta(delta, to: &cell)
+        document.updateCell(cell)
+    }
+
+    private func targetCellID() throws -> UUID {
         if let cellID {
-            resolvedCellID = cellID
+            return cellID
         } else if let topCellID = document.topCellID {
-            resolvedCellID = topCellID
+            return topCellID
         } else if let first = document.cells.first {
-            resolvedCellID = first.id
+            return first.id
         } else {
             throw DeviceExtractionError.targetCellNotFound
         }
+    }
 
-        guard var cell = document.cell(withID: resolvedCellID) else {
+    private func targetCell(_ id: UUID) throws -> LayoutCell {
+        guard let cell = document.cell(withID: id) else {
             throw DeviceExtractionError.targetCellNotFound
         }
+        return cell
+    }
 
+    private static func applyShapeDelta(
+        _ delta: LayoutEditDelta,
+        to cell: inout LayoutCell
+    ) throws {
         for shape in delta.updatedShapes {
             guard let index = cell.shapes.firstIndex(where: { $0.id == shape.id }) else {
-                throw LayoutCoreError.shapeNotFound(shape.id)
+                throw LayoutEditDeltaValidationError.unknownShapeID(shape.id)
             }
             cell.shapes[index] = shape
         }
         if !delta.removedShapeIDs.isEmpty {
-            for id in delta.removedShapeIDs where !cell.shapes.contains(where: { $0.id == id }) {
-                throw LayoutCoreError.shapeNotFound(id)
-            }
             let removed = Set(delta.removedShapeIDs)
             cell.shapes.removeAll { removed.contains($0.id) }
         }
         cell.shapes.append(contentsOf: delta.addedShapes)
+    }
 
+    private static func applyViaDelta(
+        _ delta: LayoutEditDelta,
+        to cell: inout LayoutCell
+    ) throws {
         for via in delta.updatedVias {
             guard let index = cell.vias.firstIndex(where: { $0.id == via.id }) else {
-                throw LayoutCoreError.viaNotFound(via.id)
+                throw LayoutEditDeltaValidationError.unknownViaID(via.id)
             }
             cell.vias[index] = via
         }
         if !delta.removedViaIDs.isEmpty {
-            for id in delta.removedViaIDs where !cell.vias.contains(where: { $0.id == id }) {
-                throw LayoutCoreError.viaNotFound(id)
-            }
             let removed = Set(delta.removedViaIDs)
             cell.vias.removeAll { removed.contains($0.id) }
         }
         cell.vias.append(contentsOf: delta.addedVias)
-
-        document.updateCell(cell)
     }
 }

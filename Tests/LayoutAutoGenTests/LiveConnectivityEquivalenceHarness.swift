@@ -21,7 +21,7 @@ final class LiveConnectivityEquivalenceHarness {
     init(document: LayoutDocument, tech: LayoutTechDatabase) throws {
         guard let topCellID = document.topCellID,
               let index = document.cells.firstIndex(where: { $0.id == topCellID }) else {
-            preconditionFailure("harness fixtures must declare a resolvable top cell")
+            throw LiveConnectivityEquivalenceHarnessError.unresolvableTopCell
         }
         self.document = document
         self.tech = tech
@@ -42,7 +42,7 @@ final class LiveConnectivityEquivalenceHarness {
         sourceLocation: SourceLocation = #_sourceLocation
     ) throws -> LiveConnectivityUpdate {
         let update = try session.apply(delta)
-        mirror(delta)
+        try mirror(delta)
 
         let reference = try extractor.extract(document: document, tech: tech)
         if update.analysis != reference {
@@ -78,11 +78,11 @@ final class LiveConnectivityEquivalenceHarness {
 
     // MARK: - Reference document mirroring
 
-    private func mirror(_ delta: LayoutEditDelta) {
+    private func mirror(_ delta: LayoutEditDelta) throws {
         var cell = document.cells[topIndex]
         for shape in delta.updatedShapes {
             guard let index = cell.shapes.firstIndex(where: { $0.id == shape.id }) else {
-                preconditionFailure("mirror: updated shape \(shape.id) missing from reference")
+                throw LiveConnectivityEquivalenceHarnessError.missingReferenceShape(shape.id)
             }
             cell.shapes[index] = shape
         }
@@ -93,7 +93,7 @@ final class LiveConnectivityEquivalenceHarness {
         cell.shapes.append(contentsOf: delta.addedShapes)
         for via in delta.updatedVias {
             guard let index = cell.vias.firstIndex(where: { $0.id == via.id }) else {
-                preconditionFailure("mirror: updated via \(via.id) missing from reference")
+                throw LiveConnectivityEquivalenceHarnessError.missingReferenceVia(via.id)
             }
             cell.vias[index] = via
         }
@@ -128,5 +128,22 @@ final class LiveConnectivityEquivalenceHarness {
             lines.append("open[\(index)] net \(pair.0.netID): live islands=\(pair.0.islands.count) flylines=\(pair.0.flylines.count); batch islands=\(pair.1.islands.count) flylines=\(pair.1.flylines.count)")
         }
         return lines.isEmpty ? "(component membership differs)" : lines.joined(separator: "\n")
+    }
+}
+
+private enum LiveConnectivityEquivalenceHarnessError: Error, CustomStringConvertible {
+    case unresolvableTopCell
+    case missingReferenceShape(UUID)
+    case missingReferenceVia(UUID)
+
+    var description: String {
+        switch self {
+        case .unresolvableTopCell:
+            return "Harness fixtures must declare a resolvable top cell."
+        case .missingReferenceShape(let id):
+            return "Mirror update referenced missing shape \(id)."
+        case .missingReferenceVia(let id):
+            return "Mirror update referenced missing via \(id)."
+        }
     }
 }

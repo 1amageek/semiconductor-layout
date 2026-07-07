@@ -23,10 +23,27 @@ public struct NetlistParameterMismatch: Hashable, Sendable, Codable {
     }
 }
 
+public struct NetlistPortMismatch: Hashable, Sendable, Codable {
+    public var portName: String
+    public var extracted: ComparisonNetID?
+    public var reference: ComparisonNetID?
+
+    public init(
+        portName: String,
+        extracted: ComparisonNetID?,
+        reference: ComparisonNetID?
+    ) {
+        self.portName = portName
+        self.extracted = extracted
+        self.reference = reference
+    }
+}
+
 public struct NetlistComparison: Hashable, Sendable, Codable {
     public var unmatchedExtractedDevices: [ComparisonNetlist.Device]
     public var unmatchedReferenceDevices: [ComparisonNetlist.Device]
     public var parameterMismatches: [NetlistParameterMismatch]
+    public var portMismatches: [NetlistPortMismatch]
     /// Total device count of the reference netlist — the denominator of
     /// the SDL convergence meter.
     public var referenceDeviceCount: Int
@@ -35,11 +52,13 @@ public struct NetlistComparison: Hashable, Sendable, Codable {
         unmatchedExtractedDevices: [ComparisonNetlist.Device] = [],
         unmatchedReferenceDevices: [ComparisonNetlist.Device] = [],
         parameterMismatches: [NetlistParameterMismatch] = [],
+        portMismatches: [NetlistPortMismatch] = [],
         referenceDeviceCount: Int = 0
     ) {
         self.unmatchedExtractedDevices = unmatchedExtractedDevices
         self.unmatchedReferenceDevices = unmatchedReferenceDevices
         self.parameterMismatches = parameterMismatches
+        self.portMismatches = portMismatches
         self.referenceDeviceCount = referenceDeviceCount
     }
 
@@ -47,6 +66,7 @@ public struct NetlistComparison: Hashable, Sendable, Codable {
         unmatchedExtractedDevices.isEmpty
             && unmatchedReferenceDevices.isEmpty
             && parameterMismatches.isEmpty
+            && portMismatches.isEmpty
     }
 
     /// Reference devices with a topological match in the layout.

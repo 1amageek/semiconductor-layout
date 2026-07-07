@@ -63,6 +63,46 @@ struct HierarchyEditingTests {
         #expect(flattenedBoxes(viewModel.editor.document).first?.origin == .zero)
     }
 
+    @Test func nestedInstanceOnlyCellProducesSelectableBounds() throws {
+        let leaf = LayoutCell(name: "LEAF", shapes: [
+            LayoutShape(
+                layer: m1,
+                geometry: .rect(LayoutRect(
+                    origin: .zero,
+                    size: LayoutSize(width: 1, height: 1)
+                ))
+            )
+        ])
+        let child = LayoutCell(
+            name: "UNIT",
+            instances: [
+                LayoutInstance(
+                    cellID: leaf.id,
+                    name: "XL",
+                    transform: LayoutTransform(translation: LayoutPoint(x: 2, y: 3))
+                )
+            ]
+        )
+        let instance = LayoutInstance(
+            cellID: child.id,
+            name: "X0",
+            transform: LayoutTransform(translation: LayoutPoint(x: 5, y: 7))
+        )
+        let top = LayoutCell(name: "TOP", instances: [instance])
+        let document = LayoutDocument(
+            name: "nested-bounds",
+            cells: [leaf, child, top],
+            topCellID: top.id
+        )
+        let viewModel = LayoutEditorViewModel(document: document, tech: .standard())
+
+        let bounds = try #require(viewModel.instanceBoundingBoxes().first?.bounds)
+
+        #expect(bounds.origin == LayoutPoint(x: 7, y: 10))
+        #expect(bounds.size == LayoutSize(width: 1, height: 1))
+        #expect(viewModel.selectInstance(at: LayoutPoint(x: 7.5, y: 10.5)) == instance.id)
+    }
+
     @Test func explodeArrayReplacesRepetitionWithIndividualInstances() {
         let child = LayoutCell(name: "UNIT", shapes: [
             LayoutShape(

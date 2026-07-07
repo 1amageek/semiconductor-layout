@@ -48,6 +48,10 @@ struct MutableFlatViaGridIndex {
     }
 
     func neighbours(of box: LayoutRect, margin: Double = 0) -> [FlatViaKey] {
+        candidateKeys(of: box, margin: margin).sorted()
+    }
+
+    func candidateKeys(of box: LayoutRect, margin: Double = 0) -> Set<FlatViaKey> {
         let probe = box.expanded(by: margin, margin)
         let keys = cellKeys(overlapping: probe)
         guard !keys.isEmpty else { return [] }
@@ -57,7 +61,7 @@ struct MutableFlatViaGridIndex {
                 found.formUnion(members)
             }
         }
-        return found.sorted()
+        return found
     }
 
     private func cellKeys(overlapping box: LayoutRect) -> [CellKey] {

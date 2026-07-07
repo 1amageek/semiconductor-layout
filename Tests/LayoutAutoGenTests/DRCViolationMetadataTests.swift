@@ -84,6 +84,64 @@ struct DRCViolationMetadataTests {
         #expect(violation?.suggestedFix != nil)
     }
 
+    @Test("DRC diagnostic artifact round trips with stable rule evidence")
+    func drcDiagnosticArtifactRoundTripsWithStableRuleEvidence() throws {
+        let m1ID = LayoutLayerID(name: "M1", purpose: "drawing")
+        let shapeID = UUID(uuidString: "00000000-0000-0000-0000-00000000D001")!
+        let shape = LayoutShape(
+            id: shapeID,
+            layer: m1ID,
+            geometry: .rect(LayoutRect(
+                origin: LayoutPoint(x: 0, y: 0),
+                size: LayoutSize(width: 0.5, height: 1.0)
+            ))
+        )
+        let inputDocument = document(shapes: [shape])
+        let tech = LayoutTechDatabase(
+            units: .defaultUnits,
+            layers: [layerDefinition(id: m1ID)],
+            vias: [],
+            layerRules: [
+                LayoutLayerRuleSet(
+                    layerID: m1ID,
+                    minWidth: 0,
+                    minSpacing: 0,
+                    minArea: 1.0,
+                    minDensity: 0,
+                    maxDensity: 1
+                )
+            ]
+        )
+
+        let firstResult = LayoutDRCService().run(document: inputDocument, tech: tech)
+        let secondResult = LayoutDRCService().run(document: inputDocument, tech: tech)
+        let firstViolation = try #require(firstResult.violations.first { $0.kind == .minArea })
+        let secondViolation = try #require(secondResult.violations.first { $0.kind == .minArea })
+
+        #expect(firstViolation.id == secondViolation.id)
+        #expect(diagnosticSignature(firstViolation) == diagnosticSignature(secondViolation))
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let artifactData = try encoder.encode(firstResult)
+        let secondArtifactData = try encoder.encode(secondResult)
+        #expect(artifactData == secondArtifactData)
+        let decoded = try JSONDecoder().decode(LayoutDRCResult.self, from: artifactData)
+        let decodedViolation = try #require(decoded.violations.first { $0.kind == .minArea })
+
+        #expect(decoded == firstResult)
+        #expect(decodedViolation.ruleID == "layer.M1.drawing.minArea")
+        #expect(decodedViolation.measured == 0.5)
+        #expect(decodedViolation.required == 1.0)
+        #expect(decodedViolation.unit == "um2")
+        #expect(decodedViolation.shapeIDs == [shapeID])
+        #expect(decodedViolation.suggestedFix == firstViolation.suggestedFix)
+
+        #expect(artifactData.count > 0)
+        #expect(decodedViolation.ruleID == firstViolation.ruleID)
+        #expect(decodedViolation.shapeIDs == firstViolation.shapeIDs)
+    }
+
     @Test("DRC result separates errors from warnings")
     func resultSeparatesErrorsFromWarnings() {
         let warningOnly = LayoutDRCResult(violations: [
@@ -120,5 +178,39 @@ struct DRCViolationMetadataTests {
             gdsDatatype: 0,
             color: LayoutColor(red: 0.3, green: 0.5, blue: 0.9)
         )
+    }
+
+    private func diagnosticSignature(_ violation: LayoutViolation) -> DiagnosticSignature {
+        DiagnosticSignature(
+            kind: violation.kind,
+            ruleID: violation.ruleID,
+            severity: violation.severity,
+            layer: violation.layer,
+            region: violation.region,
+            measured: violation.measured,
+            required: violation.required,
+            unit: violation.unit,
+            shapeIDs: violation.shapeIDs,
+            viaIDs: violation.viaIDs,
+            pinIDs: violation.pinIDs,
+            netIDs: violation.netIDs,
+            suggestedFix: violation.suggestedFix
+        )
+    }
+
+    private struct DiagnosticSignature: Hashable {
+        var kind: LayoutViolationKind
+        var ruleID: String?
+        var severity: LayoutViolationSeverity
+        var layer: LayoutLayerID?
+        var region: LayoutRect
+        var measured: Double?
+        var required: Double?
+        var unit: String?
+        var shapeIDs: [UUID]
+        var viaIDs: [UUID]
+        var pinIDs: [UUID]
+        var netIDs: [UUID]
+        var suggestedFix: String?
     }
 }

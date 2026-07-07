@@ -9,11 +9,11 @@ import Testing
 @Suite("UUID canonical order")
 struct UUIDCanonicalOrderTests {
 
-    @Test func byteOrderMatchesUUIDStringOrderOnRandomPairs() {
+    @Test func byteOrderMatchesUUIDStringOrderOnRandomPairs() throws {
         var generator = SplitMix64(seed: 0x5EED_C0DE_2026_0004)
         for _ in 0..<10_000 {
-            let a = UUID(uuid: randomUUIDBytes(&generator))
-            let b = UUID(uuid: randomUUIDBytes(&generator))
+            let a = UUID(uuid: try randomUUIDBytes(&generator))
+            let b = UUID(uuid: try randomUUIDBytes(&generator))
             #expect(
                 a.isCanonicallyOrderedBefore(b) == (a.uuidString < b.uuidString),
                 "byte order must reproduce uuidString order for \(a) vs \(b)"
@@ -26,7 +26,7 @@ struct UUIDCanonicalOrderTests {
         #expect(!id.isCanonicallyOrderedBefore(id))
     }
 
-    @Test func singleByteDifferencesOrderInBothDirections() {
+    @Test func singleByteDifferencesOrderInBothDirections() throws {
         // Walk every byte position with values that straddle the hex
         // digit/letter boundary ('9' < 'A' must hold as 0x09 < 0x0A).
         let base: [UInt8] = Array(repeating: 0x99, count: 16)
@@ -36,24 +36,26 @@ struct UUIDCanonicalOrderTests {
                 var highBytes = base
                 lowBytes[position] = low
                 highBytes[position] = high
-                let a = UUID(uuid: uuidTuple(lowBytes))
-                let b = UUID(uuid: uuidTuple(highBytes))
+                let a = UUID(uuid: try uuidTuple(lowBytes))
+                let b = UUID(uuid: try uuidTuple(highBytes))
                 #expect(a.isCanonicallyOrderedBefore(b) && !b.isCanonicallyOrderedBefore(a))
                 #expect(a.uuidString < b.uuidString, "fixture must agree with string order")
             }
         }
     }
 
-    private func randomUUIDBytes(_ generator: inout SplitMix64) -> uuid_t {
+    private func randomUUIDBytes(_ generator: inout SplitMix64) throws -> uuid_t {
         var bytes = [UInt8](repeating: 0, count: 16)
         for index in bytes.indices {
             bytes[index] = UInt8.random(in: .min ... .max, using: &generator)
         }
-        return uuidTuple(bytes)
+        return try uuidTuple(bytes)
     }
 
-    private func uuidTuple(_ bytes: [UInt8]) -> uuid_t {
-        precondition(bytes.count == 16)
+    private func uuidTuple(_ bytes: [UInt8]) throws -> uuid_t {
+        guard bytes.count == 16 else {
+            throw UUIDCanonicalOrderTestError.invalidByteCount(bytes.count)
+        }
         return (
             bytes[0], bytes[1], bytes[2], bytes[3],
             bytes[4], bytes[5], bytes[6], bytes[7],
@@ -61,4 +63,8 @@ struct UUIDCanonicalOrderTests {
             bytes[12], bytes[13], bytes[14], bytes[15]
         )
     }
+}
+
+private enum UUIDCanonicalOrderTestError: Error, Equatable {
+    case invalidByteCount(Int)
 }

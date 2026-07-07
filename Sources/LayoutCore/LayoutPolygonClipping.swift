@@ -342,8 +342,11 @@ extension LayoutPolygon {
         guard !crossings.isEmpty else { return [] }
         var result = [crossings[0]]
         for i in 1..<crossings.count {
-            let prev = result.last!
             let curr = crossings[i]
+            guard let prev = result.last else {
+                result.append(curr)
+                continue
+            }
             if abs(curr.polyParam - prev.polyParam) > 1e-9 {
                 result.append(curr)
             }
@@ -356,7 +359,10 @@ extension LayoutPolygon {
         var result = [points[0]]
         for i in 1..<points.count {
             let p = points[i]
-            let prev = result.last!
+            guard let prev = result.last else {
+                result.append(p)
+                continue
+            }
             if abs(p.x - prev.x) > 1e-9 || abs(p.y - prev.y) > 1e-9 {
                 result.append(p)
             }

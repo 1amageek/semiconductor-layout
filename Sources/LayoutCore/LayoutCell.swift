@@ -10,6 +10,7 @@ public struct LayoutCell: Identifiable, Hashable, Sendable, Codable {
     public var instances: [LayoutInstance]
     public var nets: [LayoutNet]
     public var constraints: [LayoutConstraint]
+    public var properties: [String: String]
 
     public init(
         id: UUID = UUID(),
@@ -20,7 +21,8 @@ public struct LayoutCell: Identifiable, Hashable, Sendable, Codable {
         pins: [LayoutPin] = [],
         instances: [LayoutInstance] = [],
         nets: [LayoutNet] = [],
-        constraints: [LayoutConstraint] = []
+        constraints: [LayoutConstraint] = [],
+        properties: [String: String] = [:]
     ) {
         self.id = id
         self.name = name
@@ -31,5 +33,33 @@ public struct LayoutCell: Identifiable, Hashable, Sendable, Codable {
         self.instances = instances
         self.nets = nets
         self.constraints = constraints
+        self.properties = properties
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case shapes
+        case vias
+        case labels
+        case pins
+        case instances
+        case nets
+        case constraints
+        case properties
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        shapes = try container.decodeIfPresent([LayoutShape].self, forKey: .shapes) ?? []
+        vias = try container.decodeIfPresent([LayoutVia].self, forKey: .vias) ?? []
+        labels = try container.decodeIfPresent([LayoutLabel].self, forKey: .labels) ?? []
+        pins = try container.decodeIfPresent([LayoutPin].self, forKey: .pins) ?? []
+        instances = try container.decodeIfPresent([LayoutInstance].self, forKey: .instances) ?? []
+        nets = try container.decodeIfPresent([LayoutNet].self, forKey: .nets) ?? []
+        constraints = try container.decodeIfPresent([LayoutConstraint].self, forKey: .constraints) ?? []
+        properties = try container.decodeIfPresent([String: String].self, forKey: .properties) ?? [:]
     }
 }

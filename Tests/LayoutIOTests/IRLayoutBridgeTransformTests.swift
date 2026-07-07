@@ -9,7 +9,7 @@ import LayoutIR
 struct IRLayoutBridgeTransformTests {
 
     @Test("Import preserves arbitrary rotation and magnification")
-    func importPreservesArbitraryRotationAndMagnification() {
+    func importPreservesArbitraryRotationAndMagnification() throws {
         let library = IRLibrary(
             name: "transform-import",
             cells: [
@@ -24,7 +24,7 @@ struct IRLayoutBridgeTransformTests {
             ]
         )
 
-        let document = IRLayoutBridge().importLibrary(library, tech: .standard())
+        let document = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
         let top = document.cells.first { $0.name == "TOP" }
         let instance = top?.instances.first
 

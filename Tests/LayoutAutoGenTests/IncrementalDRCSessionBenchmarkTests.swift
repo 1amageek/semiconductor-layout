@@ -129,6 +129,7 @@ struct IncrementalDRCSessionBenchmarkTests {
     }
 
     @Test func liveApplyLatencyAtScale() throws {
+        try BenchmarkExecutionGate.run {
         let rows = 80
         let cols = 80
         let document = makeDocument(rows: rows, cols: cols)
@@ -198,11 +199,14 @@ struct IncrementalDRCSessionBenchmarkTests {
         report("m1WireMove", wireSamples)
         report("m2PadMove", padSamples)
 
-        // Hard caps with ~4x headroom over the observed debug medians
-        // (~25ms wire, ~16ms pad) so regressions fail loudly without
-        // flaking; the honest 10ms verdict is in the printed report.
-        #expect(wireSamples[wireSamples.count / 2] < 100, "sparse-layer live apply regressed")
-        #expect(padSamples[padSamples.count / 2] < 100, "dense-layer live apply regressed")
+        #if DEBUG
+        let interactiveMedianCap = 50.0
+        #else
+        let interactiveMedianCap = 10.0
+        #endif
+        #expect(wireSamples[wireSamples.count / 2] < interactiveMedianCap, "sparse-layer live apply regressed")
+        #expect(padSamples[padSamples.count / 2] < interactiveMedianCap, "dense-layer live apply regressed")
+        }
     }
 
     /// M7 scale parity: the live verification sessions must keep their
@@ -211,6 +215,7 @@ struct IncrementalDRCSessionBenchmarkTests {
     /// is reported alongside, since it bounds how big a document the
     /// editor can load with live verification enabled.
     @Test func liveSessionsScaleToHundredThousandElements() throws {
+        try BenchmarkExecutionGate.run {
         let rows = 500
         let cols = 500
         #if DEBUG
@@ -280,16 +285,23 @@ struct IncrementalDRCSessionBenchmarkTests {
 
         #expect(drc.commit().violations.isEmpty == true, "round-trip edits must end clean")
 
-        // Hard regression caps, generous (3-4x) over observed debug
-        // numbers (init ~18s, wire ~50ms, pad ~140ms, connectivity ~11ms)
-        // so the honest verdict stays in the printed report. The first
-        // run of this benchmark caught the degenerate grid cell size that
-        // made init O(vias x layerShapes) — 327s before the fix.
-        #expect(milliseconds(drcInit) < 90_000, "DRC session init regressed")
-        #expect(milliseconds(connectivityInit) < 30_000, "connectivity session init regressed")
-        #expect(median(drcWire) < 200, "sparse-layer live apply regressed at scale")
-        #expect(median(drcPad) < 500, "dense-layer live apply regressed at scale")
-        #expect(median(connectivitySamples) < 50, "connectivity live apply regressed at scale")
+        #if DEBUG
+        let drcInitCap = 90_000.0
+        let connectivityInitCap = 20_000.0
+        let drcMedianCap = 80.0
+        let connectivityMedianCap = 40.0
+        #else
+        let drcInitCap = 20_000.0
+        let connectivityInitCap = 10_000.0
+        let drcMedianCap = 10.0
+        let connectivityMedianCap = 10.0
+        #endif
+        #expect(milliseconds(drcInit) < drcInitCap, "DRC session init regressed")
+        #expect(milliseconds(connectivityInit) < connectivityInitCap, "connectivity session init regressed")
+        #expect(median(drcWire) < drcMedianCap, "sparse-layer live apply regressed at scale")
+        #expect(median(drcPad) < drcMedianCap, "dense-layer live apply regressed at scale")
+        #expect(median(connectivitySamples) < connectivityMedianCap, "connectivity live apply regressed at scale")
+        }
     }
 
     @Test func violationAppearsAndClearsAtScale() throws {

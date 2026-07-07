@@ -176,7 +176,10 @@ public struct RowBasedPlacementEngine: PlacementEngine {
         ordered.append(remaining.removeFirst())
 
         while !remaining.isEmpty {
-            let lastID = ordered.last!.id
+            guard let lastID = ordered.last?.id else {
+                ordered.append(remaining.removeFirst())
+                continue
+            }
             let neighbors = adjacency[lastID] ?? [:]
 
             // Find the remaining instance with highest connectivity to the last placed

@@ -82,15 +82,16 @@ struct FinishNetTests {
     @Test func finishNetRefusesAWalledNetAndLeavesTheDocumentUntouched() throws {
         let netID = UUID()
         var document = Self.twoPadDocument(netID: netID)
-        // A foreign wall far taller than the search window between the
-        // pads.
+        // A foreign wall taller than even the widest escalation window
+        // (margin 128), in a tech without vias so no over-route exists:
+        // the refusal path is what this test pins down.
         var cell = try #require(document.cells.first)
         cell.shapes.append(LayoutShape(
             layer: Self.m1,
             netID: UUID(),
             geometry: .rect(LayoutRect(
-                origin: LayoutPoint(x: 2.5, y: -60),
-                size: LayoutSize(width: 0.4, height: 120)
+                origin: LayoutPoint(x: 2.5, y: -300),
+                size: LayoutSize(width: 0.4, height: 600)
             ))
         ))
         document.updateCell(cell)

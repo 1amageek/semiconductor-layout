@@ -136,6 +136,8 @@ public struct LayoutConnectivityExtractor {
             geometry: shape.geometry,
             layer: shape.layer,
             viaDefinition: nil,
+            viaCutRects: [],
+            viaContactRectsByLayer: [:],
             boundingBox: LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
         )
     }
@@ -146,16 +148,20 @@ public struct LayoutConnectivityExtractor {
         tech: LayoutTechDatabase,
         service: LayoutDRCService
     ) -> ConnectivityElement {
-        let cut = service.viaCutRect(for: via, tech: tech)
+        let cuts = service.viaCutRects(for: via, tech: tech)
+        let conductors = service.viaConductorRects(for: via, tech: tech)
+        let bounds = service.union(rects: conductors) ?? service.viaCutBoundingBox(for: via, tech: tech)
         return ConnectivityElement(
             key: key,
             elementID: via.id,
             isVia: true,
             netID: via.netID,
-            geometry: .rect(cut),
+            geometry: .rect(bounds),
             layer: nil,
             viaDefinition: tech.viaDefinition(for: via.viaDefinitionID),
-            boundingBox: cut
+            viaCutRects: cuts,
+            viaContactRectsByLayer: service.viaContactRectsByLayer(for: via, tech: tech),
+            boundingBox: bounds
         )
     }
 
@@ -188,10 +194,12 @@ public struct LayoutConnectivityExtractor {
                     geometries: arrays.geometries,
                     layers: arrays.layers,
                     isVia: arrays.isVia,
-                    viaDefs: arrays.viaDefs
+                    viaDefs: arrays.viaDefs,
+                    viaCutRects: arrays.viaCutRects,
+                    viaContactRectsByLayer: arrays.viaContactRectsByLayer
                 ) {
-                    adjacency[ordered[i].key]!.insert(ordered[j].key)
-                    adjacency[ordered[j].key]!.insert(ordered[i].key)
+                    adjacency[ordered[i].key, default: []].insert(ordered[j].key)
+                    adjacency[ordered[j].key, default: []].insert(ordered[i].key)
                 }
             }
         }
@@ -210,7 +218,6 @@ public struct LayoutConnectivityExtractor {
         var result: Set<ConnectivityElementKey> = []
         for key in candidates where key != element.key {
             guard let other = elements[key] else {
-                assertionFailure("spatial-index candidate missing from element table")
                 continue
             }
             if elementsTouch(element, other, service: service) {
@@ -235,7 +242,9 @@ public struct LayoutConnectivityExtractor {
             geometries: [a.geometry, b.geometry],
             layers: [a.layer, b.layer],
             isVia: [a.isVia, b.isVia],
-            viaDefs: [a.viaDefinition, b.viaDefinition]
+            viaDefs: [a.viaDefinition, b.viaDefinition],
+            viaCutRects: [a.viaCutRects, b.viaCutRects],
+            viaContactRectsByLayer: [a.viaContactRectsByLayer, b.viaContactRectsByLayer]
         )
     }
 
@@ -244,7 +253,9 @@ public struct LayoutConnectivityExtractor {
             geometries: ordered.map(\.geometry),
             layers: ordered.map(\.layer),
             isVia: ordered.map(\.isVia),
-            viaDefs: ordered.map(\.viaDefinition)
+            viaDefs: ordered.map(\.viaDefinition),
+            viaCutRects: ordered.map(\.viaCutRects),
+            viaContactRectsByLayer: ordered.map(\.viaContactRectsByLayer)
         )
     }
 
@@ -342,7 +353,6 @@ public struct LayoutConnectivityExtractor {
         var footprints: [ConnectivityIslandFootprint] = []
         for key in memberKeys {
             guard let element = elements[key] else {
-                assertionFailure("component member missing from element table")
                 continue
             }
             if element.isVia { viaIDs.insert(element.elementID) } else { shapeIDs.insert(element.elementID) }
@@ -353,7 +363,6 @@ public struct LayoutConnectivityExtractor {
             box = box.map { $0.union(element.boundingBox) } ?? element.boundingBox
         }
         guard let boundingBox = box else {
-            assertionFailure("components are never empty")
             return ConnectivityNet(
                 shapeIDs: [], viaIDs: [], declaredNetIDs: [],
                 boundingBox: LayoutRect(origin: .zero, size: LayoutSize(width: 0, height: 0)),
@@ -398,7 +407,7 @@ public struct LayoutConnectivityExtractor {
 
         var opens: [ConnectivityOpen] = []
         for netID in componentIndicesByNet.keys.sorted(by: { $0.isCanonicallyOrderedBefore($1) }) {
-            let componentIndices = componentIndicesByNet[netID]!
+            guard let componentIndices = componentIndicesByNet[netID] else { continue }
             guard componentIndices.count >= 2 else { continue }
             let islands = componentIndices.map { index -> ConnectivityIsland in
                 let net = nets[index]
@@ -449,7 +458,7 @@ public struct LayoutConnectivityExtractor {
             for treeBox in memberBoxes[tree] {
                 for islandBox in memberBoxes[island] {
                     let near = nearestPoints(between: treeBox, and: islandBox)
-                    if best == nil || near.distance < best!.distance {
+                    if best.map({ near.distance < $0.distance }) ?? true {
                         best = Candidate(
                             fromIsland: tree,
                             start: near.start,
@@ -460,7 +469,6 @@ public struct LayoutConnectivityExtractor {
                 }
             }
             guard let edge = best else {
-                assertionFailure("islands always have at least one member box")
                 return Candidate(fromIsland: tree, start: .zero, end: .zero, distance: .infinity)
             }
             return edge
@@ -477,12 +485,16 @@ public struct LayoutConnectivityExtractor {
         while result.count < islands.count - 1 {
             var pick: Int?
             for index in 0..<islands.count where !inTree[index] {
-                if pick == nil || candidate[index]!.distance < candidate[pick!]!.distance {
+                guard let indexCandidate = candidate[index] else { continue }
+                if let currentPick = pick, let currentCandidate = candidate[currentPick] {
+                    if indexCandidate.distance < currentCandidate.distance {
+                        pick = index
+                    }
+                } else {
                     pick = index
                 }
             }
             guard let next = pick, let edge = candidate[next] else {
-                assertionFailure("Prim always finds a next island while the tree is incomplete")
                 break
             }
             result.append(Flyline(
@@ -497,7 +509,7 @@ public struct LayoutConnectivityExtractor {
             candidate[next] = nil
             for index in 0..<islands.count where !inTree[index] {
                 let fresh = bestEdge(fromTreeIsland: next, to: index)
-                if fresh.distance < candidate[index]!.distance {
+                if candidate[index].map({ fresh.distance < $0.distance }) ?? true {
                     candidate[index] = fresh
                 }
             }

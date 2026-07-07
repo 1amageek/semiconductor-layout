@@ -5,7 +5,7 @@ import LayoutIR
 import MaskGeometry
 
 public struct LayoutDRCService {
-    private static let numericalTolerance = 1.0e-12
+    static let numericalTolerance = 1.0e-12
 
     public init() {}
 
@@ -14,8 +14,34 @@ public struct LayoutDRCService {
         tech: LayoutTechDatabase,
         cellID: UUID? = nil
     ) -> LayoutDRCResult {
-        guard let targetCell = resolveCell(document: document, cellID: cellID) else {
-            return LayoutDRCResult(violations: [])
+        guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
+            return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
+        }
+        return LayoutDRCResult(violations: collectViolations(context: context, tech: tech))
+    }
+
+    public func runChecked(
+        document: LayoutDocument,
+        tech: LayoutTechDatabase,
+        cellID: UUID? = nil
+    ) throws -> LayoutDRCResult {
+        guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
+            throw LayoutDRCServiceError.targetCellNotFound(
+                requestedCellID: cellID,
+                topCellID: document.topCellID
+            )
+        }
+        return LayoutDRCResult(violations: collectViolations(context: context, tech: tech))
+    }
+
+    private func makeRunContext(
+        document: LayoutDocument,
+        tech: LayoutTechDatabase,
+        cellID: UUID?
+    ) -> LayoutDRCRunContext? {
+        let checkedDocument = LayoutDerivedLayerMaterializer.materialize(document: document, tech: tech)
+        guard let targetCell = resolveCell(document: checkedDocument, cellID: cellID) else {
+            return nil
         }
 
         var flattenedShapes: [LayoutShape] = []
@@ -24,7 +50,7 @@ public struct LayoutDRCService {
         var terminalConflicts: [TerminalConnectivityConflict] = []
         flatten(
             cell: targetCell,
-            document: document,
+            document: checkedDocument,
             tech: tech,
             transforms: [],
             terminalNetIDs: [:],
@@ -34,313 +60,71 @@ public struct LayoutDRCService {
             terminalConflicts: &terminalConflicts
         )
 
-        var violations: [LayoutViolation] = []
-
-        violations.append(contentsOf: terminalConflicts.map(makeTerminalConflictViolation))
-        violations.append(contentsOf: checkRuleCoverage(shapes: flattenedShapes, tech: tech))
-        violations.append(contentsOf: checkWidthAndArea(shapes: flattenedShapes, tech: tech))
-        violations.append(contentsOf: checkSpacing(shapes: flattenedShapes, tech: tech))
-        violations.append(contentsOf: checkViaEnclosure(shapes: flattenedShapes, vias: flattenedVias, tech: tech))
-        violations.append(contentsOf: checkEnclosureRules(shapes: flattenedShapes, tech: tech))
-        violations.append(contentsOf: checkDensity(shapes: flattenedShapes, tech: tech))
-        violations.append(contentsOf: checkShorts(shapes: flattenedShapes))
-        violations.append(contentsOf: checkOpens(shapes: flattenedShapes, vias: flattenedVias, tech: tech))
-        violations.append(contentsOf: checkAntenna(
+        return LayoutDRCRunContext(
             shapes: flattenedShapes,
             vias: flattenedVias,
             pins: flattenedPins,
+            terminalConflicts: terminalConflicts
+        )
+    }
+
+    private func collectViolations(
+        context: LayoutDRCRunContext,
+        tech: LayoutTechDatabase
+    ) -> [LayoutViolation] {
+        var violations: [LayoutViolation] = []
+
+        violations.append(contentsOf: context.terminalConflicts.map(makeTerminalConflictViolation))
+        violations.append(contentsOf: checkRuleCoverage(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkForbiddenLayers(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkWidthAndArea(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkRectangularGeometry(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkAngleRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkSpacing(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkSpacingRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkViaEnclosure(shapes: context.shapes, vias: context.vias, tech: tech))
+        violations.append(contentsOf: checkMinimumCuts(shapes: context.shapes, vias: context.vias, tech: tech))
+        violations.append(contentsOf: checkExactOverlaps(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkEnclosureRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkExtensionRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkDensity(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: checkShorts(shapes: context.shapes))
+        violations.append(contentsOf: checkOpens(shapes: context.shapes, vias: context.vias, tech: tech))
+        violations.append(contentsOf: checkAntenna(
+            shapes: context.shapes,
+            vias: context.vias,
+            pins: context.pins,
             tech: tech
         ))
 
-        return LayoutDRCResult(violations: violations)
+        return violations
     }
 
-    func resolveCell(document: LayoutDocument, cellID: UUID?) -> LayoutCell? {
-        if let id = cellID {
-            return document.cell(withID: id)
-        }
-        if let topID = document.topCellID {
-            return document.cell(withID: topID)
-        }
-        return document.cells.first
-    }
-
-    func flatten(
-        cell: LayoutCell,
+    private func missingTargetCellDiagnostic(
         document: LayoutDocument,
-        tech: LayoutTechDatabase,
-        transforms: [LayoutTransform],
-        terminalNetIDs: [String: UUID],
-        shapes: inout [LayoutShape],
-        vias: inout [LayoutVia],
-        pins: inout [LayoutPin],
-        terminalConflicts: inout [TerminalConnectivityConflict]
-    ) {
-        let terminalConnectivity = terminalConnectivity(cell: cell, terminalNetIDs: terminalNetIDs, tech: tech)
-        terminalConflicts.append(contentsOf: terminalConnectivity.conflicts.map {
-            $0.transformed(by: transforms)
-        })
-
-        for shape in cell.shapes {
-            var transformed = shape
-            if transformed.netID == nil {
-                transformed.netID = terminalConnectivity.shapeNetIDs[shape.id]
-            }
-            transformed.geometry = applyTransforms(to: shape.geometry, transforms: transforms)
-            shapes.append(transformed)
-        }
-
-        for via in cell.vias {
-            var transformed = via
-            if transformed.netID == nil {
-                transformed.netID = terminalConnectivity.viaNetIDs[via.id]
-            }
-            transformed.position = applyTransforms(to: via.position, transforms: transforms)
-            vias.append(transformed)
-        }
-
-        for pin in cell.pins {
-            var transformed = pin
-            if transformed.netID == nil {
-                transformed.netID = terminalNetIDs[pin.name]
-            }
-            transformed.position = applyTransforms(to: pin.position, transforms: transforms)
-            pins.append(transformed)
-        }
-
-        for instance in cell.instances {
-            guard let child = document.cell(withID: instance.cellID) else { continue }
-            for occurrenceTransform in instance.occurrenceTransforms() {
-                flatten(
-                    cell: child,
-                    document: document,
-                    tech: tech,
-                    transforms: transforms + [occurrenceTransform],
-                    terminalNetIDs: instance.terminalNetIDs,
-                    shapes: &shapes,
-                    vias: &vias,
-                    pins: &pins,
-                    terminalConflicts: &terminalConflicts
-                )
-            }
-        }
-    }
-
-    private struct TerminalConnectivity: Sendable {
-        var shapeNetIDs: [UUID: UUID]
-        var viaNetIDs: [UUID: UUID]
-        var conflicts: [TerminalConnectivityConflict]
-    }
-
-    struct TerminalConnectivityConflict: Sendable {
-        var netIDs: [UUID]
-        var shapeIDs: [UUID]
-        var viaIDs: [UUID]
-        var pinIDs: [UUID]
-        var region: LayoutRect
-
-        func transformed(by transforms: [LayoutTransform]) -> TerminalConnectivityConflict {
-            TerminalConnectivityConflict(
-                netIDs: netIDs,
-                shapeIDs: shapeIDs,
-                viaIDs: viaIDs,
-                pinIDs: pinIDs,
-                region: applyTransforms(to: region, transforms: transforms)
-            )
-        }
-
-        private func applyTransforms(to rect: LayoutRect, transforms: [LayoutTransform]) -> LayoutRect {
-            let geometry = LayoutGeometry.rect(rect)
-            var current = geometry
-            for transform in transforms.reversed() {
-                current = current.transformed(by: transform)
-            }
-            return LayoutGeometryAnalysis.boundingBox(for: current)
-        }
-    }
-
-    private func terminalConnectivity(
-        cell: LayoutCell,
-        terminalNetIDs: [String: UUID],
-        tech: LayoutTechDatabase
-    ) -> TerminalConnectivity {
-        guard !terminalNetIDs.isEmpty else {
-            return TerminalConnectivity(shapeNetIDs: [:], viaNetIDs: [:], conflicts: [])
-        }
-
-        var geometries: [LayoutGeometry] = []
-        var layers: [LayoutLayerID?] = []
-        var isVia: [Bool] = []
-        var viaDefs: [LayoutViaDefinition?] = []
-        var shapeIDsByNode: [Int: UUID] = [:]
-        var viaIDsByNode: [Int: UUID] = [:]
-
-        for shape in cell.shapes {
-            let index = geometries.count
-            geometries.append(shape.geometry)
-            layers.append(shape.layer)
-            isVia.append(false)
-            viaDefs.append(nil)
-            shapeIDsByNode[index] = shape.id
-        }
-
-        for via in cell.vias {
-            let index = geometries.count
-            geometries.append(.rect(viaCutRect(for: via, tech: tech)))
-            layers.append(nil)
-            isVia.append(true)
-            viaDefs.append(tech.viaDefinition(for: via.viaDefinitionID))
-            viaIDsByNode[index] = via.id
-        }
-
-        guard !geometries.isEmpty else {
-            return TerminalConnectivity(shapeNetIDs: [:], viaNetIDs: [:], conflicts: [])
-        }
-
-        // Connectivity and pin contact both require geometric intersection,
-        // so one spatial index serves the pair scan and the pin probes; the
-        // union-find result is independent of pair visiting order.
-        let boxes = geometries.map { LayoutGeometryAnalysis.boundingBox(for: $0) }
-        let grid = ShapeGridIndex(
-            boundingBoxes: boxes,
-            cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
+        cellID: UUID?
+    ) -> LayoutDRCDiagnostic {
+        let target = cellID ?? document.topCellID
+        return LayoutDRCDiagnostic(
+            code: "drc.target_cell_not_found",
+            severity: .error,
+            message: "DRC target cell could not be resolved.",
+            cellID: target,
+            suggestedActions: [
+                "inspect_document_cells",
+                "set_valid_top_cell",
+                "pass_existing_cell_id"
+            ]
         )
-        var unionFind = LayoutUnionFind(count: geometries.count)
-        if geometries.count > 1 {
-            for i in 0..<(geometries.count - 1) {
-                for j in grid.candidateIndices(near: boxes[i]) where j > i {
-                    guard unionFind.find(i) != unionFind.find(j) else { continue }
-                    if shouldConnect(
-                        indexA: i,
-                        indexB: j,
-                        geometries: geometries,
-                        layers: layers,
-                        isVia: isVia,
-                        viaDefs: viaDefs
-                    ) {
-                        unionFind.union(i, j)
-                    }
-                }
-            }
-        }
-
-        var netIDsByRoot: [Int: Set<UUID>] = [:]
-        var pinIDsByRoot: [Int: Set<UUID>] = [:]
-
-        for pin in cell.pins {
-            guard let netID = terminalNetIDs[pin.name] else { continue }
-            let pinRect = LayoutRect(
-                origin: LayoutPoint(
-                    x: pin.position.x - pin.size.width / 2,
-                    y: pin.position.y - pin.size.height / 2
-                ),
-                size: pin.size
-            )
-
-            for index in grid.candidateIndices(near: pinRect) {
-                guard terminalContactIntersects(
-                    pinRect: pinRect,
-                    pin: pin,
-                    geometry: geometries[index],
-                    layer: layers[index],
-                    isVia: isVia[index],
-                    viaDefinition: viaDefs[index]
-                ) else {
-                    continue
-                }
-                let root = unionFind.find(index)
-                netIDsByRoot[root, default: []].insert(netID)
-                pinIDsByRoot[root, default: []].insert(pin.id)
-            }
-        }
-
-        let componentNodes = unionFind.components()
-        var shapeNetIDs: [UUID: UUID] = [:]
-        var viaNetIDs: [UUID: UUID] = [:]
-        var conflicts: [TerminalConnectivityConflict] = []
-
-        for (root, netIDs) in netIDsByRoot {
-            let nodes = componentNodes[root] ?? []
-            if netIDs.count == 1, let netID = netIDs.first {
-                for node in nodes {
-                    if let shapeID = shapeIDsByNode[node] {
-                        shapeNetIDs[shapeID] = netID
-                    }
-                    if let viaID = viaIDsByNode[node] {
-                        viaNetIDs[viaID] = netID
-                    }
-                }
-            } else {
-                conflicts.append(TerminalConnectivityConflict(
-                    netIDs: netIDs.sorted { $0.uuidString < $1.uuidString },
-                    shapeIDs: nodes.compactMap { shapeIDsByNode[$0] },
-                    viaIDs: nodes.compactMap { viaIDsByNode[$0] },
-                    pinIDs: Array(pinIDsByRoot[root, default: []]).sorted { $0.uuidString < $1.uuidString },
-                    region: overallBoundingBox(geometries: nodes.map { geometries[$0] }) ?? .zero
-                ))
-            }
-        }
-
-        return TerminalConnectivity(shapeNetIDs: shapeNetIDs, viaNetIDs: viaNetIDs, conflicts: conflicts)
-    }
-
-    private func terminalContactIntersects(
-        pinRect: LayoutRect,
-        pin: LayoutPin,
-        geometry: LayoutGeometry,
-        layer: LayoutLayerID?,
-        isVia: Bool,
-        viaDefinition: LayoutViaDefinition?
-    ) -> Bool {
-        if isVia {
-            guard let viaDefinition else { return false }
-            guard pin.layer == viaDefinition.topLayer || pin.layer == viaDefinition.bottomLayer else {
-                return false
-            }
-        } else {
-            guard layer == pin.layer else { return false }
-        }
-
-        let geometryBox = LayoutGeometryAnalysis.boundingBox(for: geometry)
-        return geometryBox.intersects(pinRect)
-            || LayoutGeometryAnalysis.contains(pin.position, in: geometry)
-            || LayoutGeometryAnalysis.intersects(geometry, .rect(pinRect))
-    }
-
-    func makeTerminalConflictViolation(_ conflict: TerminalConnectivityConflict) -> LayoutViolation {
-        LayoutViolation(
-            kind: .overlapShort,
-            ruleID: "connectivity.short.terminalComponent",
-            message: "Short between terminal nets in one connected component",
-            region: conflict.region,
-            shapeIDs: conflict.shapeIDs,
-            viaIDs: conflict.viaIDs,
-            pinIDs: conflict.pinIDs,
-            netIDs: conflict.netIDs,
-            suggestedFix: "Separate the connected geometry or map the instance terminals to the same net intentionally."
-        )
-    }
-
-    private func applyTransforms(to point: LayoutPoint, transforms: [LayoutTransform]) -> LayoutPoint {
-        var current = point
-        for transform in transforms.reversed() {
-            current = transform.apply(to: current)
-        }
-        return current
-    }
-
-    private func applyTransforms(to geometry: LayoutGeometry, transforms: [LayoutTransform]) -> LayoutGeometry {
-        var current = geometry
-        for transform in transforms.reversed() {
-            current = current.transformed(by: transform)
-        }
-        return current
     }
 
     func checkRuleCoverage(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         return grouped.compactMap { layer, layerShapes in
-            guard tech.ruleSet(for: layer) == nil else { return nil }
+            guard tech.ruleSet(for: layer) == nil,
+                  !tech.forbiddenLayerRules.contains(where: { $0.layer == layer }) else {
+                return nil
+            }
             return LayoutViolation(
                 kind: .ruleCoverage,
                 ruleID: layerRuleID(layer: layer, rule: "ruleCoverage"),
@@ -350,6 +134,30 @@ public struct LayoutDRCService {
                 shapeIDs: layerShapes.map(\.id),
                 suggestedFix: "Add a layer rule set for this layer or remove geometry from unchecked layers."
             )
+        }
+    }
+
+    func checkForbiddenLayers(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+        guard !tech.forbiddenLayerRules.isEmpty else { return [] }
+        let grouped = Dictionary(grouping: shapes, by: { $0.layer })
+        return tech.forbiddenLayerRules.flatMap { rule -> [LayoutViolation] in
+            let layerShapes = grouped[rule.layer] ?? []
+            return layerShapes.map { shape in
+                let reason = rule.reason.map { " \($0)" } ?? ""
+                return LayoutViolation(
+                    kind: .forbiddenLayer,
+                    ruleID: forbiddenLayerRuleID(rule),
+                    message: "Forbidden marker geometry exists on \(rule.layer.name).\(reason)",
+                    layer: rule.layer,
+                    region: LayoutGeometryAnalysis.boundingBox(for: shape.geometry),
+                    measured: 1,
+                    required: 0,
+                    unit: "shape",
+                    shapeIDs: [shape.id],
+                    netIDs: shape.netID.map { [$0] } ?? [],
+                    suggestedFix: "Remove or repair the source geometry that produced this forbidden marker."
+                )
+            }
         }
     }
 
@@ -437,6 +245,141 @@ public struct LayoutDRCService {
             }
         }
         return violations
+    }
+
+    func checkRectangularGeometry(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+        var violations: [LayoutViolation] = []
+        for shape in shapes {
+            guard tech.ruleSet(for: shape.layer)?.requiresRectangular == true else { continue }
+            guard !isAxisAlignedRectangle(shape.geometry) else { continue }
+            violations.append(LayoutViolation(
+                kind: .rectOnly,
+                ruleID: layerRuleID(layer: shape.layer, rule: "rectOnly"),
+                message: "Rect-only violation on \(shape.layer.name). Geometry must be an axis-aligned rectangle.",
+                layer: shape.layer,
+                region: LayoutGeometryAnalysis.boundingBox(for: shape.geometry),
+                shapeIDs: [shape.id],
+                netIDs: shape.netID.map { [$0] } ?? [],
+                suggestedFix: "Replace this geometry with one or more axis-aligned rectangles on the same layer."
+            ))
+        }
+        return violations
+    }
+
+    func checkAngleRules(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+        var violations: [LayoutViolation] = []
+        for shape in shapes {
+            guard let step = tech.ruleSet(for: shape.layer)?.allowedAngleStepDegrees,
+                  step > Self.numericalTolerance,
+                  step <= 180 else {
+                continue
+            }
+            guard let violatingEdge = firstAngleViolation(in: shape.geometry, allowedStep: step) else {
+                continue
+            }
+            violations.append(LayoutViolation(
+                kind: .angle,
+                ruleID: layerRuleID(layer: shape.layer, rule: "angle"),
+                message: "Angle violation on \(shape.layer.name). Edge angle \(violatingEdge.angle) degrees is not a multiple of \(step) degrees.",
+                layer: shape.layer,
+                region: segmentBoundingBox(violatingEdge.segment),
+                measured: violatingEdge.angle,
+                required: step,
+                unit: "degree",
+                shapeIDs: [shape.id],
+                netIDs: shape.netID.map { [$0] } ?? [],
+                suggestedFix: "Adjust the geometry edge to the allowed angle grid for this layer."
+            ))
+        }
+        return violations
+    }
+
+    private func isAxisAlignedRectangle(_ geometry: LayoutGeometry) -> Bool {
+        switch geometry {
+        case .rect(let rect):
+            return rect.size.width > Self.numericalTolerance
+                && rect.size.height > Self.numericalTolerance
+        case .path:
+            return false
+        case .polygon(let polygon):
+            return polygonIsAxisAlignedRectangle(polygon)
+        }
+    }
+
+    private func polygonIsAxisAlignedRectangle(_ polygon: LayoutPolygon) -> Bool {
+        var points: [LayoutPoint] = []
+        for point in polygon.points {
+            guard points.last.map({ !samePoint($0, point) }) ?? true else { continue }
+            points.append(point)
+        }
+        if let first = points.first, let last = points.last, samePoint(first, last) {
+            points.removeLast()
+        }
+        guard points.count == 4 else { return false }
+        let box = LayoutGeometryAnalysis.boundingBox(for: LayoutPolygon(points: points))
+        guard box.size.width > Self.numericalTolerance,
+              box.size.height > Self.numericalTolerance else {
+            return false
+        }
+        let corners = [
+            LayoutPoint(x: box.minX, y: box.minY),
+            LayoutPoint(x: box.maxX, y: box.minY),
+            LayoutPoint(x: box.maxX, y: box.maxY),
+            LayoutPoint(x: box.minX, y: box.maxY),
+        ]
+        return points.allSatisfy { point in
+            corners.contains { samePoint(point, $0) }
+        } && corners.allSatisfy { corner in
+            points.contains { samePoint($0, corner) }
+        }
+    }
+
+    private func samePoint(_ lhs: LayoutPoint, _ rhs: LayoutPoint) -> Bool {
+        abs(lhs.x - rhs.x) <= Self.numericalTolerance
+            && abs(lhs.y - rhs.y) <= Self.numericalTolerance
+    }
+
+    private func firstAngleViolation(
+        in geometry: LayoutGeometry,
+        allowedStep step: Double
+    ) -> (segment: LayoutSegment, angle: Double)? {
+        for segment in LayoutGeometryAnalysis.segments(for: geometry) {
+            let dx = segment.end.x - segment.start.x
+            let dy = segment.end.y - segment.start.y
+            guard hypot(dx, dy) > Self.numericalTolerance else { continue }
+            let angle = normalizedUndirectedAngle(dx: dx, dy: dy)
+            guard !isAngleAllowed(angle, step: step) else { continue }
+            return (segment, angle)
+        }
+        return nil
+    }
+
+    private func normalizedUndirectedAngle(dx: Double, dy: Double) -> Double {
+        var angle = atan2(dy, dx) * 180 / Double.pi
+        while angle < 0 {
+            angle += 180
+        }
+        while angle >= 180 {
+            angle -= 180
+        }
+        return angle
+    }
+
+    private func isAngleAllowed(_ angle: Double, step: Double) -> Bool {
+        let remainder = angle.truncatingRemainder(dividingBy: step)
+        return remainder <= Self.numericalTolerance
+            || abs(step - remainder) <= Self.numericalTolerance
+    }
+
+    private func segmentBoundingBox(_ segment: LayoutSegment) -> LayoutRect {
+        let minX = min(segment.start.x, segment.end.x)
+        let minY = min(segment.start.y, segment.end.y)
+        let maxX = max(segment.start.x, segment.end.x)
+        let maxY = max(segment.start.y, segment.end.y)
+        return LayoutRect(
+            origin: LayoutPoint(x: minX, y: minY),
+            size: LayoutSize(width: maxX - minX, height: maxY - minY)
+        )
     }
 
     /// Spacing is net-blind on the merged region, matching mask reality:
@@ -536,6 +479,53 @@ public struct LayoutDRCService {
         return violations
     }
 
+    func checkSpacingRules(
+        shapes: [LayoutShape],
+        tech: LayoutTechDatabase,
+        rules: [LayoutSpacingRule]? = nil
+    ) -> [LayoutViolation] {
+        let spacingRules = rules ?? tech.spacingRules
+        guard !spacingRules.isEmpty else { return [] }
+        let grouped = Dictionary(grouping: shapes, by: { $0.layer })
+        let dbu = tech.units.dbuPerMicron
+        var violations: [LayoutViolation] = []
+
+        for rule in spacingRules {
+            guard rule.primaryLayer != rule.secondaryLayer,
+                  rule.minSpacing > 0 else {
+                continue
+            }
+            guard let primaryShapes = grouped[rule.primaryLayer], !primaryShapes.isEmpty,
+                  let secondaryShapes = grouped[rule.secondaryLayer], !secondaryShapes.isEmpty else {
+                continue
+            }
+            let primary = mergedRegion(of: primaryShapes, dbu: dbu)
+            let secondary = mergedRegion(of: secondaryShapes, dbu: dbu)
+            if primary.isEmpty || secondary.isEmpty { continue }
+
+            let minSpacingDBU = Int32((rule.minSpacing * dbu).rounded())
+            for pair in primary.spaceViolations(to: secondary, minSpace: minSpacingDBU) {
+                let rect = edgePairToRect(pair, dbu: dbu)
+                let measured = pair.distance / dbu
+                let contributors = contributingShapes(primaryShapes + secondaryShapes, around: rect)
+                violations.append(LayoutViolation(
+                    kind: .minSpacing,
+                    ruleID: spacingRuleID(rule),
+                    message: "Layer spacing violation between \(rule.primaryLayer.name) and \(rule.secondaryLayer.name). Required \(rule.minSpacing)µm, measured \(String(format: "%.3f", measured))µm",
+                    layer: rule.primaryLayer,
+                    region: rect,
+                    measured: measured,
+                    required: rule.minSpacing,
+                    unit: "um",
+                    shapeIDs: contributors.map(\.id),
+                    netIDs: uniqueNetIDs(of: contributors),
+                    suggestedFix: "Increase clearance between \(rule.primaryLayer.name) and \(rule.secondaryLayer.name) geometry."
+                ))
+            }
+        }
+        return violations
+    }
+
     private func edgesBelongToSameComponent(_ pair: IREdgePair, components: [Region]) -> Bool {
         let first = midpoint(of: pair.edge1)
         let second = midpoint(of: pair.edge2)
@@ -549,108 +539,7 @@ public struct LayoutDRCService {
         )
     }
 
-    func checkViaEnclosure(
-        shapes: [LayoutShape],
-        vias: [LayoutVia],
-        tech: LayoutTechDatabase
-    ) -> [LayoutViolation] {
-        var violations: [LayoutViolation] = []
-        guard !vias.isEmpty else { return violations }
-        let dbu = tech.units.dbuPerMicron
 
-        // Group shapes and build spatial indices per layer once; each via
-        // then only merges the geometry near its own cut. Shapes outside the
-        // required halo contribute nothing to halo coverage, point coverage,
-        // or the measured value, so the verdict is unchanged.
-        let shapesByLayer = Dictionary(grouping: shapes, by: { $0.layer })
-        var gridsByLayer: [LayoutLayerID: ShapeGridIndex] = [:]
-        for (layer, layerShapes) in shapesByLayer {
-            let boxes = layerShapes.map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
-            gridsByLayer[layer] = ShapeGridIndex(
-                boundingBoxes: boxes,
-                cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
-            )
-        }
-        // Rounding to database units moves edges by at most half a dbu, so
-        // the candidate query adds one dbu of slack around the halo.
-        let roundingSlack = 1.0 / dbu
-        func candidates(layer: LayoutLayerID, nearHalo halo: LayoutRect) -> [LayoutShape] {
-            guard let layerShapes = shapesByLayer[layer],
-                  let grid = gridsByLayer[layer] else { return [] }
-            return grid.candidateIndices(near: halo, margin: roundingSlack).map { layerShapes[$0] }
-        }
-
-        for via in vias {
-            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { continue }
-            let cutRect = LayoutRect(
-                origin: LayoutPoint(
-                    x: via.position.x - def.cutSize.width / 2,
-                    y: via.position.y - def.cutSize.height / 2
-                ),
-                size: def.cutSize
-            )
-
-            let topCheck = viaEnclosureCheck(
-                cutRect: cutRect,
-                enclosure: def.enclosure.top,
-                candidates: candidates(
-                    layer: def.topLayer,
-                    nearHalo: cutRect.expanded(by: def.enclosure.top, def.enclosure.top)
-                ),
-                dbu: dbu
-            )
-            let bottomCheck = viaEnclosureCheck(
-                cutRect: cutRect,
-                enclosure: def.enclosure.bottom,
-                candidates: candidates(
-                    layer: def.bottomLayer,
-                    nearHalo: cutRect.expanded(by: def.enclosure.bottom, def.enclosure.bottom)
-                ),
-                dbu: dbu
-            )
-
-            if let violation = viaEnclosureViolation(
-                via: via,
-                definition: def,
-                cutRect: cutRect,
-                topCheck: topCheck,
-                bottomCheck: bottomCheck
-            ) {
-                violations.append(violation)
-            }
-        }
-        return violations
-    }
-
-    func viaEnclosureViolation(
-        for via: LayoutVia,
-        topCandidates: [LayoutShape],
-        bottomCandidates: [LayoutShape],
-        tech: LayoutTechDatabase
-    ) -> LayoutViolation? {
-        guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return nil }
-        let cutRect = viaCutRect(for: via, tech: tech)
-        let dbu = tech.units.dbuPerMicron
-        let topCheck = viaEnclosureCheck(
-            cutRect: cutRect,
-            enclosure: def.enclosure.top,
-            candidates: topCandidates,
-            dbu: dbu
-        )
-        let bottomCheck = viaEnclosureCheck(
-            cutRect: cutRect,
-            enclosure: def.enclosure.bottom,
-            candidates: bottomCandidates,
-            dbu: dbu
-        )
-        return viaEnclosureViolation(
-            via: via,
-            definition: def,
-            cutRect: cutRect,
-            topCheck: topCheck,
-            bottomCheck: bottomCheck
-        )
-    }
 
     /// `layerFilter` restricts which layers are evaluated; the density
     /// windows are always derived from the bounding box of ALL passed
@@ -714,155 +603,12 @@ public struct LayoutDRCService {
         )
     }
 
-    func checkShorts(shapes: [LayoutShape]) -> [LayoutViolation] {
-        var violations: [LayoutViolation] = []
-        if shapes.count < 2 { return violations }
-
-        // A short requires geometric intersection, so a per-layer spatial
-        // index prunes the pair scan to bbox neighbours. Per-layer index
-        // arrays are ascending, so candidate order matches the original
-        // global (i, j) scan and the emission order is preserved.
-        let boxes = shapes.map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
-        var indicesByLayer: [LayoutLayerID: [Int]] = [:]
-        for (index, shape) in shapes.enumerated() {
-            indicesByLayer[shape.layer, default: []].append(index)
-        }
-        var gridsByLayer: [LayoutLayerID: ShapeGridIndex] = [:]
-        for (layer, indices) in indicesByLayer {
-            let layerBoxes = indices.map { boxes[$0] }
-            gridsByLayer[layer] = ShapeGridIndex(
-                boundingBoxes: layerBoxes,
-                cellSize: ShapeGridIndex.defaultCellSize(for: layerBoxes)
-            )
-        }
-
-        for i in 0..<(shapes.count - 1) {
-            let a = shapes[i]
-            guard let grid = gridsByLayer[a.layer],
-                  let layerIndices = indicesByLayer[a.layer] else { continue }
-            for localIndex in grid.candidateIndices(near: boxes[i]) {
-                let j = layerIndices[localIndex]
-                guard j > i else { continue }
-                let b = shapes[j]
-                if let violation = sameLayerShortViolation(first: a, second: b) {
-                    violations.append(violation)
-                }
-            }
-        }
-        return violations
-    }
 
     /// Pair verdict for the same-layer short check; `first` must precede
     /// `second` in flattened order so the violation payload matches the
     /// full-scan emission exactly.
-    func sameLayerShortViolation(first: LayoutShape, second: LayoutShape) -> LayoutViolation? {
-        guard first.layer == second.layer else { return nil }
-        guard let na = first.netID, let nb = second.netID, na != nb else { return nil }
-        guard LayoutGeometryAnalysis.intersects(first.geometry, second.geometry) else { return nil }
-        let region = LayoutGeometryAnalysis.boundingBox(for: first.geometry).union(
-            LayoutGeometryAnalysis.boundingBox(for: second.geometry)
-        )
-        return LayoutViolation(
-            kind: .overlapShort,
-            ruleID: "connectivity.short.sameLayerOverlap",
-            message: "Short between shapes on different nets",
-            layer: first.layer,
-            region: region,
-            shapeIDs: [first.id, second.id],
-            netIDs: [na, nb],
-            suggestedFix: "Separate the shapes or intentionally assign them to the same net before verification."
-        )
-    }
 
-    func checkOpens(shapes: [LayoutShape], vias: [LayoutVia], tech: LayoutTechDatabase) -> [LayoutViolation] {
-        var violations: [LayoutViolation] = []
-        let netShapes = shapes.filter { $0.netID != nil }
-        if netShapes.isEmpty { return violations }
 
-        let nets = Dictionary(grouping: netShapes, by: { $0.netID! })
-        let viasByNet = Dictionary(grouping: vias.filter { $0.netID != nil }, by: { $0.netID! })
-        for (netID, shapesForNet) in nets {
-            var geometries: [LayoutGeometry] = []
-            var layers: [LayoutLayerID?] = []
-            var isVia: [Bool] = []
-            var viaDefs: [LayoutViaDefinition?] = []
-
-            for shape in shapesForNet {
-                geometries.append(shape.geometry)
-                layers.append(shape.layer)
-                isVia.append(false)
-                viaDefs.append(nil)
-            }
-
-            let netVias = viasByNet[netID] ?? []
-            for via in netVias {
-                let rect = viaCutRect(for: via, tech: tech)
-                geometries.append(.rect(rect))
-                layers.append(nil)
-                isVia.append(true)
-                viaDefs.append(tech.viaDefinition(for: via.viaDefinitionID))
-            }
-
-            if geometries.count < 2 { continue }
-            // Connectivity requires geometric intersection, so the spatial
-            // index prunes candidate pairs; the union-find result is
-            // independent of pair visiting order.
-            let boxes = geometries.map { LayoutGeometryAnalysis.boundingBox(for: $0) }
-            let grid = ShapeGridIndex(
-                boundingBoxes: boxes,
-                cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
-            )
-            var uf = LayoutUnionFind(count: geometries.count)
-            for i in 0..<(geometries.count - 1) {
-                for j in grid.candidateIndices(near: boxes[i]) where j > i {
-                    guard uf.find(i) != uf.find(j) else { continue }
-                    if shouldConnect(
-                        indexA: i,
-                        indexB: j,
-                        geometries: geometries,
-                        layers: layers,
-                        isVia: isVia,
-                        viaDefs: viaDefs
-                    ) {
-                        uf.union(i, j)
-                    }
-                }
-            }
-
-            let components = uf.components()
-            if components.count > 1 {
-                let region = overallBoundingBox(geometries: geometries) ?? .zero
-                violations.append(LayoutViolation(
-                    kind: .disconnectedOpen,
-                    ruleID: "connectivity.open.disconnectedNet",
-                    message: "Open detected in net \(netID)",
-                    region: region,
-                    shapeIDs: shapesForNet.map(\.id),
-                    viaIDs: netVias.map(\.id),
-                    netIDs: [netID],
-                    suggestedFix: "Add metal or vias to connect all geometry belonging to this net."
-                ))
-            }
-        }
-
-        return violations
-    }
-
-    func viaCutRect(for via: LayoutVia, tech: LayoutTechDatabase) -> LayoutRect {
-        if let def = tech.viaDefinition(for: via.viaDefinitionID) {
-            return LayoutRect(
-                origin: LayoutPoint(
-                    x: via.position.x - def.cutSize.width / 2,
-                    y: via.position.y - def.cutSize.height / 2
-                ),
-                size: def.cutSize
-            )
-        }
-        return LayoutRect(
-            origin: LayoutPoint(x: via.position.x - 0.5, y: via.position.y - 0.5),
-            size: LayoutSize(width: 1, height: 1)
-        )
-    }
 
     /// Single source of truth for "do these two flattened elements touch
     /// electrically": shape–shape requires the same layer plus geometric
@@ -871,35 +617,6 @@ public struct LayoutDRCService {
     /// intersect the cut rectangle. The open check and the connectivity
     /// extractor both call this so their notions of contact can never
     /// diverge.
-    func shouldConnect(
-        indexA: Int,
-        indexB: Int,
-        geometries: [LayoutGeometry],
-        layers: [LayoutLayerID?],
-        isVia: [Bool],
-        viaDefs: [LayoutViaDefinition?]
-    ) -> Bool {
-        let geomA = geometries[indexA]
-        let geomB = geometries[indexB]
-
-        if !isVia[indexA] && !isVia[indexB] {
-            if layers[indexA] != layers[indexB] { return false }
-            return LayoutGeometryAnalysis.intersects(geomA, geomB)
-        }
-
-        if isVia[indexA] && isVia[indexB] {
-            return false
-        }
-
-        let viaIndex = isVia[indexA] ? indexA : indexB
-        let shapeIndex = isVia[indexA] ? indexB : indexA
-        guard let def = viaDefs[viaIndex] else { return false }
-        guard let shapeLayer = layers[shapeIndex] else { return false }
-        if shapeLayer != def.topLayer && shapeLayer != def.bottomLayer {
-            return false
-        }
-        return LayoutGeometryAnalysis.intersects(geomA, geomB)
-    }
 
     /// Staged antenna model: for each antenna-rule layer in fabrication
     /// order (derived from the via/contact bottom→top relations), build the
@@ -917,344 +634,9 @@ public struct LayoutDRCService {
     /// Configuration gaps (underivable stack, rules or gate pins outside
     /// the stack, unknown via definitions) are reported as violations
     /// instead of being skipped.
-    func checkAntenna(
-        shapes: [LayoutShape],
-        vias: [LayoutVia],
-        pins: [LayoutPin],
-        tech: LayoutTechDatabase
-    ) -> [LayoutViolation] {
-        guard !tech.antennaRules.isEmpty else { return [] }
 
-        let stack: LayoutConductorStack
-        do {
-            stack = try LayoutConductorStack.derive(from: tech)
-        } catch {
-            return [LayoutViolation(
-                kind: .antenna,
-                ruleID: "antenna.config.conductorStack",
-                message: "Antenna check could not run: \(error).",
-                suggestedFix: "Fix the via/contact definitions so their bottom-to-top layer relations form a DAG."
-            )]
-        }
-
-        var violations: [LayoutViolation] = []
-
-        var stagedRules: [(rule: LayoutAntennaRule, rank: Int)] = []
-        for rule in tech.antennaRules {
-            guard let rank = stack.rank(of: rule.layerID) else {
-                violations.append(LayoutViolation(
-                    kind: .antenna,
-                    ruleID: antennaRuleID(rule),
-                    message: "Antenna rule on layer \(rule.layerID.name) cannot be evaluated: the layer is not part of the conductor stack.",
-                    layer: rule.layerID,
-                    suggestedFix: "Connect \(rule.layerID.name) into the stack with a via/contact definition or remove the rule."
-                ))
-                continue
-            }
-            stagedRules.append((rule, rank))
-        }
-        guard !stagedRules.isEmpty else { return violations }
-        stagedRules.sort {
-            if $0.rank != $1.rank { return $0.rank < $1.rank }
-            return antennaRuleID($0.rule) < antennaRuleID($1.rule)
-        }
-
-        // Cut layers bridge the conductor layers of the definitions that
-        // use them, becoming real once their top layer is deposited.
-        struct CutBridge {
-            var layers: Set<LayoutLayerID> = []
-            var activationRank = Int.max
-        }
-        var bridgeByCutLayer: [LayoutLayerID: CutBridge] = [:]
-        for def in tech.vias {
-            guard let topRank = stack.rank(of: def.topLayer) else { continue }
-            var bridge = bridgeByCutLayer[def.cutLayer] ?? CutBridge()
-            bridge.layers.formUnion([def.bottomLayer, def.topLayer])
-            bridge.activationRank = min(bridge.activationRank, topRank)
-            bridgeByCutLayer[def.cutLayer] = bridge
-        }
-        for def in tech.contacts {
-            guard let topRank = stack.rank(of: def.topLayer) else { continue }
-            var bridge = bridgeByCutLayer[def.cutLayer] ?? CutBridge()
-            bridge.layers.formUnion([def.bottomLayer, def.topLayer])
-            bridge.activationRank = min(bridge.activationRank, topRank)
-            bridgeByCutLayer[def.cutLayer] = bridge
-        }
-
-        struct Node {
-            var geometry: LayoutGeometry
-            var box: LayoutRect
-            var layer: LayoutLayerID?
-            var bridgeLayers: Set<LayoutLayerID>
-            var activationRank: Int
-            var shapeIndex: Int?
-            var viaIndex: Int?
-            var pinIndex: Int?
-        }
-        var nodes: [Node] = []
-
-        for (index, shape) in shapes.enumerated() {
-            let box = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
-            if let rank = stack.rank(of: shape.layer) {
-                nodes.append(Node(
-                    geometry: shape.geometry, box: box, layer: shape.layer,
-                    bridgeLayers: [], activationRank: rank,
-                    shapeIndex: index, viaIndex: nil, pinIndex: nil
-                ))
-            } else if let bridge = bridgeByCutLayer[shape.layer] {
-                nodes.append(Node(
-                    geometry: shape.geometry, box: box, layer: nil,
-                    bridgeLayers: bridge.layers, activationRank: bridge.activationRank,
-                    shapeIndex: index, viaIndex: nil, pinIndex: nil
-                ))
-            }
-            // Wells, implants and markers do not conduct; they stay out.
-        }
-
-        var unknownViaDefinitionIDs: Set<String> = []
-        for (index, via) in vias.enumerated() {
-            let resolved: (cutSize: LayoutSize, bottom: LayoutLayerID, top: LayoutLayerID)?
-            if let def = tech.viaDefinition(for: via.viaDefinitionID) {
-                resolved = (def.cutSize, def.bottomLayer, def.topLayer)
-            } else if let contact = tech.contactDefinition(for: via.viaDefinitionID) {
-                resolved = (contact.cutSize, contact.bottomLayer, contact.topLayer)
-            } else {
-                resolved = nil
-            }
-            guard let cut = resolved, let topRank = stack.rank(of: cut.top) else {
-                unknownViaDefinitionIDs.insert(via.viaDefinitionID)
-                continue
-            }
-            let rect = LayoutRect(
-                origin: LayoutPoint(
-                    x: via.position.x - cut.cutSize.width / 2,
-                    y: via.position.y - cut.cutSize.height / 2
-                ),
-                size: cut.cutSize
-            )
-            nodes.append(Node(
-                geometry: .rect(rect), box: rect, layer: nil,
-                bridgeLayers: [cut.bottom, cut.top], activationRank: topRank,
-                shapeIndex: nil, viaIndex: index, pinIndex: nil
-            ))
-        }
-        for definitionID in unknownViaDefinitionIDs.sorted() {
-            violations.append(LayoutViolation(
-                kind: .antenna,
-                ruleID: "antenna.config.viaDefinition",
-                message: "Antenna connectivity cannot include vias with unknown definition '\(definitionID)'.",
-                suggestedFix: "Add the via/contact definition to the technology database."
-            ))
-        }
-
-        for (index, pin) in pins.enumerated() {
-            guard let rank = stack.rank(of: pin.layer) else {
-                if pin.role == .gate {
-                    violations.append(LayoutViolation(
-                        kind: .antenna,
-                        ruleID: "antenna.config.gatePinLayer",
-                        message: "Gate pin '\(pin.name)' sits on layer \(pin.layer.name) outside the conductor stack; its antenna exposure cannot be evaluated.",
-                        layer: pin.layer,
-                        pinIDs: [pin.id],
-                        suggestedFix: "Place the gate pin on a conductor-stack layer or connect its layer with a via/contact definition."
-                    ))
-                }
-                continue
-            }
-            let rect = LayoutRect(
-                origin: LayoutPoint(
-                    x: pin.position.x - pin.size.width / 2,
-                    y: pin.position.y - pin.size.height / 2
-                ),
-                size: pin.size
-            )
-            nodes.append(Node(
-                geometry: .rect(rect), box: rect, layer: pin.layer,
-                bridgeLayers: [], activationRank: rank,
-                shapeIndex: nil, viaIndex: nil, pinIndex: index
-            ))
-        }
-
-        guard !nodes.isEmpty else { return violations }
-
-        let boxes = nodes.map(\.box)
-        let grid = ShapeGridIndex(
-            boundingBoxes: boxes,
-            cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
-        )
-        var unionFind = LayoutUnionFind(count: nodes.count)
-        var active = [Bool](repeating: false, count: nodes.count)
-        let activationOrder = nodes.indices.sorted {
-            if nodes[$0].activationRank != nodes[$1].activationRank {
-                return nodes[$0].activationRank < nodes[$1].activationRank
-            }
-            return $0 < $1
-        }
-        var activationCursor = 0
-
-        func connects(_ a: Int, _ b: Int) -> Bool {
-            let nodeA = nodes[a]
-            let nodeB = nodes[b]
-            let aIsBridge = !nodeA.bridgeLayers.isEmpty
-            let bIsBridge = !nodeB.bridgeLayers.isEmpty
-            if aIsBridge && bIsBridge { return false }
-            // Pins are abstract terminals; they attach through geometry but
-            // never join each other directly.
-            if nodeA.pinIndex != nil && nodeB.pinIndex != nil { return false }
-            if aIsBridge || bIsBridge {
-                let bridge = aIsBridge ? nodeA : nodeB
-                let conductor = aIsBridge ? nodeB : nodeA
-                guard let layer = conductor.layer, bridge.bridgeLayers.contains(layer) else {
-                    return false
-                }
-            } else {
-                guard nodeA.layer == nodeB.layer else { return false }
-            }
-            return LayoutGeometryAnalysis.intersects(nodeA.geometry, nodeB.geometry)
-        }
-
-        func activate(upTo rank: Int) {
-            while activationCursor < activationOrder.count,
-                  nodes[activationOrder[activationCursor]].activationRank <= rank {
-                let index = activationOrder[activationCursor]
-                activationCursor += 1
-                active[index] = true
-                for candidate in grid.candidateIndices(near: nodes[index].box)
-                where candidate != index && active[candidate] {
-                    guard unionFind.find(index) != unionFind.find(candidate) else { continue }
-                    if connects(index, candidate) {
-                        unionFind.union(index, candidate)
-                    }
-                }
-            }
-        }
-
-        let dbu = tech.units.dbuPerMicron
-        let rulesByRank = Dictionary(grouping: stagedRules, by: { $0.rank })
-
-        for rank in rulesByRank.keys.sorted() {
-            activate(upTo: rank)
-
-            var componentMembers: [Int: [Int]] = [:]
-            for index in nodes.indices where active[index] {
-                componentMembers[unionFind.find(index), default: []].append(index)
-            }
-            // Members were appended in ascending node order, so the first
-            // member orders components deterministically.
-            let components = componentMembers.values.sorted { $0[0] < $1[0] }
-
-            for component in components {
-                var gatePins: [LayoutPin] = []
-                var hasDischarge = false
-                var componentShapes: [LayoutShape] = []
-                var componentViaIDs: [UUID] = []
-                for index in component {
-                    let node = nodes[index]
-                    if let pinIndex = node.pinIndex {
-                        switch pins[pinIndex].role {
-                        case .gate:
-                            gatePins.append(pins[pinIndex])
-                        case .source, .drain, .bulk:
-                            hasDischarge = true
-                        case .signal, .power, .ground:
-                            break
-                        }
-                    }
-                    if let shapeIndex = node.shapeIndex, node.layer != nil {
-                        componentShapes.append(shapes[shapeIndex])
-                    }
-                    if let viaIndex = node.viaIndex {
-                        componentViaIDs.append(vias[viaIndex].id)
-                    }
-                }
-                if hasDischarge { continue }
-                let gateArea = gatePins.reduce(0.0) { $0 + ($1.size.width * $1.size.height) }
-                if gateArea <= 0 { continue }
-
-                let componentNetIDs = antennaComponentNetIDs(shapes: componentShapes, pins: gatePins)
-
-                for staged in rulesByRank[rank] ?? [] {
-                    let rule = staged.rule
-                    let layerShapes = componentShapes.filter { $0.layer == rule.layerID }
-                    let layerArea = mergedArea(of: layerShapes, dbu: dbu)
-                    if layerArea > 0 {
-                        let ratio = layerArea / gateArea
-                        if ratio > rule.maxRatio {
-                            violations.append(LayoutViolation(
-                                kind: .antenna,
-                                ruleID: antennaRuleID(rule),
-                                message: "Antenna violation at the \(rule.layerID.name) etch stage: ratio \(ratio) exceeds \(rule.maxRatio).",
-                                layer: rule.layerID,
-                                region: overallBoundingBox(shapes: layerShapes) ?? .zero,
-                                measured: ratio,
-                                required: rule.maxRatio,
-                                unit: "ratio",
-                                shapeIDs: layerShapes.map(\.id),
-                                viaIDs: componentViaIDs,
-                                pinIDs: gatePins.map(\.id),
-                                netIDs: componentNetIDs,
-                                suggestedFix: "Insert an upper-layer jumper near the gate, add an antenna diode or diffusion tie, or reduce the metal area collected before the gate."
-                            ))
-                        }
-                    }
-
-                    if let maxCumulative = rule.maxCumulativeRatio {
-                        var seenLayers: Set<LayoutLayerID> = []
-                        var cumulativeArea = 0.0
-                        var cumulativeShapes: [LayoutShape] = []
-                        for contributing in stagedRules where contributing.rank <= rank {
-                            guard seenLayers.insert(contributing.rule.layerID).inserted else { continue }
-                            let shapesOnLayer = componentShapes.filter { $0.layer == contributing.rule.layerID }
-                            cumulativeArea += mergedArea(of: shapesOnLayer, dbu: dbu)
-                            cumulativeShapes.append(contentsOf: shapesOnLayer)
-                        }
-                        guard cumulativeArea > 0 else { continue }
-                        let ratio = cumulativeArea / gateArea
-                        if ratio > maxCumulative {
-                            violations.append(LayoutViolation(
-                                kind: .antenna,
-                                ruleID: cumulativeAntennaRuleID(rule),
-                                message: "Cumulative antenna violation at the \(rule.layerID.name) etch stage: ratio \(ratio) exceeds \(maxCumulative).",
-                                layer: rule.layerID,
-                                region: overallBoundingBox(shapes: cumulativeShapes) ?? .zero,
-                                measured: ratio,
-                                required: maxCumulative,
-                                unit: "ratio",
-                                shapeIDs: cumulativeShapes.map(\.id),
-                                viaIDs: componentViaIDs,
-                                pinIDs: gatePins.map(\.id),
-                                netIDs: componentNetIDs,
-                                suggestedFix: "Insert an upper-layer jumper near the gate, add an antenna diode or diffusion tie, or reduce the total metal area collected before the gate."
-                            ))
-                        }
-                    }
-                }
-            }
-        }
-
-        return violations
-    }
-
-    private func antennaComponentNetIDs(shapes: [LayoutShape], pins: [LayoutPin]) -> [UUID] {
-        var seen: Set<UUID> = []
-        var result: [UUID] = []
-        for shape in shapes {
-            guard let netID = shape.netID, seen.insert(netID).inserted else { continue }
-            result.append(netID)
-        }
-        for pin in pins {
-            guard let netID = pin.netID, seen.insert(netID).inserted else { continue }
-            result.append(netID)
-        }
-        return result
-    }
 
     /// Boolean-merged area in square microns; overlapping shapes count once.
-    private func mergedArea(of shapes: [LayoutShape], dbu: Double) -> Double {
-        guard !shapes.isEmpty else { return 0 }
-        let region = mergedRegion(of: shapes, dbu: dbu)
-        return abs(Double(region.area)) / (dbu * dbu)
-    }
 
     /// Layer-pair enclosure is checked per connected inner component, and only
     /// where the inner component interacts with the outer layer: features that
@@ -1265,201 +647,32 @@ public struct LayoutDRCService {
     /// `rules` restricts which enclosure rules are evaluated (nil checks
     /// every rule in the technology database); each rule's verdict depends
     /// only on the geometry of its own outer and inner layers.
-    func checkEnclosureRules(
-        shapes: [LayoutShape],
-        tech: LayoutTechDatabase,
-        rules: [LayoutEnclosureRule]? = nil
-    ) -> [LayoutViolation] {
-        var violations: [LayoutViolation] = []
-        let dbu = tech.units.dbuPerMicron
-        let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-
-        for rule in rules ?? tech.enclosureRules {
-            guard let outerShapes = grouped[rule.outerLayer], !outerShapes.isEmpty else { continue }
-            guard let innerShapes = grouped[rule.innerLayer], !innerShapes.isEmpty else { continue }
-
-            let minEncDBU = Int32((rule.minEnclosure * dbu).rounded())
-            if minEncDBU <= 0 { continue }
-
-            let outerRegion = mergedRegion(of: outerShapes, dbu: dbu)
-            let innerRegion = mergedRegion(of: innerShapes, dbu: dbu)
-
-            for component in innerRegion.connectedComponents() {
-                let covered = component.and(outerRegion)
-                if covered.isEmpty { continue }
-
-                let protrusion = component.not(outerRegion)
-                if !protrusion.isEmpty && !rule.allowsPassThrough {
-                    for part in protrusion.connectedComponents() {
-                        guard let bb = part.boundingBox else { continue }
-                        let rect = irBoundingBoxToRect(bb, dbu: dbu)
-                        violations.append(enclosureRuleViolation(
-                            rule: rule,
-                            rect: rect,
-                            measured: 0,
-                            message: "Enclosure violation: \(rule.innerLayer.name) extends outside \(rule.outerLayer.name), which must enclose it by at least \(rule.minEnclosure)µm",
-                            innerShapes: innerShapes,
-                            outerShapes: outerShapes
-                        ))
-                    }
-                }
-
-                // The halo of the covered part must stay inside the outer
-                // layer. Pass-through crossings are masked by the protrusion
-                // halo so the clip line never reads as a margin of zero, and
-                // margin deficits already implied by a reported protrusion are
-                // not double-counted.
-                var missing = covered.sized(by: minEncDBU).not(outerRegion)
-                if !protrusion.isEmpty {
-                    missing = missing.not(protrusion.sized(by: minEncDBU))
-                }
-                for deficit in missing.connectedComponents() {
-                    guard let bb = deficit.boundingBox else { continue }
-                    let rect = irBoundingBoxToRect(bb, dbu: dbu)
-                    let measured = max(0, rule.minEnclosure - deficitThickness(deficit, dbu: dbu))
-                    violations.append(enclosureRuleViolation(
-                        rule: rule,
-                        rect: rect,
-                        measured: measured,
-                        message: "Enclosure violation: \(rule.innerLayer.name) must be enclosed by \(rule.outerLayer.name) by at least \(rule.minEnclosure)µm, measured \(String(format: "%.3f", measured))µm",
-                        innerShapes: innerShapes,
-                        outerShapes: outerShapes
-                    ))
-                }
-            }
-        }
-        return violations
-    }
 
     /// Thickness of a margin-deficit region: the deficit hugs the outer
     /// boundary as bands, so the smallest bounding-box dimension over its
     /// polygons is the missing margin. The component bounding box would
     /// overestimate ring-shaped deficits.
-    private func deficitThickness(_ deficit: Region, dbu: Double) -> Double {
-        var minDimension = Double.infinity
-        for polygon in deficit.polygons {
-            let xs = polygon.points.map(\.x)
-            let ys = polygon.points.map(\.y)
-            guard let minX = xs.min(), let maxX = xs.max(),
-                  let minY = ys.min(), let maxY = ys.max() else { continue }
-            minDimension = min(minDimension, Double(min(maxX - minX, maxY - minY)))
-        }
-        return minDimension.isFinite ? minDimension / dbu : 0
-    }
 
-    private func enclosureRuleViolation(
-        rule: LayoutEnclosureRule,
-        rect: LayoutRect,
-        measured: Double,
-        message: String,
-        innerShapes: [LayoutShape],
-        outerShapes: [LayoutShape]
-    ) -> LayoutViolation {
-        let innerContributors = contributingShapes(innerShapes, around: rect)
-        let outerContributors = contributingShapes(outerShapes, around: rect)
-        return LayoutViolation(
-            kind: .enclosure,
-            ruleID: enclosureRuleID(rule),
-            message: message,
-            layer: rule.innerLayer,
-            region: rect,
-            measured: measured,
-            required: rule.minEnclosure,
-            unit: "um",
-            shapeIDs: (innerContributors + outerContributors).map(\.id),
-            netIDs: uniqueNetIDs(of: innerContributors),
-            suggestedFix: "Expand the outer layer or shrink the inner layer to satisfy enclosure."
-        )
-    }
 
-    private struct ViaEnclosureCheck: Sendable {
-        let passed: Bool
-        let measured: Double
-    }
 
-    private func viaEnclosureViolation(
-        via: LayoutVia,
-        definition: LayoutViaDefinition,
-        cutRect: LayoutRect,
-        topCheck: ViaEnclosureCheck,
-        bottomCheck: ViaEnclosureCheck
-    ) -> LayoutViolation? {
-        guard !topCheck.passed || !bottomCheck.passed else { return nil }
-        let missing = [
-            topCheck.passed ? nil : "top \(definition.topLayer.name)",
-            bottomCheck.passed ? nil : "bottom \(definition.bottomLayer.name)"
-        ].compactMap { $0 }.joined(separator: ", ")
-        return LayoutViolation(
-            kind: .enclosure,
-            ruleID: "via.\(via.viaDefinitionID).enclosure",
-            message: "Via enclosure violation for \(via.viaDefinitionID): missing \(missing)",
-            layer: definition.cutLayer,
-            region: cutRect,
-            measured: min(topCheck.measured, bottomCheck.measured),
-            required: max(definition.enclosure.top, definition.enclosure.bottom),
-            unit: "um",
-            viaIDs: [via.id],
-            netIDs: [via.netID].compactMap { $0 },
-            suggestedFix: "Add top and bottom metal coverage around the via cut."
-        )
-    }
+
+
+
 
     /// `candidates` must contain every same-layer shape whose bounding box
     /// intersects the cut rect expanded by `enclosure` (callers pass spatial
     /// index results); shapes farther away cannot affect the verdict.
-    private func viaEnclosureCheck(
-        cutRect: LayoutRect,
-        enclosure: Double,
-        candidates: [LayoutShape],
-        dbu: Double
-    ) -> ViaEnclosureCheck {
-        guard !candidates.isEmpty else {
-            return ViaEnclosureCheck(passed: false, measured: 0)
-        }
 
-        // Coverage of the required halo by the merged candidate region is the
-        // authoritative test: several abutting shapes may jointly enclose the
-        // cut even when no single shape does. The single-shape `measured`
-        // value is kept for reporting only.
-        let outerRegion = shapesToRegion(candidates, dbu: dbu)
-        let requiredRegion = rectToRegion(cutRect.expanded(by: enclosure, enclosure), dbu: dbu)
-        let missingCoverage = requiredRegion.not(outerRegion)
-        let pointCoverage = requiredEnclosurePoints(cutRect: cutRect, enclosure: enclosure).allSatisfy { point in
-            candidates.contains { LayoutGeometryAnalysis.contains(point, in: $0.geometry) }
-        }
-        let measured = measuredEnclosure(cutRect: cutRect, shapes: candidates)
-        return ViaEnclosureCheck(
-            passed: missingCoverage.isEmpty && pointCoverage,
-            measured: measured
-        )
-    }
 
-    private func requiredEnclosurePoints(cutRect: LayoutRect, enclosure: Double) -> [LayoutPoint] {
-        let rect = cutRect.expanded(by: enclosure, enclosure)
-        return [
-            rect.center,
-            LayoutPoint(x: rect.minX, y: rect.minY),
-            LayoutPoint(x: rect.maxX, y: rect.minY),
-            LayoutPoint(x: rect.maxX, y: rect.maxY),
-            LayoutPoint(x: rect.minX, y: rect.maxY),
-        ]
-    }
 
-    private func measuredEnclosure(cutRect: LayoutRect, shapes: [LayoutShape]) -> Double {
-        var best = 0.0
-        for shape in shapes {
-            let bbox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
-            guard bbox.intersects(cutRect) || bbox.contains(cutRect.center) else { continue }
-            let measured = min(
-                cutRect.minX - bbox.minX,
-                bbox.maxX - cutRect.maxX,
-                cutRect.minY - bbox.minY,
-                bbox.maxY - cutRect.maxY
-            )
-            best = max(best, measured)
-        }
-        return max(0, best)
-    }
+
+
+
+
+
+
+
+
 
     func densityWindows(for overall: LayoutRect, rules: LayoutLayerRuleSet) -> [LayoutRect] {
         guard let windowSize = rules.densityWindow,
@@ -1533,11 +746,34 @@ public struct LayoutDRCService {
         "enclosure.\(rule.outerLayer.name).\(rule.outerLayer.purpose).\(rule.innerLayer.name).\(rule.innerLayer.purpose)"
     }
 
-    private func antennaRuleID(_ rule: LayoutAntennaRule) -> String {
+    func spacingRuleID(_ rule: LayoutSpacingRule) -> String {
+        "spacing.\(rule.primaryLayer.name).\(rule.primaryLayer.purpose).\(rule.secondaryLayer.name).\(rule.secondaryLayer.purpose).\(rule.id)"
+    }
+
+    func extensionRuleID(_ rule: LayoutExtensionRule) -> String {
+        "extension.\(rule.extendingLayer.name).\(rule.extendingLayer.purpose).\(rule.enclosedLayer.name).\(rule.enclosedLayer.purpose).\(rule.direction.rawValue)"
+    }
+
+    func minimumCutRuleID(_ rule: LayoutMinimumCutRule) -> String {
+        "minimumCut.\(rule.cutLayer.name).\(rule.cutLayer.purpose).\(rule.bottomLayer.name).\(rule.bottomLayer.purpose).\(rule.topLayer.name).\(rule.topLayer.purpose).\(rule.id)"
+    }
+
+    func exactOverlapRuleID(_ rule: LayoutExactOverlapRule) -> String {
+        let secondaryID = rule.secondaryLayers.count == 1
+            ? "\(rule.secondaryLayer.name).\(rule.secondaryLayer.purpose)"
+            : "oneOf." + rule.secondaryLayers.map { "\($0.name).\($0.purpose)" }.joined(separator: ".")
+        return "exactOverlap.\(rule.primaryLayer.name).\(rule.primaryLayer.purpose).\(secondaryID).\(rule.id)"
+    }
+
+    func forbiddenLayerRuleID(_ rule: LayoutForbiddenLayerRule) -> String {
+        "forbiddenLayer.\(rule.layer.name).\(rule.layer.purpose).\(rule.id)"
+    }
+
+    func antennaRuleID(_ rule: LayoutAntennaRule) -> String {
         "antenna.\(rule.layerID.name).\(rule.layerID.purpose).maxRatio"
     }
 
-    private func cumulativeAntennaRuleID(_ rule: LayoutAntennaRule) -> String {
+    func cumulativeAntennaRuleID(_ rule: LayoutAntennaRule) -> String {
         "antenna.\(rule.layerID.name).\(rule.layerID.purpose).maxCumulativeRatio"
     }
 
@@ -1552,11 +788,11 @@ public struct LayoutDRCService {
 
     /// Shapes whose bounding box touches the violation marker, in document
     /// order — the evidence trail for a merged-geometry violation.
-    private func contributingShapes(_ shapes: [LayoutShape], around rect: LayoutRect) -> [LayoutShape] {
+    func contributingShapes(_ shapes: [LayoutShape], around rect: LayoutRect) -> [LayoutShape] {
         shapes.filter { LayoutGeometryAnalysis.boundingBox(for: $0.geometry).intersects(rect) }
     }
 
-    private func uniqueNetIDs(of shapes: [LayoutShape]) -> [UUID] {
+    func uniqueNetIDs(of shapes: [LayoutShape]) -> [UUID] {
         var seen: Set<UUID> = []
         var result: [UUID] = []
         for shape in shapes {
@@ -1580,7 +816,7 @@ public struct LayoutDRCService {
         )
     }
 
-    private func shapesToRegion(_ shapes: [LayoutShape], dbu: Double) -> Region {
+    func shapesToRegion(_ shapes: [LayoutShape], dbu: Double) -> Region {
         var boundaries: [IRBoundary] = []
         for shape in shapes {
             if let boundary = geometryToIRBoundary(shape.geometry, dbu: dbu) {
@@ -1590,7 +826,7 @@ public struct LayoutDRCService {
         return Region(polygons: boundaries)
     }
 
-    private func rectToRegion(_ rect: LayoutRect, dbu: Double) -> Region {
+    func rectToRegion(_ rect: LayoutRect, dbu: Double) -> Region {
         if let boundary = geometryToIRBoundary(.rect(rect), dbu: dbu) {
             return Region(polygons: [boundary])
         }
@@ -1687,12 +923,14 @@ public struct LayoutDRCService {
     }
 
     private func edgePairToRect(_ pair: IREdgePair, dbu: Double) -> LayoutRect {
-        let allX = [pair.edge1.p1.x, pair.edge1.p2.x, pair.edge2.p1.x, pair.edge2.p2.x]
-        let allY = [pair.edge1.p1.y, pair.edge1.p2.y, pair.edge2.p1.y, pair.edge2.p2.y]
-        let minX = Double(allX.min()!) / dbu
-        let minY = Double(allY.min()!) / dbu
-        let maxX = Double(allX.max()!) / dbu
-        let maxY = Double(allY.max()!) / dbu
+        let minXValue = min(min(pair.edge1.p1.x, pair.edge1.p2.x), min(pair.edge2.p1.x, pair.edge2.p2.x))
+        let minYValue = min(min(pair.edge1.p1.y, pair.edge1.p2.y), min(pair.edge2.p1.y, pair.edge2.p2.y))
+        let maxXValue = max(max(pair.edge1.p1.x, pair.edge1.p2.x), max(pair.edge2.p1.x, pair.edge2.p2.x))
+        let maxYValue = max(max(pair.edge1.p1.y, pair.edge1.p2.y), max(pair.edge2.p1.y, pair.edge2.p2.y))
+        let minX = Double(minXValue) / dbu
+        let minY = Double(minYValue) / dbu
+        let maxX = Double(maxXValue) / dbu
+        let maxY = Double(maxYValue) / dbu
         return LayoutRect(
             origin: LayoutPoint(x: minX, y: minY),
             size: LayoutSize(width: max(maxX - minX, 0.001), height: max(maxY - minY, 0.001))
@@ -1704,7 +942,7 @@ public struct LayoutDRCService {
         return overallBoundingBox(rects: boxes)
     }
 
-    private func overallBoundingBox(geometries: [LayoutGeometry]) -> LayoutRect? {
+    func overallBoundingBox(geometries: [LayoutGeometry]) -> LayoutRect? {
         let boxes = geometries.map { LayoutGeometryAnalysis.boundingBox(for: $0) }
         return overallBoundingBox(rects: boxes)
     }
@@ -1716,4 +954,11 @@ public struct LayoutDRCService {
         }
         return current
     }
+}
+
+private struct LayoutDRCRunContext: Sendable {
+    var shapes: [LayoutShape]
+    var vias: [LayoutVia]
+    var pins: [LayoutPin]
+    var terminalConflicts: [LayoutDRCService.TerminalConnectivityConflict]
 }

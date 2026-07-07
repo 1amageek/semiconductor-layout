@@ -44,7 +44,7 @@ public struct SteinerRoutingEngine: RoutingEngine {
         let grid = tech.grid
 
         guard let viaDef = tech.vias.first else {
-            return RoutingResult(routes: [], unroutedNets: nets.map(\.name))
+            return RoutingResultContracts.resultWithoutViaDefinition(for: nets)
         }
 
         // 1. Initialize obstruction map
@@ -78,6 +78,10 @@ public struct SteinerRoutingEngine: RoutingEngine {
 
         for net in nets {
             if net.isPower {
+                guard !net.pins.isEmpty else {
+                    unroutedNets.append(net.name)
+                    continue
+                }
                 let targetY = powerRailTarget(
                     netName: net.name, vddRailY: vddRailY, vssRailY: vssRailY
                 )

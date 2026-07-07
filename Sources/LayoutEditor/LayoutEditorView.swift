@@ -284,7 +284,12 @@ extension LayoutEditorView {
 
         let bridge = IRLayoutBridge()
         let irLib = buildNAND2IRLibrary()
-        let document = bridge.importLibrary(irLib, tech: tech)
+        let document: LayoutDocument
+        do {
+            document = try bridge.checkedImportLibrary(irLib, tech: tech)
+        } catch {
+            preconditionFailure("Built-in NAND preview IR is invalid: \(error)")
+        }
         let viewModel = LayoutEditorViewModel(document: document, tech: tech)
         viewModel.canvasSize = CGSize(width: 1200, height: 700)
         viewModel.fitAll()

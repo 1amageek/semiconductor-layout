@@ -21,7 +21,7 @@ final class IncrementalDRCEquivalenceHarness {
     init(document: LayoutDocument, tech: LayoutTechDatabase) throws {
         guard let topCellID = document.topCellID,
               let index = document.cells.firstIndex(where: { $0.id == topCellID }) else {
-            preconditionFailure("harness fixtures must declare a resolvable top cell")
+            throw IncrementalDRCEquivalenceHarnessError.unresolvableTopCell
         }
         self.document = document
         self.tech = tech
@@ -43,7 +43,7 @@ final class IncrementalDRCEquivalenceHarness {
     ) throws -> IncrementalDRCUpdate {
         let staleBefore = session.staleKinds
         let update = try session.apply(delta)
-        mirror(delta)
+        try mirror(delta)
 
         let reference = service.run(document: document, tech: tech)
         expectEquivalent(
@@ -124,11 +124,11 @@ final class IncrementalDRCEquivalenceHarness {
 
     // MARK: - Reference document mirroring
 
-    private func mirror(_ delta: LayoutEditDelta) {
+    private func mirror(_ delta: LayoutEditDelta) throws {
         var cell = document.cells[topIndex]
         for shape in delta.updatedShapes {
             guard let index = cell.shapes.firstIndex(where: { $0.id == shape.id }) else {
-                preconditionFailure("mirror: updated shape \(shape.id) missing from reference")
+                throw IncrementalDRCEquivalenceHarnessError.missingReferenceShape(shape.id)
             }
             cell.shapes[index] = shape
         }
@@ -139,7 +139,7 @@ final class IncrementalDRCEquivalenceHarness {
         cell.shapes.append(contentsOf: delta.addedShapes)
         for via in delta.updatedVias {
             guard let index = cell.vias.firstIndex(where: { $0.id == via.id }) else {
-                preconditionFailure("mirror: updated via \(via.id) missing from reference")
+                throw IncrementalDRCEquivalenceHarnessError.missingReferenceVia(via.id)
             }
             cell.vias[index] = via
         }
@@ -212,6 +212,23 @@ final class IncrementalDRCEquivalenceHarness {
             counts[canonicalKey(violation), default: 0] += 1
         }
         return counts
+    }
+}
+
+private enum IncrementalDRCEquivalenceHarnessError: Error, CustomStringConvertible {
+    case unresolvableTopCell
+    case missingReferenceShape(UUID)
+    case missingReferenceVia(UUID)
+
+    var description: String {
+        switch self {
+        case .unresolvableTopCell:
+            return "Harness fixtures must declare a resolvable top cell."
+        case .missingReferenceShape(let id):
+            return "Mirror update referenced missing shape \(id)."
+        case .missingReferenceVia(let id):
+            return "Mirror update referenced missing via \(id)."
+        }
     }
 }
 

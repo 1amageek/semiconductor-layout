@@ -42,6 +42,32 @@ struct LayoutConnectivityExtractorTests {
         )
     }
 
+    private func makeExplicitViaTech(includeTopConductor: Bool = false) -> LayoutTechDatabase {
+        var tech = makeTech()
+        var geometries = [
+            LayoutViaLayerGeometry(layer: via1, rects: [
+                LayoutRect(
+                    origin: LayoutPoint(x: -0.35, y: -0.1),
+                    size: LayoutSize(width: 0.2, height: 0.2)
+                ),
+                LayoutRect(
+                    origin: LayoutPoint(x: 0.15, y: -0.1),
+                    size: LayoutSize(width: 0.2, height: 0.2)
+                ),
+            ])
+        ]
+        if includeTopConductor {
+            geometries.append(LayoutViaLayerGeometry(layer: m2, rects: [
+                LayoutRect(
+                    origin: LayoutPoint(x: -0.4, y: -0.15),
+                    size: LayoutSize(width: 0.8, height: 0.3)
+                )
+            ]))
+        }
+        tech.vias[0].layerGeometries = geometries
+        return tech
+    }
+
     private func rect(
         layer: LayoutLayerID,
         net: UUID?,
@@ -79,6 +105,38 @@ struct LayoutConnectivityExtractorTests {
         #expect(analysis.nets.first?.declaredNetIDs == [netA])
         #expect(analysis.shorts.isEmpty)
         #expect(analysis.opens.isEmpty)
+    }
+
+    @Test func explicitViaCutGeometryRejectsBoundingBoxOnlyContact() throws {
+        let netA = UUID()
+        let bottom = rect(layer: m1, net: netA, x: 0.6, y: 0.9, width: 0.3, height: 0.2)
+        let topGap = rect(layer: m2, net: netA, x: 0.95, y: 0.9, width: 0.1, height: 0.2)
+        let via = LayoutVia(viaDefinitionID: "VIA1", position: LayoutPoint(x: 1, y: 1), netID: netA)
+
+        let analysis = try LayoutConnectivityExtractor().extract(
+            document: document(shapes: [bottom, topGap], vias: [via]),
+            tech: makeExplicitViaTech()
+        )
+
+        let open = try #require(analysis.opens.first)
+        #expect(analysis.opens.count == 1)
+        #expect(open.netID == netA)
+        #expect(open.islands.count == 2)
+    }
+
+    @Test func explicitViaTopConductorConnectsBeyondCutRects() throws {
+        let netA = UUID()
+        let bottom = rect(layer: m1, net: netA, x: 0.6, y: 0.9, width: 0.3, height: 0.2)
+        let topGap = rect(layer: m2, net: netA, x: 0.95, y: 0.9, width: 0.1, height: 0.2)
+        let via = LayoutVia(viaDefinitionID: "VIA1", position: LayoutPoint(x: 1, y: 1), netID: netA)
+
+        let analysis = try LayoutConnectivityExtractor().extract(
+            document: document(shapes: [bottom, topGap], vias: [via]),
+            tech: makeExplicitViaTech(includeTopConductor: true)
+        )
+
+        #expect(analysis.opens.isEmpty)
+        #expect(analysis.nets.first?.viaIDs == [via.id])
     }
 
     @Test func stackedLayersWithoutViaAreOpenWithZeroLengthFlyline() throws {

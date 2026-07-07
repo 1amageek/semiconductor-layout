@@ -35,7 +35,7 @@ struct DocumentRoundTripTests {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("gds-roundtrip-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { Self.removeTemporaryDirectory(directory) }
         let url = directory.appendingPathComponent("doc.gds")
 
         let converter = GDSFormatConverter(tech: tech)
@@ -65,10 +65,138 @@ struct DocumentRoundTripTests {
         // revisited deliberately, not silently.
         #expect(importedTop.pins.isEmpty, "pins are editor semantics, not GDS records")
         #expect(importedTop.constraints.isEmpty, "constraints are editor semantics, not GDS records")
+        #expect(importedTop.properties.isEmpty, "cell properties are canonical state, not GDS records")
         #expect(
             importedTop.shapes.allSatisfy { $0.netID == nil },
             "net assignments are editor semantics, not GDS records"
         )
+    }
+
+    @Test func defRoundTripsPlacedComponentsAsInstances() throws {
+        let document = Self.placementDocument()
+        let tech = LayoutTechDatabase.standard()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("def-roundtrip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { Self.removeTemporaryDirectory(directory) }
+        let url = directory.appendingPathComponent("placement.def")
+
+        let converter = MaskDataFormatConverter(tech: tech)
+        try converter.exportDocument(document, to: url, format: .def)
+        let defText = try String(contentsOf: url, encoding: .utf8)
+        #expect(defText.contains("- u1 INV + PLACED ( 1250 2500 ) FN"))
+
+        let imported = try converter.importDocument(from: url, format: .def)
+        let importedTop = try #require(imported.topCellID.flatMap { imported.cell(withID: $0) })
+        #expect(imported.cells.contains { $0.name == "INV" })
+        #expect(importedTop.instances.count == 1)
+        let instance = try #require(importedTop.instances.first)
+        #expect(instance.name == "u1")
+        #expect(abs(instance.transform.translation.x - 1.25) < 0.0001)
+        #expect(abs(instance.transform.translation.y - 2.5) < 0.0001)
+        #expect(instance.transform.mirrorX == true)
+    }
+
+    @Test func defRoundTripsRoutedNetsAsNettedShapes() throws {
+        let tech = LayoutTechDatabase.standard()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("def-routing-roundtrip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { Self.removeTemporaryDirectory(directory) }
+        let inputURL = directory.appendingPathComponent("routing.def")
+        let outputURL = directory.appendingPathComponent("routing-out.def")
+        try Self.routedDEF.write(to: inputURL, atomically: true, encoding: .utf8)
+
+        let converter = MaskDataFormatConverter(tech: tech)
+        let imported = try converter.importDocument(from: inputURL, format: .def)
+        let importedTop = try #require(imported.topCellID.flatMap { imported.cell(withID: $0) })
+
+        #expect(importedTop.nets.map(\.name).sorted() == ["VDD", "clk"])
+        #expect(importedTop.shapes.count == 4)
+        #expect(importedTop.vias.count == 2)
+        #expect(importedTop.shapes.allSatisfy { $0.netID != nil })
+        #expect(importedTop.vias.allSatisfy { $0.netID != nil })
+        #expect(importedTop.vias.allSatisfy { $0.viaDefinitionID == "VIA1" })
+        #expect(importedTop.shapes.contains {
+            $0.layer == Self.m1 && $0.properties["def.route.netName"] == "clk"
+        })
+        let clockRoute = try #require(importedTop.shapes.first {
+            $0.layer == Self.m1 && $0.properties["def.route.netName"] == "clk"
+        })
+        guard case .path(let clockPath) = clockRoute.geometry else {
+            Issue.record("Expected DEF clock route to import as a path")
+            return
+        }
+        #expect(abs(clockPath.width - (tech.ruleSet(for: Self.m1)?.minWidth ?? 0)) < 0.0001)
+        #expect(importedTop.shapes.contains {
+            $0.layer == Self.m2
+                && $0.properties["def.route.kind"] == "specialNet"
+                && $0.properties["def.route.netName"] == "VDD"
+        })
+
+        try converter.exportDocument(imported, to: outputURL, format: .def)
+        let output = try String(contentsOf: outputURL, encoding: .utf8)
+        #expect(output.contains("NETS 1"))
+        #expect(output.contains("- clk ( PIN clk ) + USE CLOCK + ROUTED metal1"))
+        #expect(output.contains("( 900 200 ) VIA1"))
+        #expect(output.contains("SPECIALNETS 1"))
+        #expect(output.contains("- VDD ( * VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE"))
+        #expect(output.contains("( 1000 * ) VIA1"))
+    }
+
+    @Test func defUnknownRouteViaFailsImport() throws {
+        let tech = LayoutTechDatabase.standard()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("def-unknown-via-roundtrip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { Self.removeTemporaryDirectory(directory) }
+        let inputURL = directory.appendingPathComponent("unknown-via.def")
+        try Self.unknownViaDEF.write(to: inputURL, atomically: true, encoding: .utf8)
+
+        let converter = MaskDataFormatConverter(tech: tech)
+        #expect(throws: LayoutIOError.self) {
+            _ = try converter.importDocument(from: inputURL, format: .def)
+        }
+    }
+
+    @Test func defViasSectionDefinesRouteViaGeometry() throws {
+        var tech = LayoutTechDatabase.standard()
+        tech.vias = []
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("def-via-definition-roundtrip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { Self.removeTemporaryDirectory(directory) }
+        let inputURL = directory.appendingPathComponent("via-definition.def")
+        let outputURL = directory.appendingPathComponent("via-definition-out.def")
+        try Self.defWithViaDefinition.write(to: inputURL, atomically: true, encoding: .utf8)
+
+        let converter = MaskDataFormatConverter(tech: tech)
+        let importedTech = try converter.importTech(from: inputURL, format: .def)
+        let defVia = try #require(importedTech.viaDefinition(for: "DEFVIA"))
+        #expect(defVia.cutLayer == LayoutLayerID(name: "VIA1", purpose: "cut"))
+        #expect(abs(defVia.cutSize.width - 0.05) < 0.0001)
+        #expect(abs(defVia.cutSize.height - 0.05) < 0.0001)
+        #expect(abs(defVia.enclosure.bottom - 0.025) < 0.0001)
+        #expect(abs(defVia.enclosure.top - 0.04) < 0.0001)
+        #expect(abs(defVia.cutSpacing - 0.12) < 0.0001)
+        #expect(defVia.layerGeometries.count == 3)
+
+        let imported = try converter.importDocument(from: inputURL, format: .def)
+        let importedTop = try #require(imported.topCellID.flatMap { imported.cell(withID: $0) })
+        let routeVia = try #require(importedTop.vias.first)
+        #expect(importedTop.vias.count == 1)
+        #expect(routeVia.viaDefinitionID == "DEFVIA")
+        #expect(routeVia.netID != nil)
+        #expect(abs(routeVia.position.x - 0.9) < 0.0001)
+        #expect(abs(routeVia.position.y - 0.2) < 0.0001)
+        #expect(importedTop.properties["def.viaDef.count"] == "1")
+
+        try converter.exportDocument(imported, to: outputURL, format: .def)
+        let output = try String(contentsOf: outputURL, encoding: .utf8)
+        #expect(output.contains("VIAS 1"))
+        #expect(output.contains("- DEFVIA + CUTSIZE 50 50 + CUTSPACING 100 120"))
+        #expect(output.contains("+ RECT metal1 ( -60 -50 ) ( 60 50 )"))
+        #expect(output.contains("( 900 200 ) DEFVIA"))
     }
 
     // MARK: - Fixture
@@ -160,10 +288,65 @@ struct DocumentRoundTripTests {
             pins: [pin],
             instances: [rotated, arrayed],
             nets: [LayoutNet(id: netA, name: "A")],
-            constraints: [constraint]
+            constraints: [constraint],
+            properties: ["FIXED_BBOX": "0 0 10 4"]
         )
         return LayoutDocument(name: "rich", cells: [child, top], topCellID: top.id)
     }
+
+    private static func placementDocument() -> LayoutDocument {
+        let child = LayoutCell(name: "INV")
+        let instance = LayoutInstance(
+            cellID: child.id,
+            name: "u1",
+            transform: LayoutTransform(
+                translation: LayoutPoint(x: 1.25, y: 2.5),
+                rotation: .deg0,
+                mirrorX: true
+            )
+        )
+        let top = LayoutCell(name: "TOP", instances: [instance])
+        return LayoutDocument(name: "placement", cells: [child, top], topCellID: top.id)
+    }
+
+    private static let routedDEF = """
+    VERSION 5.8 ;
+    DESIGN routed ;
+    UNITS DISTANCE MICRONS 1000 ;
+    VIAS 1 ;
+      - VIA1 + CUTSIZE 50 50 + CUTSPACING 100 100 + ENCLOSURE 10 10 10 10 + RECT metal1 ( -35 -35 ) ( 35 35 ) + RECT via1 ( -25 -25 ) ( 25 25 ) + RECT metal2 ( -35 -35 ) ( 35 35 ) ;
+    END VIAS
+    NETS 1 ;
+      - clk ( PIN clk ) + USE CLOCK + ROUTED metal1 ( 100 200 ) ( 900 200 ) VIA1 + NEW metal2 ( 900 200 ) ( 1200 200 ) ;
+    END NETS
+    SPECIALNETS 1 ;
+      - VDD ( * VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE ( 0 1000 ) ( 1000 * ) VIA1 + NEW metal1 300 + SHAPE STRIPE ( 1000 1000 ) ( 1200 1000 ) ;
+    END SPECIALNETS
+    END DESIGN
+    """
+
+    private static let unknownViaDEF = """
+    VERSION 5.8 ;
+    DESIGN unknown_via ;
+    UNITS DISTANCE MICRONS 1000 ;
+    NETS 1 ;
+      - clk ( PIN clk ) + USE CLOCK + ROUTED metal1 ( 100 200 ) ( 900 200 ) UNKNOWNVIA ;
+    END NETS
+    END DESIGN
+    """
+
+    private static let defWithViaDefinition = """
+    VERSION 5.8 ;
+    DESIGN via_definition ;
+    UNITS DISTANCE MICRONS 1000 ;
+    VIAS 1 ;
+      - DEFVIA + CUTSIZE 50 50 + CUTSPACING 100 120 + ENCLOSURE 35 25 45 40 + RECT metal1 ( -60 -50 ) ( 60 50 ) + RECT via1 ( -25 -25 ) ( 25 25 ) + RECT metal2 ( -70 -65 ) ( 70 65 ) ;
+    END VIAS
+    NETS 1 ;
+      - sig ( PIN sig ) + ROUTED metal1 ( 100 200 ) ( 900 200 ) DEFVIA ;
+    END NETS
+    END DESIGN
+    """
 
     private struct Stamp: Hashable {
         var layer: LayoutLayerID
@@ -202,5 +385,13 @@ struct DocumentRoundTripTests {
         }
         walk(cell: top, transforms: [], depth: 0)
         return stamps
+    }
+
+    private static func removeTemporaryDirectory(_ directory: URL) {
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            Issue.record("Failed to remove temporary directory \(directory.path): \(error)")
+        }
     }
 }
