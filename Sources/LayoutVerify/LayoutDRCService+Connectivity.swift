@@ -232,6 +232,21 @@ extension LayoutDRCService {
         viaCutBoundingBox(for: via, tech: tech)
     }
 
+    func unknownViaDefinitionViolation(for via: LayoutVia) -> LayoutViolation {
+        LayoutViolation(
+            kind: .ruleCoverage,
+            ruleID: "via.\(via.viaDefinitionID).definition",
+            message: "Via \(via.viaDefinitionID) is used but has no technology definition.",
+            region: fallbackViaCutRect(for: via),
+            measured: 1,
+            required: 0,
+            unit: "missing-definition",
+            viaIDs: [via.id],
+            netIDs: via.netID.map { [$0] } ?? [],
+            suggestedFix: "Add the via/contact definition to the technology database or replace the via with a defined stack element."
+        )
+    }
+
     func union(rects: [LayoutRect]) -> LayoutRect? {
         guard var result = rects.first else { return nil }
         for rect in rects.dropFirst() {

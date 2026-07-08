@@ -37,7 +37,10 @@ extension LayoutDRCService {
         }
 
         for via in vias {
-            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { continue }
+            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else {
+                violations.append(unknownViaDefinitionViolation(for: via))
+                continue
+            }
             for cutRect in viaCutRects(for: via, tech: tech) {
                 let topCandidates = candidates(
                     layer: def.topLayer,

@@ -176,4 +176,92 @@ struct IRLayoutBridgeValidationTests {
             _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
         }
     }
+
+    @Test func exportRejectsNonFiniteCoordinates() {
+        let cell = LayoutCell(
+            name: "TOP",
+            shapes: [
+                LayoutShape(
+                    layer: LayoutLayerID(name: "M1", purpose: "drawing"),
+                    geometry: .rect(LayoutRect(
+                        origin: LayoutPoint(x: .nan, y: 0),
+                        size: LayoutSize(width: 1, height: 1)
+                    ))
+                )
+            ]
+        )
+        let document = LayoutDocument(name: "non-finite-coordinate", cells: [cell], topCellID: cell.id)
+
+        #expect(throws: LayoutIOError.self) {
+            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+        }
+    }
+
+    @Test func exportRejectsCoordinatesOutsideDBURange() {
+        let cell = LayoutCell(
+            name: "TOP",
+            shapes: [
+                LayoutShape(
+                    layer: LayoutLayerID(name: "M1", purpose: "drawing"),
+                    geometry: .path(LayoutPath(
+                        points: [
+                            LayoutPoint(x: 0, y: 0),
+                            LayoutPoint(x: Double(Int32.max) + 1, y: 0),
+                        ],
+                        width: 0.1
+                    ))
+                )
+            ]
+        )
+        let document = LayoutDocument(name: "oversized-coordinate", cells: [cell], topCellID: cell.id)
+
+        #expect(throws: LayoutIOError.self) {
+            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+        }
+    }
+
+    @Test func exportRejectsNonFinitePathWidth() {
+        let cell = LayoutCell(
+            name: "TOP",
+            shapes: [
+                LayoutShape(
+                    layer: LayoutLayerID(name: "M1", purpose: "drawing"),
+                    geometry: .path(LayoutPath(
+                        points: [
+                            LayoutPoint(x: 0, y: 0),
+                            LayoutPoint(x: 1, y: 0),
+                        ],
+                        width: .infinity
+                    ))
+                )
+            ]
+        )
+        let document = LayoutDocument(name: "non-finite-width", cells: [cell], topCellID: cell.id)
+
+        #expect(throws: LayoutIOError.self) {
+            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+        }
+    }
+
+    @Test func exportRejectsTechnologyLayerOutsideIRRange() {
+        var tech = LayoutTechDatabase.standard()
+        tech.layers[0].gdsLayer = Int(Int16.max) + 1
+        let cell = LayoutCell(
+            name: "TOP",
+            shapes: [
+                LayoutShape(
+                    layer: LayoutLayerID(name: "M1", purpose: "drawing"),
+                    geometry: .rect(LayoutRect(
+                        origin: LayoutPoint(x: 0, y: 0),
+                        size: LayoutSize(width: 1, height: 1)
+                    ))
+                )
+            ]
+        )
+        let document = LayoutDocument(name: "invalid-tech-layer", cells: [cell], topCellID: cell.id)
+
+        #expect(throws: LayoutIOError.self) {
+            _ = try IRLayoutBridge().exportLibrary(document, tech: tech)
+        }
+    }
 }

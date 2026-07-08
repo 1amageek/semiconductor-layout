@@ -90,7 +90,8 @@ public struct IRLayoutBridge: Sendable {
         includeDEFRouteMetadata: Bool = false
     ) throws -> IRLibrary {
         let dbu = document.units.dbuPerMicron
-        let reverseLayerMap = buildReverseLayerMap(tech: tech)
+        try validateDBU(dbu, context: "document '\(document.name)'")
+        let reverseLayerMap = try buildReverseLayerMap(tech: tech)
 
         // Build cell UUID → name mapping
         var cellIDToName: [UUID: String] = [:]
@@ -572,7 +573,9 @@ public struct IRLayoutBridge: Sendable {
             )
             switch shape.geometry {
             case .polygon(let poly):
-                var pts = poly.points.map { micronToDBU($0, dbu: dbu) }
+                var pts = try poly.points.map {
+                    try micronToDBU($0, dbu: dbu, context: "polygon shape '\(shape.id)' in cell '\(cell.name)'")
+                }
                 // Close the polygon for GDSII
                 if let first = pts.first, pts.last != first {
                     pts.append(first)
@@ -584,13 +587,11 @@ public struct IRLayoutBridge: Sendable {
                     properties: irProperties(from: shapeProperties)
                 )))
             case .rect(let rect):
-                let pts = [
-                    micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu),
-                    micronToDBU(LayoutPoint(x: rect.maxX, y: rect.minY), dbu: dbu),
-                    micronToDBU(LayoutPoint(x: rect.maxX, y: rect.maxY), dbu: dbu),
-                    micronToDBU(LayoutPoint(x: rect.minX, y: rect.maxY), dbu: dbu),
-                    micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu),
-                ]
+                let pts = try rectBoundaryPoints(
+                    rect,
+                    dbu: dbu,
+                    context: "rect shape '\(shape.id)' in cell '\(cell.name)'"
+                )
                 elements.append(.boundary(IRBoundary(
                     layer: layer,
                     datatype: datatype,
@@ -607,8 +608,18 @@ public struct IRLayoutBridge: Sendable {
                 elements.append(.path(IRPath(
                     layer: layer, datatype: datatype,
                     pathType: irPathType,
-                    width: Int32(path.width * dbu),
-                    points: path.points.map { micronToDBU($0, dbu: dbu) },
+                    width: try micronWidthToDBU(
+                        path.width,
+                        dbu: dbu,
+                        context: "path shape '\(shape.id)' in cell '\(cell.name)'"
+                    ),
+                    points: try path.points.map {
+                        try micronToDBU(
+                            $0,
+                            dbu: dbu,
+                            context: "path shape '\(shape.id)' in cell '\(cell.name)'"
+                        )
+                    },
                     properties: irProperties(from: shapeProperties)
                 )))
             }
@@ -628,7 +639,7 @@ public struct IRLayoutBridge: Sendable {
             elements.append(.boundary(IRBoundary(
                 layer: layer,
                 datatype: datatype,
-                points: viaCutBoundaryPoints(via: via, definition: viaDefinition, dbu: dbu),
+                points: try viaCutBoundaryPoints(via: via, definition: viaDefinition, dbu: dbu),
                 properties: [
                     IRProperty(
                         attribute: Self.viaDefinitionPropertyAttribute,
@@ -643,7 +654,11 @@ public struct IRLayoutBridge: Sendable {
             elements.append(.text(IRText(
                 layer: layer, texttype: texttype,
                 transform: .identity,
-                position: micronToDBU(label.position, dbu: dbu),
+                position: try micronToDBU(
+                    label.position,
+                    dbu: dbu,
+                    context: "label '\(label.id)' in cell '\(cell.name)'"
+                ),
                 string: label.text,
                 properties: []
             )))
@@ -655,9 +670,10 @@ public struct IRLayoutBridge: Sendable {
                     "Instance '\(instance.name)' in cell '\(cell.name)' references missing cell \(instance.cellID)"
                 )
             }
-            let origin = micronToDBU(
+            let origin = try micronToDBU(
                 instance.transform.translation,
-                dbu: dbu
+                dbu: dbu,
+                context: "instance '\(instance.name)' in cell '\(cell.name)'"
             )
             let transform = IRTransform(
                 mirrorX: instance.transform.mirrorX,
@@ -678,19 +694,21 @@ public struct IRLayoutBridge: Sendable {
                             + "Explode the array before exporting."
                     )
                 }
-                let colEnd = micronToDBU(
+                let colEnd = try micronToDBU(
                     LayoutPoint(
                         x: instance.transform.translation.x + repetition.columnStep.x * Double(repetition.columns),
                         y: instance.transform.translation.y + repetition.columnStep.y * Double(repetition.columns)
                     ),
-                    dbu: dbu
+                    dbu: dbu,
+                    context: "array instance '\(instance.name)' column step in cell '\(cell.name)'"
                 )
-                let rowEnd = micronToDBU(
+                let rowEnd = try micronToDBU(
                     LayoutPoint(
                         x: instance.transform.translation.x + repetition.rowStep.x * Double(repetition.rows),
                         y: instance.transform.translation.y + repetition.rowStep.y * Double(repetition.rows)
                     ),
-                    dbu: dbu
+                    dbu: dbu,
+                    context: "array instance '\(instance.name)' row step in cell '\(cell.name)'"
                 )
                 elements.append(.arrayRef(IRArrayRef(
                     cellName: cellName,
@@ -738,20 +756,18 @@ public struct IRLayoutBridge: Sendable {
         return pair
     }
 
-    private func viaCutBoundaryPoints(via: LayoutVia, definition: LayoutViaDefinition, dbu: Double) -> [IRPoint] {
+    private func viaCutBoundaryPoints(via: LayoutVia, definition: LayoutViaDefinition, dbu: Double) throws -> [IRPoint] {
         let halfWidth = definition.cutSize.width / 2
         let halfHeight = definition.cutSize.height / 2
         let rect = LayoutRect(
             origin: LayoutPoint(x: via.position.x - halfWidth, y: via.position.y - halfHeight),
             size: definition.cutSize
         )
-        return [
-            micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu),
-            micronToDBU(LayoutPoint(x: rect.maxX, y: rect.minY), dbu: dbu),
-            micronToDBU(LayoutPoint(x: rect.maxX, y: rect.maxY), dbu: dbu),
-            micronToDBU(LayoutPoint(x: rect.minX, y: rect.maxY), dbu: dbu),
-            micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu),
-        ]
+        return try rectBoundaryPoints(
+            rect,
+            dbu: dbu,
+            context: "via '\(via.id)' cut geometry"
+        )
     }
 
     private func rectangle(from points: [IRPoint], dbu: Double) -> LayoutRect? {
@@ -990,8 +1006,69 @@ public struct IRLayoutBridge: Sendable {
         LayoutPoint(x: Double(p.x) / dbu, y: Double(p.y) / dbu)
     }
 
-    private func micronToDBU(_ p: LayoutPoint, dbu: Double) -> IRPoint {
-        IRPoint(x: Int32(p.x * dbu), y: Int32(p.y * dbu))
+    private func rectBoundaryPoints(_ rect: LayoutRect, dbu: Double, context: String) throws -> [IRPoint] {
+        try [
+            micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu, context: context),
+            micronToDBU(LayoutPoint(x: rect.maxX, y: rect.minY), dbu: dbu, context: context),
+            micronToDBU(LayoutPoint(x: rect.maxX, y: rect.maxY), dbu: dbu, context: context),
+            micronToDBU(LayoutPoint(x: rect.minX, y: rect.maxY), dbu: dbu, context: context),
+            micronToDBU(LayoutPoint(x: rect.minX, y: rect.minY), dbu: dbu, context: context),
+        ]
+    }
+
+    private func micronToDBU(_ p: LayoutPoint, dbu: Double, context: String) throws -> IRPoint {
+        IRPoint(
+            x: try checkedDBUCoordinate(p.x, dbu: dbu, axis: "x", context: context),
+            y: try checkedDBUCoordinate(p.y, dbu: dbu, axis: "y", context: context)
+        )
+    }
+
+    private func micronWidthToDBU(_ width: Double, dbu: Double, context: String) throws -> Int32 {
+        guard width.isFinite, width > 0 else {
+            throw LayoutIOError.conversionFailed(
+                "Invalid non-positive or non-finite width \(width) for \(context)"
+            )
+        }
+        let converted = try checkedDBUValue(width * dbu, context: "\(context) width")
+        guard converted > 0 else {
+            throw LayoutIOError.conversionFailed(
+                "Width \(width) for \(context) rounds to zero database units"
+            )
+        }
+        return converted
+    }
+
+    private func checkedDBUCoordinate(
+        _ value: Double,
+        dbu: Double,
+        axis: String,
+        context: String
+    ) throws -> Int32 {
+        guard value.isFinite else {
+            throw LayoutIOError.conversionFailed("Non-finite \(axis) coordinate for \(context)")
+        }
+        return try checkedDBUValue(value * dbu, context: "\(context) \(axis) coordinate")
+    }
+
+    private func checkedDBUValue(_ rawValue: Double, context: String) throws -> Int32 {
+        guard rawValue.isFinite else {
+            throw LayoutIOError.conversionFailed("Non-finite DBU value for \(context)")
+        }
+        let rounded = rawValue.rounded()
+        guard rounded >= Double(Int32.min), rounded <= Double(Int32.max) else {
+            throw LayoutIOError.conversionFailed(
+                "DBU value \(rounded) for \(context) is outside Int32 range"
+            )
+        }
+        return Int32(rounded)
+    }
+
+    private func validateDBU(_ dbu: Double, context: String) throws {
+        guard dbu.isFinite, dbu > 0 else {
+            throw LayoutIOError.conversionFailed(
+                "Invalid database units per micron \(dbu) for \(context)"
+            )
+        }
     }
 
     // MARK: - Layer mapping
@@ -1023,9 +1100,15 @@ public struct IRLayoutBridge: Sendable {
         return LayerMap(ids: map, idsByDEFName: names, tech: tech)
     }
 
-    private func buildReverseLayerMap(tech: LayoutTechDatabase) -> ReverseLayerMap {
+    private func buildReverseLayerMap(tech: LayoutTechDatabase) throws -> ReverseLayerMap {
         var map: [LayoutLayerID: (Int16, Int16)] = [:]
         for def in tech.layers {
+            guard def.gdsLayer >= Int(Int16.min), def.gdsLayer <= Int(Int16.max),
+                  def.gdsDatatype >= Int(Int16.min), def.gdsDatatype <= Int(Int16.max) else {
+                throw LayoutIOError.conversionFailed(
+                    "Layer '\(def.id)' has GDS layer/datatype outside Int16 range"
+                )
+            }
             map[def.id] = (Int16(def.gdsLayer), Int16(def.gdsDatatype))
         }
         return ReverseLayerMap(ids: map, tech: tech)

@@ -28,7 +28,7 @@ public struct LayoutDocumentInspectionResult: Codable, Sendable, Equatable {
         verification: LayoutDocumentInspectionVerification? = nil
     ) {
         self.schemaVersion = 1
-        self.status = status ?? verification?.status ?? "passed"
+        self.status = status ?? verification?.status ?? "unverified"
         self.inputPath = inputPath
         self.inputFormat = inputFormat
         self.technologyPath = technologyPath

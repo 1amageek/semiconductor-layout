@@ -169,6 +169,35 @@ struct LayoutCommandCLIServiceFormatTests {
         }
     }
 
+    @Test("CLI service marks JSON inspection without technology as unverified")
+    func jsonInspectionWithoutTechnologyIsUnverified() throws {
+        let fixture = try Self.makeFixtureDirectory()
+        defer { Self.removeTemporaryItem(fixture.directory) }
+
+        let response = try LayoutCommandCLIService().runWithExitStatus(
+            options: LayoutCommandCLIOptions(arguments: [
+                "--inspect-document",
+                "--input",
+                fixture.documentURL.path,
+                "--input-format",
+                "json",
+                "--result",
+                fixture.inspectionResultURL.path,
+                "--artifact-manifest",
+                fixture.inspectionManifestURL.path,
+                "--json",
+            ])
+        )
+        let inspection = try Self.decodeJSON(LayoutDocumentInspectionResult.self, from: response.output)
+
+        #expect(response.exitCode == 1)
+        #expect(inspection.status == "unverified")
+        #expect(inspection.verification == nil)
+        #expect(inspection.summary.shapeCount > 0)
+        #expect(FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.inspectionManifestURL.path))
+    }
+
     @Test("CLI service rejects conversion result path colliding with output")
     func rejectsConversionResultPathCollidingWithOutput() throws {
         let fixture = try Self.makeFixtureDirectory()

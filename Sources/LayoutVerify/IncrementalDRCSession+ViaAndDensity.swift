@@ -7,7 +7,10 @@ extension IncrementalDRCSession {
         var violations: [LayoutViolation] = []
         let roundingSlack = 1.0 / tech.units.dbuPerMicron
         for via in vias {
-            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { continue }
+            guard let def = tech.viaDefinition(for: via.viaDefinitionID) else {
+                violations.append(service.unknownViaDefinitionViolation(for: via))
+                continue
+            }
             let cutBox = service.viaCutBoundingBox(for: via, tech: tech)
             let topHalo = cutBox.expanded(by: def.enclosure.top, def.enclosure.top)
             let bottomHalo = cutBox.expanded(by: def.enclosure.bottom, def.enclosure.bottom)

@@ -136,6 +136,36 @@ struct LayoutDRCServiceRobustnessTests {
         #expect(violation?.message.contains("top M2") == true)
     }
 
+    @Test func unknownViaDefinitionIsViolationInsteadOfBeingSkipped() {
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let via = LayoutVia(viaDefinitionID: "MISSING_VIA", position: LayoutPoint(x: 2, y: 3))
+        let result = LayoutDRCService().run(
+            document: document(shapes: [], vias: [via]),
+            tech: tech(layer: m1)
+        )
+
+        let violation = result.violations.first { $0.ruleID == "via.MISSING_VIA.definition" }
+        #expect(violation?.kind == .ruleCoverage)
+        #expect(violation?.viaIDs == [via.id])
+        #expect(violation?.region.origin == LayoutPoint(x: 1.5, y: 2.5))
+        #expect(result.hasErrors)
+    }
+
+    @Test func incrementalDRCReportsUnknownViaDefinition() throws {
+        let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
+        let via = LayoutVia(viaDefinitionID: "MISSING_VIA", position: LayoutPoint(x: 2, y: 3))
+        let session = try IncrementalDRCSession(
+            document: document(shapes: [], vias: [via]),
+            tech: tech(layer: m1)
+        )
+
+        let violation = session.currentResult.violations.first {
+            $0.ruleID == "via.MISSING_VIA.definition"
+        }
+        #expect(violation?.kind == .ruleCoverage)
+        #expect(violation?.viaIDs == [via.id])
+    }
+
     @Test func densityUsesLocalWindowsWhenRuleSpecifiesWindow() {
         let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
         let dense = rect(layer: m1, x: 0, y: 0, width: 10, height: 10)
