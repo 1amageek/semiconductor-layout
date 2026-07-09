@@ -258,4 +258,27 @@ public struct LayoutDocumentEditor: Sendable {
             doc.updateCell(cell)
         }
     }
+
+    public mutating func addConstraint(_ constraint: LayoutConstraint, to cellID: UUID) throws {
+        try perform { doc in
+            guard var cell = doc.cell(withID: cellID) else {
+                throw LayoutCoreError.cellNotFound(cellID)
+            }
+            cell.constraints.append(constraint)
+            doc.updateCell(cell)
+        }
+    }
+
+    public mutating func removeConstraint(at index: Int, from cellID: UUID) throws {
+        try perform { doc in
+            guard var cell = doc.cell(withID: cellID) else {
+                throw LayoutCoreError.cellNotFound(cellID)
+            }
+            guard cell.constraints.indices.contains(index) else {
+                throw LayoutCoreError.constraintNotFound(index)
+            }
+            cell.constraints.remove(at: index)
+            doc.updateCell(cell)
+        }
+    }
 }

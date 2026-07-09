@@ -339,6 +339,15 @@ public struct LayoutConstraintChecker: Sendable {
             ))
             return
         }
+        guard Set(constraint.pattern).count >= 2 else {
+            violations.append(LayoutConstraintViolation(
+                kind: .malformedConstraint,
+                constraintIndex: index,
+                message: "Interdigitation pattern assigns every member to one group; it needs at least two.",
+                memberIDs: constraint.members
+            ))
+            return
+        }
         guard let members = resolve(constraint.members, index: index, severity: .error, cell: cell, document: document, into: &violations)
         else { return }
 

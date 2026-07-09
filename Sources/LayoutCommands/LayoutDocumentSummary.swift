@@ -13,6 +13,7 @@ public struct LayoutDocumentSummary: Codable, Sendable, Equatable {
     public let pinCount: Int
     public let instanceCount: Int
     public let netCount: Int
+    public let constraintCount: Int
     public let boundingBox: LayoutRect?
     public let cells: [LayoutDocumentCellSummary]
     public let layerUsage: [LayoutDocumentLayerUsage]
@@ -29,6 +30,7 @@ public struct LayoutDocumentSummary: Codable, Sendable, Equatable {
         self.pinCount = document.cells.reduce(0) { $0 + $1.pins.count }
         self.instanceCount = document.cells.reduce(0) { $0 + $1.instances.count }
         self.netCount = document.cells.reduce(0) { $0 + $1.nets.count }
+        self.constraintCount = document.cells.reduce(0) { $0 + $1.constraints.count }
         self.boundingBox = Self.documentBoundingBox(document)
         self.cells = document.cells
             .map { LayoutDocumentCellSummary(cell: $0, topCellID: document.topCellID) }
@@ -90,6 +92,7 @@ public struct LayoutDocumentCellSummary: Codable, Sendable, Equatable {
     public let pinCount: Int
     public let instanceCount: Int
     public let netCount: Int
+    public let constraintCount: Int
     public let boundingBox: LayoutRect?
 
     public init(cell: LayoutCell, topCellID: UUID?) {
@@ -102,6 +105,7 @@ public struct LayoutDocumentCellSummary: Codable, Sendable, Equatable {
         self.pinCount = cell.pins.count
         self.instanceCount = cell.instances.count
         self.netCount = cell.nets.count
+        self.constraintCount = cell.constraints.count
         var boundingBox: LayoutRect?
         for shape in cell.shapes {
             let shapeBox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)

@@ -26,6 +26,10 @@ public enum LayoutCommandError: Error, Sendable, Equatable {
     case unsupportedSplitGeometry(UUID)
     case invalidSplitCoordinate(shapeID: UUID, axis: SplitShapeAxis, coordinate: Double)
     case invalidRepairBudget(Int)
+    case invalidConstraint(String)
+    case constraintMemberNotFound(UUID)
+    case invalidUUID(String)
+    case invalidNumericValue(argument: String, value: String)
     case missingRequiredArgument(String)
     case missingValueAfter(String)
     case duplicateArgument(String)
@@ -89,6 +93,14 @@ extension LayoutCommandError: LocalizedError {
             return "Invalid split coordinate for shape \(shapeID): axis=\(axis.rawValue), coordinate=\(coordinate)"
         case .invalidRepairBudget(let budget):
             return "Invalid repair budget: \(budget)"
+        case .invalidConstraint(let reason):
+            return "Invalid layout constraint: \(reason)"
+        case .constraintMemberNotFound(let id):
+            return "Constraint member not found: \(id)"
+        case .invalidUUID(let rawValue):
+            return "Invalid UUID: \(rawValue)"
+        case .invalidNumericValue(let argument, let value):
+            return "Invalid numeric value for \(argument): \(value)"
         case .missingRequiredArgument(let argument):
             return "Missing required argument: \(argument)"
         case .missingValueAfter(let argument):
@@ -104,7 +116,7 @@ extension LayoutCommandError: LocalizedError {
         case .conflictingArtifactPath(let roles, let path):
             return "Conflicting artifact path for \(roles): \(path)"
         case .missingCommandMode:
-            return "Missing command mode: provide --request, --action-domain, --convert-document, --inspect-document, or --diagnose-connectivity"
+            return "Missing command mode: provide --request, --action-domain, --convert-document, --inspect-document, --validate-constraints, or --diagnose-connectivity"
         }
     }
 }

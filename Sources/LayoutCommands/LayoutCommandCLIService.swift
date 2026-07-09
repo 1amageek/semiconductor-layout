@@ -42,6 +42,8 @@ public struct LayoutCommandCLIService: Sendable {
         case .inspectDocument(let request):
             let response = try inspectDocument(request, emitsJSON: options.emitsJSON)
             return (response.output, response.status == "passed" ? 0 : 1)
+        case .validateConstraints(let request):
+            return try validateConstraints(request, emitsJSON: options.emitsJSON)
         case .diagnoseConnectivity(let request):
             return try diagnoseConnectivity(request, emitsJSON: options.emitsJSON)
         }
@@ -167,6 +169,78 @@ public struct LayoutCommandCLIService: Sendable {
             layout-command inspect-document \(result.status): \(request.inputFormat.rawValue), \(result.summary.cellCount) cells, \(result.summary.shapeCount) shapes, \(result.summary.viaCount) vias
             """,
             result.status
+        )
+    }
+
+    private func validateConstraints(
+        _ request: LayoutConstraintValidationRequest,
+        emitsJSON: Bool
+    ) throws -> (output: String, exitCode: Int32) {
+        let pathPlan = try LayoutCommandArtifactPathPlan.constraintValidation(request)
+        let inputData = try Data(contentsOf: pathPlan.inputURL)
+        let effectiveTech = try loadEffectiveTechnology(
+            inputURL: pathPlan.inputURL,
+            inputFormat: request.inputFormat,
+            outputFormat: .json,
+            technologyPath: request.technologyPath
+        )
+        let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech)
+        let cellID = try validationCellID(request.cellID, document: document)
+        let cell = try validationCell(cellID, document: document)
+        let tolerance = request.tolerance ?? 1.0e-9
+        let violations = try LayoutConstraintChecker(tolerance: tolerance)
+            .check(document: document, cellID: cellID)
+        let validation = constraintValidationSummary(
+            cell: cell,
+            tolerance: tolerance,
+            violations: violations
+        )
+        let result = LayoutConstraintValidationResult(
+            inputPath: pathPlan.inputURL.path,
+            inputFormat: request.inputFormat,
+            technologyPath: request.technologyPath,
+            inputSHA256: Self.sha256Hex(inputData),
+            inputByteCount: inputData.count,
+            resultPath: pathPlan.resultURL?.path,
+            artifactManifestPath: pathPlan.manifestURL?.path,
+            summary: LayoutDocumentSummary(document: document),
+            validation: validation
+        )
+        let resultData = try encoder.encode(result)
+        var artifacts = [
+            LayoutCommandArtifact(
+                id: "input-layout-document",
+                kind: "layout",
+                format: Self.artifactFormat(for: request.inputFormat),
+                path: pathPlan.inputURL.path,
+                sha256: Self.sha256Hex(inputData),
+                byteCount: inputData.count
+            ),
+        ]
+        if let technologyArtifact = try technologyArtifact(path: request.technologyPath) {
+            artifacts.append(technologyArtifact)
+        }
+        if let resultArtifact = try writeArtifact(
+            id: "layout-constraint-validation-result",
+            kind: "result",
+            format: "LayoutConstraintValidationResultJSON",
+            url: pathPlan.resultURL,
+            data: resultData
+        ) {
+            artifacts.append(resultArtifact)
+        }
+        try writeManifestIfRequested(artifacts: artifacts, to: pathPlan.manifestURL)
+
+        let exitCode: Int32 = result.status == "failed" ? 2 : 0
+        if emitsJSON {
+            return (jsonString(from: resultData), exitCode)
+        }
+        return (
+            """
+            layout-command validate-constraints \(result.status): \(validation.constraintCount) constraints, \
+            \(validation.errorCount) errors, \(validation.warningCount) warnings
+            """,
+            exitCode
         )
     }
 
@@ -391,6 +465,67 @@ public struct LayoutCommandCLIService: Sendable {
                 openCount: connectivity.opens.count,
                 flylineCount: connectivity.flylines.count
             )
+        )
+    }
+
+    private func validationCellID(_ requestedCellID: UUID?, document: LayoutDocument) throws -> UUID {
+        if let requestedCellID {
+            return requestedCellID
+        }
+        if let topCellID = document.topCellID {
+            return topCellID
+        }
+        guard let firstCellID = document.cells.first?.id else {
+            throw LayoutCommandError.missingRequiredArgument("--cell-id")
+        }
+        return firstCellID
+    }
+
+    private func validationCell(_ cellID: UUID, document: LayoutDocument) throws -> LayoutCell {
+        guard let cell = document.cell(withID: cellID) else {
+            throw LayoutCommandError.cellNotFound(cellID)
+        }
+        return cell
+    }
+
+    private func constraintValidationSummary(
+        cell: LayoutCell,
+        tolerance: Double,
+        violations: [LayoutConstraintViolation]
+    ) -> LayoutConstraintValidationSummary {
+        let errors = violations.filter { $0.severity == .error }
+        let warnings = violations.filter { $0.severity == .warning }
+        let status: String
+        if !errors.isEmpty {
+            status = "failed"
+        } else if !warnings.isEmpty {
+            status = "warning"
+        } else {
+            status = "passed"
+        }
+        let kindCounts = Dictionary(grouping: violations, by: { $0.kind.rawValue }).mapValues(\.count)
+        let summaries = violations
+            .sorted { lhs, rhs in
+                if lhs.constraintIndex != rhs.constraintIndex {
+                    return lhs.constraintIndex < rhs.constraintIndex
+                }
+                if lhs.kind.rawValue != rhs.kind.rawValue {
+                    return lhs.kind.rawValue < rhs.kind.rawValue
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            .map(LayoutConstraintViolationSummary.init)
+        return LayoutConstraintValidationSummary(
+            status: status,
+            cellID: cell.id,
+            cellName: cell.name,
+            tolerance: tolerance,
+            constraintCount: cell.constraints.count,
+            violationCount: violations.count,
+            errorCount: errors.count,
+            warningCount: warnings.count,
+            kindViolationCounts: kindCounts,
+            violations: summaries
         )
     }
 

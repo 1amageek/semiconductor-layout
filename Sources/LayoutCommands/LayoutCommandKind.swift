@@ -10,6 +10,7 @@ public enum LayoutCommandKind: String, Codable, Sendable, Equatable {
     case splitShape
     case addLabel
     case addVia
+    case addConstraint
     case addInstance
     case moveInstance
     case rotateInstance

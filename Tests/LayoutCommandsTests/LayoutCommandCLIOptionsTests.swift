@@ -77,6 +77,37 @@ struct LayoutCommandCLIOptionsTests {
         #expect(!options.emitsJSON)
     }
 
+    @Test("CLI options parse constraint validation mode")
+    func parsesConstraintValidationMode() throws {
+        let cellID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000abc"))
+        let options = try LayoutCommandCLIOptions(arguments: [
+            "--validate-constraints",
+            "--input",
+            "/tmp/layout.json",
+            "--input-format",
+            "json",
+            "--cell-id",
+            cellID.uuidString,
+            "--tolerance",
+            "0.25",
+            "--result",
+            "/tmp/constraints.json",
+            "--artifact-manifest",
+            "/tmp/constraints-manifest.json",
+            "--json",
+        ])
+
+        #expect(options.mode == .validateConstraints(LayoutConstraintValidationRequest(
+            inputPath: "/tmp/layout.json",
+            inputFormat: .json,
+            cellID: cellID,
+            tolerance: 0.25,
+            resultPath: "/tmp/constraints.json",
+            artifactManifestPath: "/tmp/constraints-manifest.json"
+        )))
+        #expect(options.emitsJSON)
+    }
+
     @Test("CLI options require a command mode")
     func requiresCommandMode() {
         #expect(throws: LayoutCommandError.missingCommandMode) {
@@ -154,6 +185,32 @@ struct LayoutCommandCLIOptionsTests {
                 "/tmp/input.layout",
                 "--input-format",
                 "unknown",
+            ])
+        }
+    }
+
+    @Test("CLI options reject invalid constraint validation arguments")
+    func rejectsInvalidConstraintValidationArguments() {
+        #expect(throws: LayoutCommandError.invalidUUID("not-a-uuid")) {
+            _ = try LayoutCommandCLIOptions(arguments: [
+                "--validate-constraints",
+                "--input",
+                "/tmp/layout.json",
+                "--input-format",
+                "json",
+                "--cell-id",
+                "not-a-uuid",
+            ])
+        }
+        #expect(throws: LayoutCommandError.invalidNumericValue(argument: "--tolerance", value: "-0.5")) {
+            _ = try LayoutCommandCLIOptions(arguments: [
+                "--validate-constraints",
+                "--input",
+                "/tmp/layout.json",
+                "--input-format",
+                "json",
+                "--tolerance",
+                "-0.5",
             ])
         }
     }

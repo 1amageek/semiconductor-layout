@@ -75,6 +75,14 @@ public struct LayoutCommandFailureRenderer: Sendable {
             return "invalid_split_coordinate"
         case .invalidRepairBudget:
             return "invalid_repair_budget"
+        case .invalidConstraint:
+            return "invalid_constraint"
+        case .constraintMemberNotFound:
+            return "constraint_member_not_found"
+        case .invalidUUID:
+            return "invalid_uuid"
+        case .invalidNumericValue:
+            return "invalid_numeric_value"
         case .missingRequiredArgument:
             return "missing_required_argument"
         case .missingValueAfter:
@@ -137,6 +145,13 @@ public struct LayoutCommandFailureRenderer: Sendable {
             return "unsupported_geometry"
         case .invalidRepairBudget:
             return "invalid_budget"
+        case .invalidConstraint:
+            return "invalid_constraint"
+        case .constraintMemberNotFound:
+            return "missing_reference"
+        case .invalidUUID,
+             .invalidNumericValue:
+            return "invalid_cli_argument"
         case .unknownArgument,
              .invalidFormat,
              .conflictingArguments:
@@ -265,6 +280,28 @@ public struct LayoutCommandFailureRenderer: Sendable {
             return [
                 "use-positive-repair-budget",
                 "inspect-repair-policy",
+            ]
+        case .invalidConstraint:
+            return [
+                "inspect-layout-constraint-payload",
+                "use-supported-analog-layout-constraint",
+                "rerun-constraint-validation",
+            ]
+        case .constraintMemberNotFound:
+            return [
+                "inspect-cell-shapes-and-instances",
+                "use-existing-constraint-member-id",
+                "create-member-before-constraint",
+            ]
+        case .invalidUUID:
+            return [
+                "provide-valid-uuid",
+                "inspect-layout-document-summary",
+            ]
+        case .invalidNumericValue:
+            return [
+                "provide-valid-numeric-value",
+                "inspect-layout-command-help",
             ]
         case .duplicateArgument:
             return [

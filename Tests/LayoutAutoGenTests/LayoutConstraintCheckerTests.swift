@@ -388,6 +388,20 @@ struct LayoutConstraintCheckerTests {
         #expect(Set(violations.flatMap(\.memberIDs)) == [swapped[1].id, swapped[2].id])
     }
 
+    @Test func interdigitationSingleGroupIsMalformed() throws {
+        let a = Self.shape(0, 0, 2, 2)
+        let b = Self.shape(4, 0, 2, 2)
+        let violations = try check(Self.document(
+            shapes: [a, b],
+            constraints: [.interdigitated(LayoutInterdigitatedConstraint(
+                members: [a.id, b.id], pattern: [0]
+            ))]
+        ))
+        let violation = try #require(violations.first)
+        #expect(violations.count == 1)
+        #expect(violation.kind == .malformedConstraint)
+    }
+
     // MARK: - Instance members
 
     @Test func instanceMembersResolveToTransformedHierarchyBounds() throws {

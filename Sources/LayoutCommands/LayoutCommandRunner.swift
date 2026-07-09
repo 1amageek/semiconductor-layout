@@ -325,6 +325,8 @@ public struct LayoutCommandRunner: Sendable {
             return try applyAddLabel(payload, index: index, kind: command.kind, editor: &editor)
         case .addVia(let payload):
             return try applyAddVia(payload, index: index, kind: command.kind, editor: &editor)
+        case .addConstraint(let payload):
+            return try applyAddConstraint(payload, index: index, kind: command.kind, editor: &editor)
         case .addInstance(let payload):
             return try applyAddInstance(payload, index: index, kind: command.kind, editor: &editor)
         case .moveInstance(let payload):
@@ -676,6 +678,18 @@ public struct LayoutCommandRunner: Sendable {
         return LayoutAppliedCommand(index: index, kind: kind, cellID: payload.cellID, entityID: payload.viaID)
     }
 
+    private func applyAddConstraint(
+        _ payload: AddConstraintCommand,
+        index: Int,
+        kind: LayoutCommandKind,
+        editor: inout LayoutDocumentEditor
+    ) throws -> LayoutAppliedCommand {
+        let cell = try findCell(payload.cellID, in: editor.document)
+        try validateDeclarableConstraint(payload.constraint, in: cell)
+        try editor.addConstraint(payload.constraint, to: payload.cellID)
+        return LayoutAppliedCommand(index: index, kind: kind, cellID: payload.cellID, entityID: nil)
+    }
+
     private func applyAddInstance(
         _ payload: AddInstanceCommand,
         index: Int,
@@ -699,6 +713,93 @@ public struct LayoutCommandRunner: Sendable {
         )
         try editor.addInstance(instance, to: payload.cellID)
         return LayoutAppliedCommand(index: index, kind: kind, cellID: payload.cellID, entityID: payload.instanceID)
+    }
+
+    private func findCell(_ cellID: UUID, in document: LayoutDocument) throws -> LayoutCell {
+        guard let cell = document.cell(withID: cellID) else {
+            throw LayoutCommandError.cellNotFound(cellID)
+        }
+        return cell
+    }
+
+    private func validateDeclarableConstraint(_ constraint: LayoutConstraint, in cell: LayoutCell) throws {
+        try validateConstraintStructure(constraint)
+        let knownMemberIDs = Set(cell.shapes.map(\.id)).union(cell.instances.map(\.id))
+        for memberID in constraintMemberIDs(constraint) where !knownMemberIDs.contains(memberID) {
+            throw LayoutCommandError.constraintMemberNotFound(memberID)
+        }
+    }
+
+    private func validateConstraintStructure(_ constraint: LayoutConstraint) throws {
+        switch constraint {
+        case .symmetry(let symmetry):
+            guard !symmetry.members.isEmpty, symmetry.members.count.isMultiple(of: 2) else {
+                throw LayoutCommandError.invalidConstraint("symmetry requires a non-empty even member list")
+            }
+            try ensureUniqueMembers(symmetry.members + symmetry.selfSymmetricMembers)
+        case .matching(let matching):
+            guard matching.members.count >= 2 else {
+                throw LayoutCommandError.invalidConstraint("matching requires at least two members")
+            }
+            try ensureNonNegative(matching.maxLengthMismatch, field: "maxLengthMismatch")
+            try ensureNonNegative(matching.maxWidthMismatch, field: "maxWidthMismatch")
+            try ensureUniqueMembers(matching.members)
+        case .commonCentroid(let centroid):
+            guard centroid.members.count >= 2, !centroid.pattern.isEmpty else {
+                throw LayoutCommandError.invalidConstraint("commonCentroid requires at least two members and a non-empty pattern")
+            }
+            guard Set(centroid.pattern).count >= 2 else {
+                throw LayoutCommandError.invalidConstraint("commonCentroid pattern requires at least two groups")
+            }
+            try ensureUniqueMembers(centroid.members)
+        case .interdigitated(let interdigitated):
+            guard interdigitated.members.count >= 2, !interdigitated.pattern.isEmpty else {
+                throw LayoutCommandError.invalidConstraint("interdigitated requires at least two members and a non-empty pattern")
+            }
+            guard Set(interdigitated.pattern).count >= 2 else {
+                throw LayoutCommandError.invalidConstraint("interdigitated pattern requires at least two groups")
+            }
+            try ensureUniqueMembers(interdigitated.members)
+        case .alignment(let alignment):
+            guard alignment.members.count >= 2 else {
+                throw LayoutCommandError.invalidConstraint("alignment requires at least two members")
+            }
+            guard alignment.tolerance >= 0 else {
+                throw LayoutCommandError.invalidConstraint("alignment tolerance must be non-negative")
+            }
+            try ensureUniqueMembers(alignment.members)
+        }
+    }
+
+    private func ensureNonNegative(_ value: Double?, field: String) throws {
+        guard let value else {
+            return
+        }
+        guard value >= 0 else {
+            throw LayoutCommandError.invalidConstraint("\(field) must be non-negative")
+        }
+    }
+
+    private func ensureUniqueMembers(_ memberIDs: [UUID]) throws {
+        var seen: Set<UUID> = []
+        for memberID in memberIDs where !seen.insert(memberID).inserted {
+            throw LayoutCommandError.invalidConstraint("duplicate member ID \(memberID)")
+        }
+    }
+
+    private func constraintMemberIDs(_ constraint: LayoutConstraint) -> [UUID] {
+        switch constraint {
+        case .symmetry(let symmetry):
+            return symmetry.members + symmetry.selfSymmetricMembers
+        case .matching(let matching):
+            return matching.members
+        case .commonCentroid(let centroid):
+            return centroid.members
+        case .interdigitated(let interdigitated):
+            return interdigitated.members
+        case .alignment(let alignment):
+            return alignment.members
+        }
     }
 
     private func applyMoveInstance(

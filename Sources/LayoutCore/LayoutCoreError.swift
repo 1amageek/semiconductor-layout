@@ -8,6 +8,7 @@ public enum LayoutCoreError: Error, Equatable, Sendable {
     case pinNotFound(UUID)
     case instanceNotFound(UUID)
     case netNotFound(UUID)
+    case constraintNotFound(Int)
     case invalidGeometry(String)
     case nonInvertibleTransform(magnification: Double)
     case instanceCycle(parentCellID: UUID, childCellID: UUID)
@@ -23,6 +24,7 @@ extension LayoutCoreError: LocalizedError {
         case .pinNotFound(let id): return "Pin not found: \(id)"
         case .instanceNotFound(let id): return "Instance not found: \(id)"
         case .netNotFound(let id): return "Net not found: \(id)"
+        case .constraintNotFound(let index): return "Constraint not found at index: \(index)"
         case .invalidGeometry(let msg): return "Invalid geometry: \(msg)"
         case .nonInvertibleTransform(let magnification):
             return "Transform with magnification \(magnification) is not invertible"

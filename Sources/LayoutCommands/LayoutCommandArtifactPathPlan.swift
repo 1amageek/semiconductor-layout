@@ -37,6 +37,21 @@ struct LayoutCommandArtifactPathPlan: Sendable, Equatable {
         return plan
     }
 
+    static func constraintValidation(_ request: LayoutConstraintValidationRequest) throws -> LayoutCommandArtifactPathPlan {
+        let plan = LayoutCommandArtifactPathPlan(
+            inputURL: URL(fileURLWithPath: request.inputPath),
+            outputURL: nil,
+            resultURL: request.resultPath.map { URL(fileURLWithPath: $0) },
+            manifestURL: request.artifactManifestPath.map { URL(fileURLWithPath: $0) }
+        )
+        try validateDistinctPaths([
+            ("input", plan.inputURL),
+            ("result", plan.resultURL),
+            ("artifact-manifest", plan.manifestURL),
+        ])
+        return plan
+    }
+
     private static func validateDistinctPaths(_ entries: [(role: String, url: URL?)]) throws {
         var roleByPath: [String: String] = [:]
         for entry in entries {

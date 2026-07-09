@@ -18,6 +18,7 @@ public struct LayoutActionDomainExporter: Sendable {
                 splitShapeOperation(),
                 addLabelOperation(),
                 addViaOperation(),
+                addConstraintOperation(),
                 addInstanceOperation(),
                 moveInstanceOperation(),
                 rotateInstanceOperation(),
@@ -25,6 +26,7 @@ public struct LayoutActionDomainExporter: Sendable {
                 flattenInstanceOperation(),
                 makeCellOperation(),
                 fixAllViolationsOperation(),
+                validateConstraintsOperation(),
             ]
         )
     }
@@ -238,6 +240,28 @@ public struct LayoutActionDomainExporter: Sendable {
         )
     }
 
+    private func addConstraintOperation() -> LayoutActionDomainOperation {
+        LayoutActionDomainOperation(
+            operationID: "layout.add-constraint",
+            maturity: "implemented",
+            inputRefs: [
+                "document-ref",
+                "cell-ref",
+                "layout-constraint",
+                "shape-or-instance-member-refs",
+            ],
+            preconditions: [
+                "cell-exists",
+                "constraint-structure-valid",
+                "constraint-members-exist",
+            ],
+            effects: ["design-intent-constraint-recorded"],
+            producedArtifacts: ["layout-document", "layout-command-result"],
+            verificationGates: ["artifact-integrity", "layout-constraint-validation"],
+            reversible: true
+        )
+    }
+
     private func addInstanceOperation() -> LayoutActionDomainOperation {
         LayoutActionDomainOperation(
             operationID: "layout.add-instance",
@@ -362,6 +386,22 @@ public struct LayoutActionDomainExporter: Sendable {
             ],
             verificationGates: ["artifact-integrity", "native-drc", "repair-delta-verification"],
             reversible: true
+        )
+    }
+
+    private func validateConstraintsOperation() -> LayoutActionDomainOperation {
+        LayoutActionDomainOperation(
+            operationID: "layout.validate-constraints",
+            maturity: "implemented",
+            inputRefs: ["layout-document", "optional-cell-ref", "constraint-tolerance"],
+            preconditions: ["layout-document-decodable", "cell-exists-when-provided"],
+            effects: ["design-intent-constraints-evaluated"],
+            producedArtifacts: [
+                "layout-constraint-validation-result",
+                "layout-command-manifest",
+            ],
+            verificationGates: ["artifact-integrity", "layout-constraint-validation"],
+            reversible: false
         )
     }
 }

@@ -125,12 +125,19 @@ struct LayoutCommandRunnerTests {
                 position: LayoutPoint(x: 12, y: 3),
                 netID: netID
             )),
+            .addConstraint(AddConstraintCommand(
+                cellID: cellID,
+                constraint: .alignment(LayoutAlignmentConstraint(
+                    mode: .minY,
+                    members: [firstSplitShapeID, secondSplitShapeID]
+                ))
+            )),
         ]
     }
 
     private func expectReplayableSummary(_ result: LayoutCommandResult, request: LayoutCommandRequest) {
         #expect(result.status == "passed")
-        #expect(result.commandCount == 15)
+        #expect(result.commandCount == 16)
         #expect(result.cellCount == 2)
         #expect(result.shapeCount == 2)
         #expect(result.labelCount == 1)
@@ -145,10 +152,10 @@ struct LayoutCommandRunnerTests {
             entityID: cellID
         ))
         #expect(result.appliedCommands.last == LayoutAppliedCommand(
-            index: 14,
-            kind: .addVia,
+            index: 15,
+            kind: .addConstraint,
             cellID: cellID,
-            entityID: viaID
+            entityID: nil
         ))
     }
 
@@ -184,6 +191,7 @@ struct LayoutCommandRunnerTests {
         let cell = try #require(document.cell(withID: cellID))
         try expectReplayedInstance(in: cell)
         try expectReplayedGeometry(in: cell)
+        try expectReplayedConstraints(in: cell)
         return documentData
     }
 
@@ -207,6 +215,17 @@ struct LayoutCommandRunnerTests {
         #expect(cell.labels.first?.text == "out")
         expectRect(firstSplit, origin: LayoutPoint(x: 11, y: 2), size: LayoutSize(width: 2, height: 5))
         expectRect(secondSplit, origin: LayoutPoint(x: 13, y: 2), size: LayoutSize(width: 3, height: 5))
+    }
+
+    private func expectReplayedConstraints(in cell: LayoutCell) throws {
+        let constraint = try #require(cell.constraints.first)
+        guard case .alignment(let alignment) = constraint else {
+            Issue.record("Expected alignment constraint")
+            return
+        }
+        #expect(cell.constraints.count == 1)
+        #expect(alignment.mode == .minY)
+        #expect(alignment.members == [firstSplitShapeID, secondSplitShapeID])
     }
 
     private func expectRect(_ shape: LayoutShape, origin: LayoutPoint, size: LayoutSize) {
@@ -1322,7 +1341,7 @@ struct LayoutCommandRunnerTests {
         let operationIDs = snapshot.operations.map(\.operationID)
 
         #expect(operationIDs.count == Set(operationIDs).count)
-        #expect(snapshot.operations.count == 19)
+        #expect(snapshot.operations.count == 21)
 
         let requiredOperationIDs: Set<String> = [
             "layout-command-replay",
@@ -1337,6 +1356,7 @@ struct LayoutCommandRunnerTests {
             "layout.split-shape",
             "layout.add-label",
             "layout.add-via",
+            "layout.add-constraint",
             "layout.add-instance",
             "layout.move-instance",
             "layout.rotate-instance",
@@ -1344,6 +1364,7 @@ struct LayoutCommandRunnerTests {
             "layout.flatten-instance",
             "layout.make-cell",
             "layout.fix-all-violations",
+            "layout.validate-constraints",
         ]
         #expect(Set(operationIDs) == requiredOperationIDs)
 
@@ -1363,7 +1384,11 @@ struct LayoutCommandRunnerTests {
 
         let replay = try #require(snapshot.operations.first { $0.operationID == "layout-command-replay" })
         #expect(replay.reversible == false)
-        #expect(Set(snapshot.operations.filter(\.reversible).map(\.operationID)) == requiredOperationIDs.subtracting(["layout-command-replay"]))
+        let nonReversibleOperationIDs: Set<String> = [
+            "layout-command-replay",
+            "layout.validate-constraints",
+        ]
+        #expect(Set(snapshot.operations.filter(\.reversible).map(\.operationID)) == requiredOperationIDs.subtracting(nonReversibleOperationIDs))
 
         let geometryEditIDs: Set<String> = [
             "layout.add-rect",
@@ -1426,11 +1451,12 @@ struct LayoutCommandRunnerTests {
 
         #expect(snapshot.schemaVersion == 1)
         #expect(snapshot.domainID == "layout-edit")
-        #expect(snapshot.operations.count == 19)
+        #expect(snapshot.operations.count == 21)
         #expect(output.contains(#""operations" : ["#))
         #expect(output.contains(#""operationID" : "layout.add-rect""#))
         #expect(output.contains(#""operationID" : "layout.add-shape""#))
         #expect(output.contains(#""operationID" : "layout.finish-net""#))
+        #expect(output.contains(#""operationID" : "layout.validate-constraints""#))
         #expect(output.contains(#""verificationGates" : ["#))
         #expect(!output.contains("layout-command action-domain"))
     }

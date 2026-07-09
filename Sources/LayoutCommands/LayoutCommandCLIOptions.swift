@@ -23,12 +23,15 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
         var emitsActionDomain = false
         var convertsDocument = false
         var inspectsDocument = false
+        var validatesConstraints = false
         var diagnosesConnectivity = false
         var inputPath: String?
         var inputFormat: LayoutFileFormat?
         var outputPath: String?
         var outputFormat: LayoutFileFormat?
         var technologyPath: String?
+        var cellID: UUID?
+        var tolerance: Double?
         var resultPath: String?
         var artifactManifestPath: String?
         var emitsJSON = false
@@ -65,6 +68,9 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
             case "--inspect-document":
                 parsed.inspectsDocument = true
                 parsed.selectMode(argument)
+            case "--validate-constraints":
+                parsed.validatesConstraints = true
+                parsed.selectMode(argument)
             case "--diagnose-connectivity":
                 parsed.diagnosesConnectivity = true
                 parsed.selectMode(argument)
@@ -78,6 +84,10 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
                 parsed.outputFormat = try parseFormat(cursor.requireValue(for: argument))
             case "--tech":
                 parsed.technologyPath = try cursor.requireValue(for: argument)
+            case "--cell-id":
+                parsed.cellID = try parseUUID(cursor.requireValue(for: argument))
+            case "--tolerance":
+                parsed.tolerance = try parseDouble(cursor.requireValue(for: argument), argument: argument)
             case "--result":
                 parsed.resultPath = try cursor.requireValue(for: argument)
             case "--artifact-manifest":
@@ -106,6 +116,9 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
         }
         if parsed.inspectsDocument {
             return try makeInspectionMode(from: parsed)
+        }
+        if parsed.validatesConstraints {
+            return try makeConstraintValidationMode(from: parsed)
         }
         if parsed.diagnosesConnectivity {
             return try makeConnectivityDiagnosisMode(from: parsed)
@@ -167,10 +180,45 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
         ))
     }
 
+    private static func makeConstraintValidationMode(from parsed: ParsedArguments) throws -> LayoutCommandCLIMode {
+        guard let inputPath = parsed.inputPath else {
+            throw LayoutCommandError.missingRequiredArgument("--input")
+        }
+        guard let inputFormat = parsed.inputFormat else {
+            throw LayoutCommandError.missingRequiredArgument("--input-format")
+        }
+        if let tolerance = parsed.tolerance, tolerance < 0 {
+            throw LayoutCommandError.invalidNumericValue(argument: "--tolerance", value: String(tolerance))
+        }
+        return .validateConstraints(LayoutConstraintValidationRequest(
+            inputPath: inputPath,
+            inputFormat: inputFormat,
+            technologyPath: parsed.technologyPath,
+            cellID: parsed.cellID,
+            tolerance: parsed.tolerance,
+            resultPath: parsed.resultPath,
+            artifactManifestPath: parsed.artifactManifestPath
+        ))
+    }
+
     private static func parseFormat(_ rawValue: String) throws -> LayoutFileFormat {
         guard let format = LayoutFileFormat(rawValue: rawValue.lowercased()) else {
             throw LayoutCommandError.invalidFormat(rawValue)
         }
         return format
+    }
+
+    private static func parseUUID(_ rawValue: String) throws -> UUID {
+        guard let value = UUID(uuidString: rawValue) else {
+            throw LayoutCommandError.invalidUUID(rawValue)
+        }
+        return value
+    }
+
+    private static func parseDouble(_ rawValue: String, argument: String) throws -> Double {
+        guard let value = Double(rawValue) else {
+            throw LayoutCommandError.invalidNumericValue(argument: argument, value: rawValue)
+        }
+        return value
     }
 }

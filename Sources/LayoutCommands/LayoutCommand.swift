@@ -13,6 +13,7 @@ public enum LayoutCommand: Sendable, Equatable {
     case splitShape(SplitShapeCommand)
     case addLabel(AddLabelCommand)
     case addVia(AddViaCommand)
+    case addConstraint(AddConstraintCommand)
     case addInstance(AddInstanceCommand)
     case moveInstance(MoveInstanceCommand)
     case rotateInstance(RotateInstanceCommand)
@@ -36,6 +37,7 @@ extension LayoutCommand: Codable {
         case splitShape
         case addLabel
         case addVia
+        case addConstraint
         case addInstance
         case moveInstance
         case rotateInstance
@@ -71,6 +73,8 @@ extension LayoutCommand: Codable {
             self = .addLabel(try container.decode(AddLabelCommand.self, forKey: .addLabel))
         case .addVia:
             self = .addVia(try container.decode(AddViaCommand.self, forKey: .addVia))
+        case .addConstraint:
+            self = .addConstraint(try container.decode(AddConstraintCommand.self, forKey: .addConstraint))
         case .addInstance:
             self = .addInstance(try container.decode(AddInstanceCommand.self, forKey: .addInstance))
         case .moveInstance:
@@ -124,6 +128,9 @@ extension LayoutCommand: Codable {
         case .addVia(let command):
             try container.encode(LayoutCommandKind.addVia, forKey: .kind)
             try container.encode(command, forKey: .addVia)
+        case .addConstraint(let command):
+            try container.encode(LayoutCommandKind.addConstraint, forKey: .kind)
+            try container.encode(command, forKey: .addConstraint)
         case .addInstance(let command):
             try container.encode(LayoutCommandKind.addInstance, forKey: .kind)
             try container.encode(command, forKey: .addInstance)
@@ -161,6 +168,7 @@ extension LayoutCommand: Codable {
         case .splitShape: return .splitShape
         case .addLabel: return .addLabel
         case .addVia: return .addVia
+        case .addConstraint: return .addConstraint
         case .addInstance: return .addInstance
         case .moveInstance: return .moveInstance
         case .rotateInstance: return .rotateInstance
