@@ -337,6 +337,15 @@ public struct LayoutCommandRunner: Sendable {
                 baseURL: baseURL,
                 pendingArtifacts: &pendingArtifacts
             )
+        case .placeAnalogArray(let payload):
+            return try applyPlaceAnalogArray(
+                payload,
+                index: index,
+                kind: command.kind,
+                editor: &editor,
+                baseURL: baseURL,
+                pendingArtifacts: &pendingArtifacts
+            )
         case .addInstance(let payload):
             return try applyAddInstance(payload, index: index, kind: command.kind, editor: &editor)
         case .moveInstance(let payload):
@@ -746,6 +755,51 @@ public struct LayoutCommandRunner: Sendable {
             kind: kind,
             cellID: payload.cellID,
             entityID: result.activeShapeIDs.first
+        )
+    }
+
+    private func applyPlaceAnalogArray(
+        _ payload: PlaceAnalogArrayCommand,
+        index: Int,
+        kind: LayoutCommandKind,
+        editor: inout LayoutDocumentEditor,
+        baseURL: URL,
+        pendingArtifacts: inout [PendingCommandArtifact]
+    ) throws -> LayoutAppliedCommand {
+        let result = try AnalogArrayPlacementGenerator().generate(
+            document: editor.document,
+            cellID: payload.cellID,
+            request: payload.request
+        )
+        try editor.perform { document in
+            guard var cell = document.cell(withID: payload.cellID) else {
+                throw LayoutCommandError.cellNotFound(payload.cellID)
+            }
+            for placement in result.placements {
+                guard let instanceIndex = cell.instances.firstIndex(where: { $0.id == placement.instanceID }) else {
+                    throw LayoutCommandError.instanceNotFound(placement.instanceID)
+                }
+                cell.instances[instanceIndex].transform = placement.proposedTransform
+            }
+            cell.constraints.append(contentsOf: result.persistedConstraints)
+            document.updateCell(cell)
+        }
+        if let reportPath = payload.reportPath {
+            let reportData = try encoder.encode(result)
+            pendingArtifacts.append(PendingCommandArtifact(
+                id: "layout-analog-array-\(index)",
+                kind: "layout-analog-array-report",
+                format: "AnalogArrayPlacementResultJSON",
+                url: resolve(path: reportPath, baseURL: baseURL),
+                data: reportData,
+                status: "passed"
+            ))
+        }
+        return LayoutAppliedCommand(
+            index: index,
+            kind: kind,
+            cellID: payload.cellID,
+            entityID: result.arrangedMemberInstanceIDs.first
         )
     }
 

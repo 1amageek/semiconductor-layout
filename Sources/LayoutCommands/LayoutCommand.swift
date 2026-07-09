@@ -15,6 +15,7 @@ public enum LayoutCommand: Sendable, Equatable {
     case addVia(AddViaCommand)
     case addConstraint(AddConstraintCommand)
     case addGuardRing(AddGuardRingCommand)
+    case placeAnalogArray(PlaceAnalogArrayCommand)
     case addInstance(AddInstanceCommand)
     case moveInstance(MoveInstanceCommand)
     case rotateInstance(RotateInstanceCommand)
@@ -40,6 +41,7 @@ extension LayoutCommand: Codable {
         case addVia
         case addConstraint
         case addGuardRing
+        case placeAnalogArray
         case addInstance
         case moveInstance
         case rotateInstance
@@ -79,6 +81,8 @@ extension LayoutCommand: Codable {
             self = .addConstraint(try container.decode(AddConstraintCommand.self, forKey: .addConstraint))
         case .addGuardRing:
             self = .addGuardRing(try container.decode(AddGuardRingCommand.self, forKey: .addGuardRing))
+        case .placeAnalogArray:
+            self = .placeAnalogArray(try container.decode(PlaceAnalogArrayCommand.self, forKey: .placeAnalogArray))
         case .addInstance:
             self = .addInstance(try container.decode(AddInstanceCommand.self, forKey: .addInstance))
         case .moveInstance:
@@ -138,6 +142,9 @@ extension LayoutCommand: Codable {
         case .addGuardRing(let command):
             try container.encode(LayoutCommandKind.addGuardRing, forKey: .kind)
             try container.encode(command, forKey: .addGuardRing)
+        case .placeAnalogArray(let command):
+            try container.encode(LayoutCommandKind.placeAnalogArray, forKey: .kind)
+            try container.encode(command, forKey: .placeAnalogArray)
         case .addInstance(let command):
             try container.encode(LayoutCommandKind.addInstance, forKey: .kind)
             try container.encode(command, forKey: .addInstance)
@@ -177,6 +184,7 @@ extension LayoutCommand: Codable {
         case .addVia: return .addVia
         case .addConstraint: return .addConstraint
         case .addGuardRing: return .addGuardRing
+        case .placeAnalogArray: return .placeAnalogArray
         case .addInstance: return .addInstance
         case .moveInstance: return .moveInstance
         case .rotateInstance: return .rotateInstance

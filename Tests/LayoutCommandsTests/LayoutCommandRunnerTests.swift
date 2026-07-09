@@ -1245,6 +1245,7 @@ struct LayoutCommandRunnerTests {
         #expect(operationIDs.contains("layout.add-label"))
         #expect(operationIDs.contains("layout.add-via"))
         #expect(operationIDs.contains("layout.add-guard-ring"))
+        #expect(operationIDs.contains("layout.place-analog-array"))
         #expect(operationIDs.contains("layout.add-instance"))
         #expect(operationIDs.contains("layout.move-instance"))
         #expect(operationIDs.contains("layout.rotate-instance"))
@@ -1323,6 +1324,14 @@ struct LayoutCommandRunnerTests {
         #expect(addGuardRing.producedArtifacts.contains("layout-guard-ring-report"))
         #expect(addGuardRing.verificationGates.contains("native-drc"))
 
+        let placeAnalogArray = try #require(snapshot.operations.first { $0.operationID == "layout.place-analog-array" })
+        #expect(placeAnalogArray.maturity == "implemented")
+        #expect(placeAnalogArray.inputRefs.contains("member-instance-refs"))
+        #expect(placeAnalogArray.preconditions.contains("slot-labels-satisfy-common-centroid"))
+        #expect(placeAnalogArray.effects.contains("instance-transforms-updated"))
+        #expect(placeAnalogArray.producedArtifacts.contains("layout-analog-array-report"))
+        #expect(placeAnalogArray.verificationGates.contains("layout-constraint-validation"))
+
         let moveInstance = try #require(snapshot.operations.first { $0.operationID == "layout.move-instance" })
         #expect(moveInstance.maturity == "implemented")
         #expect(moveInstance.effects.contains("instance-translation-updated"))
@@ -1350,7 +1359,7 @@ struct LayoutCommandRunnerTests {
         let operationIDs = snapshot.operations.map(\.operationID)
 
         #expect(operationIDs.count == Set(operationIDs).count)
-        #expect(snapshot.operations.count == 22)
+        #expect(snapshot.operations.count == 23)
 
         let requiredOperationIDs: Set<String> = [
             "layout-command-replay",
@@ -1367,6 +1376,7 @@ struct LayoutCommandRunnerTests {
             "layout.add-via",
             "layout.add-constraint",
             "layout.add-guard-ring",
+            "layout.place-analog-array",
             "layout.add-instance",
             "layout.move-instance",
             "layout.rotate-instance",
@@ -1409,6 +1419,7 @@ struct LayoutCommandRunnerTests {
             "layout.delete-shape",
             "layout.split-shape",
             "layout.add-via",
+            "layout.place-analog-array",
             "layout.add-instance",
             "layout.move-instance",
             "layout.rotate-instance",
@@ -1430,6 +1441,7 @@ struct LayoutCommandRunnerTests {
             "layout.add-label",
             "layout.add-via",
             "layout.add-instance",
+            "layout.place-analog-array",
             "layout.move-instance",
             "layout.rotate-instance",
             "layout.mirror-instance",
@@ -1461,12 +1473,13 @@ struct LayoutCommandRunnerTests {
 
         #expect(snapshot.schemaVersion == 1)
         #expect(snapshot.domainID == "layout-edit")
-        #expect(snapshot.operations.count == 22)
+        #expect(snapshot.operations.count == 23)
         #expect(output.contains(#""operations" : ["#))
         #expect(output.contains(#""operationID" : "layout.add-rect""#))
         #expect(output.contains(#""operationID" : "layout.add-shape""#))
         #expect(output.contains(#""operationID" : "layout.finish-net""#))
         #expect(output.contains(#""operationID" : "layout.add-guard-ring""#))
+        #expect(output.contains(#""operationID" : "layout.place-analog-array""#))
         #expect(output.contains(#""operationID" : "layout.validate-constraints""#))
         #expect(output.contains(#""verificationGates" : ["#))
         #expect(!output.contains("layout-command action-domain"))

@@ -20,6 +20,7 @@ public struct LayoutActionDomainExporter: Sendable {
                 addViaOperation(),
                 addConstraintOperation(),
                 addGuardRingOperation(),
+                placeAnalogArrayOperation(),
                 addInstanceOperation(),
                 moveInstanceOperation(),
                 rotateInstanceOperation(),
@@ -297,6 +298,47 @@ public struct LayoutActionDomainExporter: Sendable {
                 "layout-guard-ring-report",
             ],
             verificationGates: ["artifact-integrity", "native-drc", "layout-constraint-validation"],
+            reversible: true
+        )
+    }
+
+    private func placeAnalogArrayOperation() -> LayoutActionDomainOperation {
+        LayoutActionDomainOperation(
+            operationID: "layout.place-analog-array",
+            maturity: "implemented",
+            inputRefs: [
+                "document-ref",
+                "cell-ref",
+                "member-instance-refs",
+                "pattern-labels",
+                "optional-slot-labels",
+                "first-slot-center",
+                "slot-pitch",
+                "optional-analog-array-report-ref",
+            ],
+            preconditions: [
+                "cell-exists",
+                "member-instances-exist",
+                "member-instances-are-unique",
+                "member-instances-reference-geometry",
+                "slot-label-counts-match-member-pattern",
+                "slot-labels-satisfy-common-centroid",
+                "slot-pitch-is-finite-and-nonzero",
+            ],
+            effects: [
+                "instance-transforms-updated",
+                "common-centroid-order-created",
+                "interdigitation-order-created",
+                "optional-layout-constraints-persisted",
+                "optional-analog-array-report-produced",
+            ],
+            producedArtifacts: [
+                "layout-document",
+                "layout-command-result",
+                "layout-command-manifest",
+                "layout-analog-array-report",
+            ],
+            verificationGates: ["artifact-integrity", "native-drc", "native-lvs", "layout-constraint-validation"],
             reversible: true
         )
     }

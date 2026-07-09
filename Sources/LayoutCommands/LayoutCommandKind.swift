@@ -12,6 +12,7 @@ public enum LayoutCommandKind: String, Codable, Sendable, Equatable {
     case addVia
     case addConstraint
     case addGuardRing
+    case placeAnalogArray
     case addInstance
     case moveInstance
     case rotateInstance
