@@ -14,6 +14,7 @@ public enum LayoutCommand: Sendable, Equatable {
     case addLabel(AddLabelCommand)
     case addVia(AddViaCommand)
     case addConstraint(AddConstraintCommand)
+    case addGuardRing(AddGuardRingCommand)
     case addInstance(AddInstanceCommand)
     case moveInstance(MoveInstanceCommand)
     case rotateInstance(RotateInstanceCommand)
@@ -38,6 +39,7 @@ extension LayoutCommand: Codable {
         case addLabel
         case addVia
         case addConstraint
+        case addGuardRing
         case addInstance
         case moveInstance
         case rotateInstance
@@ -75,6 +77,8 @@ extension LayoutCommand: Codable {
             self = .addVia(try container.decode(AddViaCommand.self, forKey: .addVia))
         case .addConstraint:
             self = .addConstraint(try container.decode(AddConstraintCommand.self, forKey: .addConstraint))
+        case .addGuardRing:
+            self = .addGuardRing(try container.decode(AddGuardRingCommand.self, forKey: .addGuardRing))
         case .addInstance:
             self = .addInstance(try container.decode(AddInstanceCommand.self, forKey: .addInstance))
         case .moveInstance:
@@ -131,6 +135,9 @@ extension LayoutCommand: Codable {
         case .addConstraint(let command):
             try container.encode(LayoutCommandKind.addConstraint, forKey: .kind)
             try container.encode(command, forKey: .addConstraint)
+        case .addGuardRing(let command):
+            try container.encode(LayoutCommandKind.addGuardRing, forKey: .kind)
+            try container.encode(command, forKey: .addGuardRing)
         case .addInstance(let command):
             try container.encode(LayoutCommandKind.addInstance, forKey: .kind)
             try container.encode(command, forKey: .addInstance)
@@ -169,6 +176,7 @@ extension LayoutCommand: Codable {
         case .addLabel: return .addLabel
         case .addVia: return .addVia
         case .addConstraint: return .addConstraint
+        case .addGuardRing: return .addGuardRing
         case .addInstance: return .addInstance
         case .moveInstance: return .moveInstance
         case .rotateInstance: return .rotateInstance

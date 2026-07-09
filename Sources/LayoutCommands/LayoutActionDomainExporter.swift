@@ -19,6 +19,7 @@ public struct LayoutActionDomainExporter: Sendable {
                 addLabelOperation(),
                 addViaOperation(),
                 addConstraintOperation(),
+                addGuardRingOperation(),
                 addInstanceOperation(),
                 moveInstanceOperation(),
                 rotateInstanceOperation(),
@@ -258,6 +259,44 @@ public struct LayoutActionDomainExporter: Sendable {
             effects: ["design-intent-constraint-recorded"],
             producedArtifacts: ["layout-document", "layout-command-result"],
             verificationGates: ["artifact-integrity", "layout-constraint-validation"],
+            reversible: true
+        )
+    }
+
+    private func addGuardRingOperation() -> LayoutActionDomainOperation {
+        LayoutActionDomainOperation(
+            operationID: "layout.add-guard-ring",
+            maturity: "implemented",
+            inputRefs: [
+                "document-ref",
+                "cell-ref",
+                "technology-profile-ref",
+                "guard-ring-request",
+                "optional-net-ref",
+                "optional-guard-ring-report-ref",
+            ],
+            preconditions: [
+                "cell-exists",
+                "technology-profile-decodable",
+                "guard-ring-rules-available",
+                "guard-ring-fits-contact-array",
+                "net-ref-exists-when-present",
+                "deterministic-shape-ids-do-not-collide",
+            ],
+            effects: [
+                "guard-ring-active-geometry-created",
+                "guard-ring-implant-geometry-created",
+                "guard-ring-metal-geometry-created",
+                "guard-ring-contact-array-created",
+                "optional-guard-ring-report-produced",
+            ],
+            producedArtifacts: [
+                "layout-document",
+                "layout-command-result",
+                "layout-command-manifest",
+                "layout-guard-ring-report",
+            ],
+            verificationGates: ["artifact-integrity", "native-drc", "layout-constraint-validation"],
             reversible: true
         )
     }

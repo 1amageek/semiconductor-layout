@@ -95,7 +95,21 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
     }
 
     public func viaDefinition(for id: String) -> LayoutViaDefinition? {
-        vias.first { $0.id == id }
+        if let via = vias.first(where: { $0.id == id }) {
+            return via
+        }
+        guard let contact = contactDefinition(for: id) else {
+            return nil
+        }
+        return LayoutViaDefinition(
+            id: contact.id,
+            cutLayer: contact.cutLayer,
+            topLayer: contact.topLayer,
+            bottomLayer: contact.bottomLayer,
+            cutSize: contact.cutSize,
+            enclosure: contact.enclosure,
+            cutSpacing: contact.cutSpacing
+        )
     }
 
     public func ruleSet(for id: LayoutLayerID) -> LayoutLayerRuleSet? {

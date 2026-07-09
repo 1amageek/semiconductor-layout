@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LayoutAutoGen
 import LayoutCore
 import LayoutIO
 import LayoutTech
@@ -327,6 +328,15 @@ public struct LayoutCommandRunner: Sendable {
             return try applyAddVia(payload, index: index, kind: command.kind, editor: &editor)
         case .addConstraint(let payload):
             return try applyAddConstraint(payload, index: index, kind: command.kind, editor: &editor)
+        case .addGuardRing(let payload):
+            return try applyAddGuardRing(
+                payload,
+                index: index,
+                kind: command.kind,
+                editor: &editor,
+                baseURL: baseURL,
+                pendingArtifacts: &pendingArtifacts
+            )
         case .addInstance(let payload):
             return try applyAddInstance(payload, index: index, kind: command.kind, editor: &editor)
         case .moveInstance(let payload):
@@ -688,6 +698,55 @@ public struct LayoutCommandRunner: Sendable {
         try validateDeclarableConstraint(payload.constraint, in: cell)
         try editor.addConstraint(payload.constraint, to: payload.cellID)
         return LayoutAppliedCommand(index: index, kind: kind, cellID: payload.cellID, entityID: nil)
+    }
+
+    private func applyAddGuardRing(
+        _ payload: AddGuardRingCommand,
+        index: Int,
+        kind: LayoutCommandKind,
+        editor: inout LayoutDocumentEditor,
+        baseURL: URL,
+        pendingArtifacts: inout [PendingCommandArtifact]
+    ) throws -> LayoutAppliedCommand {
+        let cell = try findCell(payload.cellID, in: editor.document)
+        try ensureNetExistsIfPresent(payload.request.netID, cellID: payload.cellID, in: editor.document)
+        let tech = try loadTechnology(path: payload.technologyPath, baseURL: baseURL)
+        let result = try GuardRingGenerator().generate(request: payload.request, tech: tech)
+        try ensureNoCollision(
+            ids: result.shapes.map(\.id),
+            existing: Set(cell.shapes.map(\.id)),
+            kind: "shape"
+        )
+        try ensureNoCollision(
+            ids: result.vias.map(\.id),
+            existing: Set(cell.vias.map(\.id)),
+            kind: "via"
+        )
+        try editor.perform { document in
+            guard var mutableCell = document.cell(withID: payload.cellID) else {
+                throw LayoutCommandError.cellNotFound(payload.cellID)
+            }
+            mutableCell.shapes.append(contentsOf: result.shapes)
+            mutableCell.vias.append(contentsOf: result.vias)
+            document.updateCell(mutableCell)
+        }
+        if let reportPath = payload.reportPath {
+            let reportData = try encoder.encode(result)
+            pendingArtifacts.append(PendingCommandArtifact(
+                id: "layout-guard-ring-\(index)",
+                kind: "layout-guard-ring-report",
+                format: "GuardRingGenerationResultJSON",
+                url: resolve(path: reportPath, baseURL: baseURL),
+                data: reportData,
+                status: "passed"
+            ))
+        }
+        return LayoutAppliedCommand(
+            index: index,
+            kind: kind,
+            cellID: payload.cellID,
+            entityID: result.activeShapeIDs.first
+        )
     }
 
     private func applyAddInstance(

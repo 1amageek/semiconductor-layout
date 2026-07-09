@@ -80,7 +80,7 @@ let package = Package(
         ),
         .target(
             name: "LayoutCommands",
-            dependencies: ["LayoutCore", "LayoutIO", "LayoutTech", "LayoutVerify"]
+            dependencies: ["LayoutCore", "LayoutIO", "LayoutTech", "LayoutVerify", "LayoutAutoGen"]
         ),
         .executableTarget(
             name: "LayoutCommandCLI",
