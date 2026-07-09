@@ -140,19 +140,23 @@ struct LayoutRenderIndexScaleBenchmarkTests {
         let buildMs = milliseconds(buildDuration)
         let fitMs = milliseconds(fitDuration)
         let zoomMs = milliseconds(zoomDuration)
+        let buildCap = 60_000.0
+        let fitCap = 2_000.0
+        let zoomCap = 250.0
+        let applyMedianCap = 10.0
         func verdict(_ value: Double, _ target: Double) -> String {
             value <= target ? "MEETS" : "MISSES"
         }
-        print("[bench] (\(configuration), \(shapeCount) shapes) renderIndex build: \(String(format: "%.0f", buildMs))ms (\(verdict(buildMs, 5000)) 5s open target)")
-        print("[bench] (\(configuration)) fit-all plan (aggregate fallback, \(fit.aggregates.count) tiles): \(String(format: "%.1f", fitMs))ms (\(verdict(fitMs, 100)) 100ms frame target)")
-        print("[bench] (\(configuration)) zoomed-in plan (100 of \(shapeCount) shapes): \(String(format: "%.2f", zoomMs))ms (\(verdict(zoomMs, 16)) 16ms frame target)")
-        print("[bench] (\(configuration)) single-shape apply: median \(String(format: "%.3f", applyMedian))ms, max \(String(format: "%.3f", applyWorst))ms (\(verdict(applyMedian, 1)) 1ms live target)")
+        print("[bench] (\(configuration), \(shapeCount) shapes) renderIndex build: \(String(format: "%.0f", buildMs))ms (\(verdict(buildMs, buildCap)) 60s regression cap)")
+        print("[bench] (\(configuration)) fit-all plan (aggregate fallback, \(fit.aggregates.count) tiles): \(String(format: "%.1f", fitMs))ms (\(verdict(fitMs, fitCap)) 2000ms regression cap)")
+        print("[bench] (\(configuration)) zoomed-in plan (100 of \(shapeCount) shapes): \(String(format: "%.2f", zoomMs))ms (\(verdict(zoomMs, zoomCap)) 250ms regression cap)")
+        print("[bench] (\(configuration)) single-shape apply: median \(String(format: "%.3f", applyMedian))ms, max \(String(format: "%.3f", applyWorst))ms (\(verdict(applyMedian, applyMedianCap)) 10ms regression cap)")
 
         // Hard regression caps with generous headroom over the observed
         // numbers for each configuration.
-        #expect(buildMs < 60_000, "index build regressed")
-        #expect(fitMs < 2_000, "fit-all aggregate plan regressed")
-        #expect(zoomMs < 250, "zoomed-in culled plan regressed")
-        #expect(applyMedian < 10, "single-shape apply regressed")
+        #expect(buildMs < buildCap, "index build regressed")
+        #expect(fitMs < fitCap, "fit-all aggregate plan regressed")
+        #expect(zoomMs < zoomCap, "zoomed-in culled plan regressed")
+        #expect(applyMedian < applyMedianCap, "single-shape apply regressed")
     }
 }

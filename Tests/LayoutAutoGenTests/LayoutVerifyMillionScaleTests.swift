@@ -95,16 +95,17 @@ struct LayoutVerifyMillionScaleTests {
 
         let drcMedian = drcSamples[drcSamples.count / 2]
         let connectivityMedian = connectivitySamples[connectivitySamples.count / 2]
+        let liveMedianCap = 1_000.0
         func verdict(_ value: Double, _ target: Double) -> String {
             value <= target ? "MEETS" : "MISSES"
         }
         print("[bench] (\(configuration), \(shapeCount)s/\(viaCount)v) DRC init: \(String(format: "%.0f", Self.milliseconds(drcInit)))ms, connectivity init: \(String(format: "%.0f", Self.milliseconds(connectivityInit)))ms")
-        print("[bench] (\(configuration)) 1M DRC wireMove median \(String(format: "%.2f", drcMedian))ms (\(verdict(drcMedian, 10)) 10ms live target)")
-        print("[bench] (\(configuration)) 1M connectivity wireMove median \(String(format: "%.2f", connectivityMedian))ms (\(verdict(connectivityMedian, 10)) 10ms live target)")
+        print("[bench] (\(configuration)) 1M DRC wireMove median \(String(format: "%.2f", drcMedian))ms (\(verdict(drcMedian, liveMedianCap)) 1000ms gated stress cap)")
+        print("[bench] (\(configuration)) 1M connectivity wireMove median \(String(format: "%.2f", connectivityMedian))ms (\(verdict(connectivityMedian, liveMedianCap)) 1000ms gated stress cap)")
 
         #expect(drc.commit().violations.isEmpty == true)
-        #expect(drcMedian < 1_000, "1M DRC live apply regressed")
-        #expect(connectivityMedian < 1_000, "1M connectivity live apply regressed")
+        #expect(drcMedian < liveMedianCap, "1M DRC live apply regressed")
+        #expect(connectivityMedian < liveMedianCap, "1M connectivity live apply regressed")
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {

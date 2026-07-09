@@ -187,23 +187,25 @@ struct IncrementalDRCSessionBenchmarkTests {
 
         #expect(liveSession.commit().violations.isEmpty == true, "round-trip edits must end clean")
 
+        #if DEBUG
+        let interactiveMedianCap = 50.0
+        let interactiveMedianCapLabel = "50ms debug cap"
+        #else
+        let interactiveMedianCap = 10.0
+        let interactiveMedianCapLabel = "10ms release target"
+        #endif
         let shapeCount = topCell.shapes.count
         let viaCount = topCell.vias.count
         func report(_ label: String, _ samples: [Double]) {
             let median = samples[samples.count / 2]
             let worst = samples.last ?? 0
-            let target = median <= 10 ? "MEETS" : "MISSES"
-            print("[bench] incremental \(label) \(shapeCount)s/\(viaCount)v: median \(String(format: "%.2f", median))ms, max \(String(format: "%.2f", worst))ms (\(target) 10ms live target)")
+            let target = median <= interactiveMedianCap ? "MEETS" : "MISSES"
+            print("[bench] incremental \(label) \(shapeCount)s/\(viaCount)v: median \(String(format: "%.2f", median))ms, max \(String(format: "%.2f", worst))ms (\(target) \(interactiveMedianCapLabel))")
         }
         print("[bench] full run baseline: \(String(format: "%.1f", milliseconds(baselineDuration)))ms, session init: \(String(format: "%.1f", milliseconds(initDuration)))ms")
         report("m1WireMove", wireSamples)
         report("m2PadMove", padSamples)
 
-        #if DEBUG
-        let interactiveMedianCap = 50.0
-        #else
-        let interactiveMedianCap = 10.0
-        #endif
         #expect(wireSamples[wireSamples.count / 2] < interactiveMedianCap, "sparse-layer live apply regressed")
         #expect(padSamples[padSamples.count / 2] < interactiveMedianCap, "dense-layer live apply regressed")
         }
@@ -279,23 +281,28 @@ struct IncrementalDRCSessionBenchmarkTests {
         func verdict(_ value: Double, _ target: Double) -> String {
             value <= target ? "MEETS" : "MISSES"
         }
-        print("[bench] (\(configuration), \(shapeCount)s/\(viaCount)v) DRC init: \(String(format: "%.0f", milliseconds(drcInit)))ms, connectivity init: \(String(format: "%.0f", milliseconds(connectivityInit)))ms")
-        print("[bench] (\(configuration)) DRC m1WireMove median \(String(format: "%.2f", median(drcWire)))ms, m2PadMove median \(String(format: "%.2f", median(drcPad)))ms (\(verdict(max(median(drcWire), median(drcPad)), 10)) 10ms live target)")
-        print("[bench] (\(configuration)) connectivity wireMove median \(String(format: "%.2f", median(connectivitySamples)))ms (\(verdict(median(connectivitySamples), 10)) 10ms live target)")
-
-        #expect(drc.commit().violations.isEmpty == true, "round-trip edits must end clean")
 
         #if DEBUG
         let drcInitCap = 90_000.0
         let connectivityInitCap = 20_000.0
         let drcMedianCap = 80.0
         let connectivityMedianCap = 40.0
+        let drcMedianCapLabel = "80ms debug cap"
+        let connectivityMedianCapLabel = "40ms debug cap"
         #else
         let drcInitCap = 20_000.0
         let connectivityInitCap = 10_000.0
         let drcMedianCap = 10.0
         let connectivityMedianCap = 10.0
+        let drcMedianCapLabel = "10ms release target"
+        let connectivityMedianCapLabel = "10ms release target"
         #endif
+        print("[bench] (\(configuration), \(shapeCount)s/\(viaCount)v) DRC init: \(String(format: "%.0f", milliseconds(drcInit)))ms, connectivity init: \(String(format: "%.0f", milliseconds(connectivityInit)))ms")
+        print("[bench] (\(configuration)) DRC m1WireMove median \(String(format: "%.2f", median(drcWire)))ms, m2PadMove median \(String(format: "%.2f", median(drcPad)))ms (\(verdict(max(median(drcWire), median(drcPad)), drcMedianCap)) \(drcMedianCapLabel))")
+        print("[bench] (\(configuration)) connectivity wireMove median \(String(format: "%.2f", median(connectivitySamples)))ms (\(verdict(median(connectivitySamples), connectivityMedianCap)) \(connectivityMedianCapLabel))")
+
+        #expect(drc.commit().violations.isEmpty == true, "round-trip edits must end clean")
+
         #expect(milliseconds(drcInit) < drcInitCap, "DRC session init regressed")
         #expect(milliseconds(connectivityInit) < connectivityInitCap, "connectivity session init regressed")
         #expect(median(drcWire) < drcMedianCap, "sparse-layer live apply regressed at scale")

@@ -66,18 +66,20 @@ struct LayoutEditorTickBenchmarkTests {
         #expect(viewModel.violations.isEmpty, "round-trip ticks must end clean")
         #expect(viewModel.constraintViolations.isEmpty)
 
+        #if DEBUG
+        let tickMedianCap = 75.0
+        let tickMedianCapLabel = "75ms debug cap"
+        #else
+        let tickMedianCap = 10.0
+        let tickMedianCapLabel = "10ms release target"
+        #endif
         let shapeCount = viewModel.documentShapes().count
         func verdict(_ value: Double, _ target: Double) -> String {
             value <= target ? "MEETS" : "MISSES"
         }
         print("[bench] (\(configuration), \(shapeCount)s editor) open: \(String(format: "%.0f", Self.milliseconds(openDuration)))ms")
-        print("[bench] (\(configuration)) integrated tick: median \(String(format: "%.2f", median))ms, max \(String(format: "%.2f", worst))ms (\(verdict(median, 10)) 10ms tick target)")
+        print("[bench] (\(configuration)) integrated tick: median \(String(format: "%.2f", median))ms, max \(String(format: "%.2f", worst))ms (\(verdict(median, tickMedianCap)) \(tickMedianCapLabel))")
 
-        #if DEBUG
-        let tickMedianCap = 75.0
-        #else
-        let tickMedianCap = 10.0
-        #endif
         #expect(median < tickMedianCap, "integrated editor tick regressed at scale")
         }
     }
