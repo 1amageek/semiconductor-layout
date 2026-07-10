@@ -163,7 +163,7 @@ extension LayoutDRCService {
             .flatMap(\.rects)
             .filter { $0.size.width > 0 && $0.size.height > 0 }
         guard !explicitRects.isEmpty else {
-            return [legacyViaCutRect(for: via, definition: def)]
+            return [defaultViaCutRect(for: via, definition: def)]
         }
         return explicitRects.map { translated($0, by: via.position) }
     }
@@ -255,7 +255,7 @@ extension LayoutDRCService {
         return result
     }
 
-    private func legacyViaCutRect(for via: LayoutVia, definition: LayoutViaDefinition) -> LayoutRect {
+    private func defaultViaCutRect(for via: LayoutVia, definition: LayoutViaDefinition) -> LayoutRect {
         return LayoutRect(
             origin: LayoutPoint(
                 x: via.position.x - definition.cutSize.width / 2,

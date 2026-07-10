@@ -733,7 +733,7 @@ struct LayoutDRCServiceCorrectnessTests {
         #expect(!result.violations.contains { $0.kind == .exactOverlap })
     }
 
-    @Test func exactOverlapRuleDecodesLegacySingleSecondaryArtifact() throws {
+    @Test func exactOverlapRuleRejectsSingleSecondaryField() throws {
         let json = """
         {
           "id": "exactOverlap.CONT.DIFF",
@@ -743,15 +743,12 @@ struct LayoutDRCServiceCorrectnessTests {
         }
         """
 
-        let rule = try JSONDecoder().decode(
-            LayoutExactOverlapRule.self,
-            from: Data(json.utf8)
-        )
-
-        #expect(rule.id == "exactOverlap.CONT.DIFF")
-        #expect(rule.primaryLayer == LayoutLayerID(name: "CONT", purpose: "cut"))
-        #expect(rule.secondaryLayer == LayoutLayerID(name: "DIFF", purpose: "drawing"))
-        #expect(rule.secondaryLayers == [LayoutLayerID(name: "DIFF", purpose: "drawing")])
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(
+                LayoutExactOverlapRule.self,
+                from: Data(json.utf8)
+            )
+        }
     }
 
     @Test func exactOverlapRuleEncodesOneOfSecondaryArtifact() throws {
@@ -767,7 +764,7 @@ struct LayoutDRCServiceCorrectnessTests {
         let text = String(decoding: data, as: UTF8.self)
         let decoded = try JSONDecoder().decode(LayoutExactOverlapRule.self, from: data)
 
-        #expect(text.contains("\"secondaryLayer\""))
+        #expect(!text.contains("\"secondaryLayer\":"))
         #expect(text.contains("\"secondaryLayers\""))
         #expect(decoded.secondaryLayer == diff)
         #expect(decoded.secondaryLayers == [diff, poly])

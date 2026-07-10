@@ -37,7 +37,7 @@ public struct LayoutDRCResult: Hashable, Sendable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        violations = try container.decodeIfPresent([LayoutViolation].self, forKey: .violations) ?? []
-        diagnostics = try container.decodeIfPresent([LayoutDRCDiagnostic].self, forKey: .diagnostics) ?? []
+        violations = try container.decode([LayoutViolation].self, forKey: .violations)
+        diagnostics = try container.decode([LayoutDRCDiagnostic].self, forKey: .diagnostics)
     }
 }

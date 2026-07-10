@@ -314,8 +314,8 @@ struct LiveLVSSessionTests {
         #expect(result.summary.suggestedActions.contains("review-device-extraction-profile"))
     }
 
-    @Test func legacyExtractionIssueArtifactsDecodeWithPolicySummary() throws {
-        let legacyJSON = """
+    @Test func extractionIssueArtifactsRejectMissingPolicySummary() throws {
+        let incompleteJSON = """
         {
           "netlist": {
             "devices": [],
@@ -324,7 +324,7 @@ struct LiveLVSSessionTests {
           "issues": [
             {
               "kind": "missingTerminal",
-              "message": "legacy terminal issue",
+              "message": "incomplete terminal issue",
               "region": {
                 "origin": { "x": 0, "y": 0 },
                 "size": { "width": 1, "height": 1 }
@@ -335,19 +335,12 @@ struct LiveLVSSessionTests {
         }
         """
 
-        let decoded = try JSONDecoder().decode(
-            DeviceExtractionResult.self,
-            from: Data(legacyJSON.utf8)
-        )
-
-        let issue = try #require(decoded.issues.first)
-        #expect(issue.severity == .error)
-        #expect(issue.code == "layout.extraction.missing-terminal")
-        #expect(issue.policyApplicability == .layoutRepairRequired)
-        #expect(issue.suggestedActions.contains("repair-terminal-connectivity"))
-        #expect(decoded.summary.issueCount == 1)
-        #expect(decoded.summary.issueCountsByCode["layout.extraction.missing-terminal"] == 1)
-        #expect(decoded.summary.issueCountsByPolicyApplicability["layoutRepairRequired"] == 1)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(
+                DeviceExtractionResult.self,
+                from: Data(incompleteJSON.utf8)
+            )
+        }
     }
 
     @Test func comparatorPairsParameterExactCandidateOverFirstTopologicalOne() {

@@ -25,7 +25,6 @@ public struct LayoutSymmetryConstraint: Hashable, Sendable, Codable {
         self.isHard = isHard
     }
 
-    // Custom Codable for backward compatibility
     private enum CodingKeys: String, CodingKey {
         case axis, members, axisPosition, selfSymmetricMembers, isHard
     }
@@ -35,7 +34,7 @@ public struct LayoutSymmetryConstraint: Hashable, Sendable, Codable {
         axis = try container.decode(LayoutSymmetryAxis.self, forKey: .axis)
         members = try container.decode([UUID].self, forKey: .members)
         axisPosition = try container.decodeIfPresent(Double.self, forKey: .axisPosition)
-        selfSymmetricMembers = try container.decodeIfPresent([UUID].self, forKey: .selfSymmetricMembers) ?? []
-        isHard = try container.decodeIfPresent(Bool.self, forKey: .isHard) ?? true
+        selfSymmetricMembers = try container.decode([UUID].self, forKey: .selfSymmetricMembers)
+        isHard = try container.decode(Bool.self, forKey: .isHard)
     }
 }

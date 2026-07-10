@@ -51,9 +51,9 @@ public struct LayoutViaDefinition: Hashable, Sendable, Codable {
         cutSize = try container.decode(LayoutSize.self, forKey: .cutSize)
         enclosure = try container.decode(LayoutViaEnclosure.self, forKey: .enclosure)
         cutSpacing = try container.decode(Double.self, forKey: .cutSpacing)
-        layerGeometries = try container.decodeIfPresent(
+        layerGeometries = try container.decode(
             [LayoutViaLayerGeometry].self,
             forKey: .layerGeometries
-        ) ?? []
+        )
     }
 }

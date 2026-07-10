@@ -71,7 +71,6 @@ public struct LayoutTransform: Hashable, Sendable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case translation
-        case rotation
         case rotationDegrees
         case magnification
         case mirrorX
@@ -80,22 +79,16 @@ public struct LayoutTransform: Hashable, Sendable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        translation = try container.decodeIfPresent(LayoutPoint.self, forKey: .translation) ?? .zero
-        if let exactRotation = try container.decodeIfPresent(Double.self, forKey: .rotationDegrees) {
-            rotationDegrees = exactRotation
-        } else {
-            let legacyRotation = try container.decodeIfPresent(LayoutRotation.self, forKey: .rotation) ?? .deg0
-            rotationDegrees = legacyRotation.degrees
-        }
-        magnification = try container.decodeIfPresent(Double.self, forKey: .magnification) ?? 1.0
-        mirrorX = try container.decodeIfPresent(Bool.self, forKey: .mirrorX) ?? false
-        mirrorY = try container.decodeIfPresent(Bool.self, forKey: .mirrorY) ?? false
+        translation = try container.decode(LayoutPoint.self, forKey: .translation)
+        rotationDegrees = try container.decode(Double.self, forKey: .rotationDegrees)
+        magnification = try container.decode(Double.self, forKey: .magnification)
+        mirrorX = try container.decode(Bool.self, forKey: .mirrorX)
+        mirrorY = try container.decode(Bool.self, forKey: .mirrorY)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(translation, forKey: .translation)
-        try container.encode(rotation, forKey: .rotation)
         try container.encode(rotationDegrees, forKey: .rotationDegrees)
         try container.encode(magnification, forKey: .magnification)
         try container.encode(mirrorX, forKey: .mirrorX)

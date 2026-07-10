@@ -43,8 +43,6 @@ public struct LayoutEnclosureRule: Hashable, Sendable, Codable {
         self.outerLayer = try container.decode(LayoutLayerID.self, forKey: .outerLayer)
         self.innerLayer = try container.decode(LayoutLayerID.self, forKey: .innerLayer)
         self.minEnclosure = try container.decode(Double.self, forKey: .minEnclosure)
-        // Absent in documents written before the flag existed; those rules
-        // were authored with mandatory containment semantics.
-        self.allowsPassThrough = try container.decodeIfPresent(Bool.self, forKey: .allowsPassThrough) ?? false
+        self.allowsPassThrough = try container.decode(Bool.self, forKey: .allowsPassThrough)
     }
 }

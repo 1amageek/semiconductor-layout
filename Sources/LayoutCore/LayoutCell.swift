@@ -53,13 +53,13 @@ public struct LayoutCell: Identifiable, Hashable, Sendable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
-        shapes = try container.decodeIfPresent([LayoutShape].self, forKey: .shapes) ?? []
-        vias = try container.decodeIfPresent([LayoutVia].self, forKey: .vias) ?? []
-        labels = try container.decodeIfPresent([LayoutLabel].self, forKey: .labels) ?? []
-        pins = try container.decodeIfPresent([LayoutPin].self, forKey: .pins) ?? []
-        instances = try container.decodeIfPresent([LayoutInstance].self, forKey: .instances) ?? []
-        nets = try container.decodeIfPresent([LayoutNet].self, forKey: .nets) ?? []
-        constraints = try container.decodeIfPresent([LayoutConstraint].self, forKey: .constraints) ?? []
-        properties = try container.decodeIfPresent([String: String].self, forKey: .properties) ?? [:]
+        shapes = try container.decode([LayoutShape].self, forKey: .shapes)
+        vias = try container.decode([LayoutVia].self, forKey: .vias)
+        labels = try container.decode([LayoutLabel].self, forKey: .labels)
+        pins = try container.decode([LayoutPin].self, forKey: .pins)
+        instances = try container.decode([LayoutInstance].self, forKey: .instances)
+        nets = try container.decode([LayoutNet].self, forKey: .nets)
+        constraints = try container.decode([LayoutConstraint].self, forKey: .constraints)
+        properties = try container.decode([String: String].self, forKey: .properties)
     }
 }

@@ -239,7 +239,7 @@ struct IRTechLayoutBridgeTests {
         #expect(tech.minimumCutRules.isEmpty)
     }
 
-    @Test func layoutViaDefinitionDecodesLegacyPayloadWithoutLayerGeometries() throws {
+    @Test func layoutViaDefinitionRejectsMissingLayerGeometries() throws {
         let json = """
         {
           "id": "VIA1",
@@ -252,10 +252,9 @@ struct IRTechLayoutBridgeTests {
         }
         """
 
-        let via = try JSONDecoder().decode(LayoutViaDefinition.self, from: Data(json.utf8))
-
-        #expect(via.id == "VIA1")
-        #expect(via.layerGeometries.isEmpty)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(LayoutViaDefinition.self, from: Data(json.utf8))
+        }
     }
 
     // MARK: - Export Tests

@@ -62,7 +62,6 @@ public struct LayoutExactOverlapRule: Hashable, Sendable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id
         case primaryLayer
-        case secondaryLayer
         case secondaryLayers
         case tolerance
     }
@@ -71,33 +70,26 @@ public struct LayoutExactOverlapRule: Hashable, Sendable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
         self.primaryLayer = try container.decode(LayoutLayerID.self, forKey: .primaryLayer)
-        let decodedSecondaryLayers = try container.decodeIfPresent(
+        let decodedSecondaryLayers = try container.decode(
             [LayoutLayerID].self,
             forKey: .secondaryLayers
         )
-        if let decodedSecondaryLayers {
-            guard !decodedSecondaryLayers.isEmpty else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .secondaryLayers,
-                    in: container,
-                    debugDescription: LayoutExactOverlapRuleError.emptySecondaryLayers(ruleID: id).description
-                )
-            }
-            self.secondaryLayers = decodedSecondaryLayers
-        } else {
-            self.secondaryLayers = [try container.decode(LayoutLayerID.self, forKey: .secondaryLayer)]
+        guard !decodedSecondaryLayers.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .secondaryLayers,
+                in: container,
+                debugDescription: LayoutExactOverlapRuleError.emptySecondaryLayers(ruleID: id).description
+            )
         }
-        self.tolerance = try container.decodeIfPresent(Double.self, forKey: .tolerance) ?? 0
+        self.secondaryLayers = decodedSecondaryLayers
+        self.tolerance = try container.decode(Double.self, forKey: .tolerance)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(primaryLayer, forKey: .primaryLayer)
-        try container.encode(secondaryLayer, forKey: .secondaryLayer)
-        if secondaryLayers.count > 1 {
-            try container.encode(secondaryLayers, forKey: .secondaryLayers)
-        }
+        try container.encode(secondaryLayers, forKey: .secondaryLayers)
         try container.encode(tolerance, forKey: .tolerance)
     }
 }

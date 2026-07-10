@@ -124,17 +124,6 @@ struct KLayoutLypTechParserTests {
         }
     }
 
-    // MARK: - Existing parse() still works
-
-    @Test func legacyParseStillWorks() throws {
-        let data = nandFlashLyp.data(using: .utf8)!
-        let tech = try parser.parse(data: data)
-
-        #expect(tech.layers.count == 5)
-        #expect(tech.layers[0].displayName == "ACTIVE")
-        #expect(tech.layers[0].gdsLayer == 1)
-    }
-
     // MARK: - Source with no @ suffix
 
     @Test func sourceWithoutAtSuffix() throws {

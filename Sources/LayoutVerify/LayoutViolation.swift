@@ -91,17 +91,17 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
         id = try container.decode(UUID.self, forKey: .id)
         kind = try container.decode(LayoutViolationKind.self, forKey: .kind)
         ruleID = try container.decodeIfPresent(String.self, forKey: .ruleID)
-        severity = try container.decodeIfPresent(LayoutViolationSeverity.self, forKey: .severity) ?? .error
+        severity = try container.decode(LayoutViolationSeverity.self, forKey: .severity)
         message = try container.decode(String.self, forKey: .message)
         layer = try container.decodeIfPresent(LayoutLayerID.self, forKey: .layer)
-        region = try container.decodeIfPresent(LayoutRect.self, forKey: .region) ?? .zero
+        region = try container.decode(LayoutRect.self, forKey: .region)
         measured = try container.decodeIfPresent(Double.self, forKey: .measured)
         required = try container.decodeIfPresent(Double.self, forKey: .required)
         unit = try container.decodeIfPresent(String.self, forKey: .unit)
-        shapeIDs = try container.decodeIfPresent([UUID].self, forKey: .shapeIDs) ?? []
-        viaIDs = try container.decodeIfPresent([UUID].self, forKey: .viaIDs) ?? []
-        pinIDs = try container.decodeIfPresent([UUID].self, forKey: .pinIDs) ?? []
-        netIDs = try container.decodeIfPresent([UUID].self, forKey: .netIDs) ?? []
+        shapeIDs = try container.decode([UUID].self, forKey: .shapeIDs)
+        viaIDs = try container.decode([UUID].self, forKey: .viaIDs)
+        pinIDs = try container.decode([UUID].self, forKey: .pinIDs)
+        netIDs = try container.decode([UUID].self, forKey: .netIDs)
         suggestedFix = try container.decodeIfPresent(String.self, forKey: .suggestedFix)
     }
 

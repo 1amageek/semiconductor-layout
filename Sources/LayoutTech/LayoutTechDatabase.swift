@@ -68,26 +68,26 @@ public struct LayoutTechDatabase: Hashable, Sendable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.units = try container.decodeIfPresent(LayoutUnits.self, forKey: .units) ?? .defaultUnits
+        self.units = try container.decode(LayoutUnits.self, forKey: .units)
         self.grid = try container.decode(Double.self, forKey: .grid)
         self.layers = try container.decode([LayoutLayerDefinition].self, forKey: .layers)
         self.vias = try container.decode([LayoutViaDefinition].self, forKey: .vias)
         self.layerRules = try container.decode([LayoutLayerRuleSet].self, forKey: .layerRules)
-        self.derivedLayerRules = try container.decodeIfPresent(
+        self.derivedLayerRules = try container.decode(
             [LayoutDerivedLayerRule].self,
             forKey: .derivedLayerRules
-        ) ?? []
-        self.spacingRules = try container.decodeIfPresent([LayoutSpacingRule].self, forKey: .spacingRules) ?? []
-        self.antennaRules = try container.decodeIfPresent([LayoutAntennaRule].self, forKey: .antennaRules) ?? []
-        self.enclosureRules = try container.decodeIfPresent([LayoutEnclosureRule].self, forKey: .enclosureRules) ?? []
-        self.extensionRules = try container.decodeIfPresent([LayoutExtensionRule].self, forKey: .extensionRules) ?? []
-        self.minimumCutRules = try container.decodeIfPresent([LayoutMinimumCutRule].self, forKey: .minimumCutRules) ?? []
-        self.exactOverlapRules = try container.decodeIfPresent([LayoutExactOverlapRule].self, forKey: .exactOverlapRules) ?? []
-        self.forbiddenLayerRules = try container.decodeIfPresent(
+        )
+        self.spacingRules = try container.decode([LayoutSpacingRule].self, forKey: .spacingRules)
+        self.antennaRules = try container.decode([LayoutAntennaRule].self, forKey: .antennaRules)
+        self.enclosureRules = try container.decode([LayoutEnclosureRule].self, forKey: .enclosureRules)
+        self.extensionRules = try container.decode([LayoutExtensionRule].self, forKey: .extensionRules)
+        self.minimumCutRules = try container.decode([LayoutMinimumCutRule].self, forKey: .minimumCutRules)
+        self.exactOverlapRules = try container.decode([LayoutExactOverlapRule].self, forKey: .exactOverlapRules)
+        self.forbiddenLayerRules = try container.decode(
             [LayoutForbiddenLayerRule].self,
             forKey: .forbiddenLayerRules
-        ) ?? []
-        self.contacts = try container.decodeIfPresent([LayoutContactDefinition].self, forKey: .contacts) ?? []
+        )
+        self.contacts = try container.decode([LayoutContactDefinition].self, forKey: .contacts)
     }
 
     public func layerDefinition(for id: LayoutLayerID) -> LayoutLayerDefinition? {

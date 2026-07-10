@@ -25,22 +25,6 @@ public struct IRLayoutBridge: Sendable {
 
     // MARK: - Import: IRLibrary → LayoutDocument
 
-    @available(*, deprecated, message: "Use checkedImportLibrary for design, signoff, and agent-facing import. This legacy importer preserves permissive preview behavior.")
-    public func importLibrary(_ library: IRLibrary, tech: LayoutTechDatabase) -> LayoutDocument {
-        let dbu = library.units.dbuPerMicron
-        let layerMap = buildLayerMap(tech: tech)
-        let cellNameToID = buildCellNameMap(for: library)
-
-        var cells: [LayoutCell] = []
-        for irCell in library.cells {
-            guard let cellID = cellNameToID[irCell.name] else { continue }
-            let cell = convertCell(irCell, cellID: cellID, dbu: dbu, layerMap: layerMap, cellNameToID: cellNameToID)
-            cells.append(cell)
-        }
-
-        return makeDocument(name: library.name, dbu: dbu, cells: cells)
-    }
-
     public func checkedImportLibrary(_ library: IRLibrary, tech: LayoutTechDatabase) throws -> LayoutDocument {
         let dbu = library.units.dbuPerMicron
         let layerMap = buildLayerMap(tech: tech)

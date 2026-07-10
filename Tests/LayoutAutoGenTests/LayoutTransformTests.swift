@@ -19,13 +19,24 @@ struct LayoutTransformTests {
         #expect(abs(transformed.y - 3.0) < 1e-12)
     }
 
-    @Test("Legacy orthogonal rotation remains available")
-    func legacyOrthogonalRotationRemainsAvailable() {
+    @Test("Orthogonal rotation projection remains available")
+    func orthogonalRotationProjectionRemainsAvailable() {
         var transform = LayoutTransform(rotationDegrees: 46)
         #expect(transform.rotation == .deg90)
 
         transform.rotation = .deg180
         #expect(transform.rotationDegrees == 180)
+    }
+
+    @Test("Decoding requires the exact rotation field")
+    func decodingRequiresExactRotationField() throws {
+        let data = Data(
+            #"{"translation":{"x":0,"y":0},"rotation":"deg90","magnification":1,"mirrorX":false,"mirrorY":false}"#.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(LayoutTransform.self, from: data)
+        }
     }
 
     @Test("Checked inverse rejects zero magnification")

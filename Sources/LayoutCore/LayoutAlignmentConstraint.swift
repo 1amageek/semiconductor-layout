@@ -42,7 +42,7 @@ public struct LayoutAlignmentConstraint: Hashable, Sendable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         mode = try container.decode(Mode.self, forKey: .mode)
         members = try container.decode([UUID].self, forKey: .members)
-        tolerance = try container.decodeIfPresent(Double.self, forKey: .tolerance) ?? 0
-        isHard = try container.decodeIfPresent(Bool.self, forKey: .isHard) ?? true
+        tolerance = try container.decode(Double.self, forKey: .tolerance)
+        isHard = try container.decode(Bool.self, forKey: .isHard)
     }
 }

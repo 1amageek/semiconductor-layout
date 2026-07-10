@@ -89,12 +89,12 @@ public struct LayoutLayerRuleSet: Hashable, Sendable, Codable {
         maxDensity = try container.decode(Double.self, forKey: .maxDensity)
         densityWindow = try container.decodeIfPresent(LayoutSize.self, forKey: .densityWindow)
         densityStep = try container.decodeIfPresent(Double.self, forKey: .densityStep)
-        maskColors = try container.decodeIfPresent([String].self, forKey: .maskColors) ?? []
+        maskColors = try container.decode([String].self, forKey: .maskColors)
         minNotch = try container.decodeIfPresent(Double.self, forKey: .minNotch)
         wideWidthThreshold = try container.decodeIfPresent(Double.self, forKey: .wideWidthThreshold)
         wideSpacing = try container.decodeIfPresent(Double.self, forKey: .wideSpacing)
         minEnclosedArea = try container.decodeIfPresent(Double.self, forKey: .minEnclosedArea)
-        requiresRectangular = try container.decodeIfPresent(Bool.self, forKey: .requiresRectangular) ?? false
+        requiresRectangular = try container.decode(Bool.self, forKey: .requiresRectangular)
         allowedAngleStepDegrees = try container.decodeIfPresent(Double.self, forKey: .allowedAngleStepDegrees)
     }
 

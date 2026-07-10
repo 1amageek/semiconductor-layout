@@ -24,8 +24,7 @@ public struct DeviceExtractionResult: Hashable, Sendable, Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         netlist = try container.decode(ComparisonNetlist.self, forKey: .netlist)
-        issues = try container.decodeIfPresent([DeviceExtractionIssue].self, forKey: .issues) ?? []
-        summary = try container.decodeIfPresent(DeviceExtractionSummary.self, forKey: .summary)
-            ?? DeviceExtractionSummary(issues: issues)
+        issues = try container.decode([DeviceExtractionIssue].self, forKey: .issues)
+        summary = try container.decode(DeviceExtractionSummary.self, forKey: .summary)
     }
 }

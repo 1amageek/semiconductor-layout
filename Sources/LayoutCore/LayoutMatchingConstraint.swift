@@ -19,7 +19,6 @@ public struct LayoutMatchingConstraint: Hashable, Sendable, Codable {
         self.isHard = isHard
     }
 
-    // Custom Codable for backward compatibility
     private enum CodingKeys: String, CodingKey {
         case members, maxLengthMismatch, maxWidthMismatch, isHard
     }
@@ -29,6 +28,6 @@ public struct LayoutMatchingConstraint: Hashable, Sendable, Codable {
         members = try container.decode([UUID].self, forKey: .members)
         maxLengthMismatch = try container.decodeIfPresent(Double.self, forKey: .maxLengthMismatch)
         maxWidthMismatch = try container.decodeIfPresent(Double.self, forKey: .maxWidthMismatch)
-        isHard = try container.decodeIfPresent(Bool.self, forKey: .isHard) ?? true
+        isHard = try container.decode(Bool.self, forKey: .isHard)
     }
 }

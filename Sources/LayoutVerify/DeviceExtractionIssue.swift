@@ -141,23 +141,22 @@ public struct DeviceExtractionIssue: Hashable, Sendable, Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         kind = try container.decode(DeviceExtractionIssueKind.self, forKey: .kind)
-        severity = try container.decodeIfPresent(DeviceExtractionIssueSeverity.self, forKey: .severity) ?? .error
-        code = try container.decodeIfPresent(String.self, forKey: .code) ?? kind.defaultCode
+        severity = try container.decode(DeviceExtractionIssueSeverity.self, forKey: .severity)
+        code = try container.decode(String.self, forKey: .code)
         message = try container.decode(String.self, forKey: .message)
         region = try container.decode(LayoutRect.self, forKey: .region)
-        shapeIDs = try container.decodeIfPresent([UUID].self, forKey: .shapeIDs) ?? []
+        shapeIDs = try container.decode([UUID].self, forKey: .shapeIDs)
         affectedDeviceKind = try container.decodeIfPresent(ComparisonDeviceKind.self, forKey: .affectedDeviceKind)
         affectedTerminal = try container.decodeIfPresent(ComparisonTerminalRole.self, forKey: .affectedTerminal)
         affectedNet = try container.decodeIfPresent(ComparisonNetID.self, forKey: .affectedNet)
-        affectedLayers = (try container.decodeIfPresent([LayoutLayerID].self, forKey: .affectedLayers) ?? []).sorted {
+        affectedLayers = try container.decode([LayoutLayerID].self, forKey: .affectedLayers).sorted {
             if $0.name != $1.name { return $0.name < $1.name }
             return $0.purpose < $1.purpose
         }
-        policyApplicability = try container.decodeIfPresent(
+        policyApplicability = try container.decode(
             DeviceExtractionPolicyApplicability.self,
             forKey: .policyApplicability
-        ) ?? kind.defaultPolicyApplicability
-        suggestedActions = try container.decodeIfPresent([String].self, forKey: .suggestedActions)
-            ?? kind.defaultSuggestedActions
+        )
+        suggestedActions = try container.decode([String].self, forKey: .suggestedActions)
     }
 }

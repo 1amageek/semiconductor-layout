@@ -205,7 +205,7 @@ struct SAPlacementState: Sendable {
         }
     }
 
-    /// Legacy revert for backward compatibility.
+    /// Restores the exact placement snapshot when a move is rejected.
     mutating func revert(_ move: SAMove, originalX: Double?, grid: Double) {
         switch move {
         case .swap(let a, let b):

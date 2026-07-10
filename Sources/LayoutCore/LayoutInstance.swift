@@ -39,7 +39,7 @@ public struct LayoutInstance: Identifiable, Hashable, Sendable, Codable {
         cellID = try container.decode(UUID.self, forKey: .cellID)
         name = try container.decode(String.self, forKey: .name)
         transform = try container.decode(LayoutTransform.self, forKey: .transform)
-        terminalNetIDs = try container.decodeIfPresent([String: UUID].self, forKey: .terminalNetIDs) ?? [:]
+        terminalNetIDs = try container.decode([String: UUID].self, forKey: .terminalNetIDs)
         repetition = try container.decodeIfPresent(LayoutRepetition.self, forKey: .repetition)
     }
 

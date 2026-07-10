@@ -1,67 +1,9 @@
 import Foundation
-import LayoutCore
-import LayoutTech
 import TechIR
 
-/// Builds a LayoutTechDatabase from a KLayout layer properties file (`.lyp`).
+/// Builds an `IRTechLibrary` from a KLayout layer properties file (`.lyp`).
 public struct KLayoutLypTechParser: Sendable {
     public init() {}
-
-    public func parse(data: Data) throws -> LayoutTechDatabase {
-        let delegate = Delegate()
-        let parser = XMLParser(data: data)
-        parser.delegate = delegate
-
-        guard parser.parse() else {
-            let reason = parser.parserError?.localizedDescription ?? "unknown XML parse error"
-            throw LayoutIOError.readFailed(reason)
-        }
-
-        var usedNames: Set<String> = []
-        var layers: [LayoutLayerDefinition] = []
-
-        for raw in delegate.layers {
-            guard let source = raw.source,
-                  let (gdsLayer, gdsDatatype) = parseSource(source) else { continue }
-
-            let displayName = normalizedDisplayName(raw.name, gdsLayer: gdsLayer, gdsDatatype: gdsDatatype)
-            let idName = uniqueIDName(from: displayName, used: &usedNames)
-            let purpose = inferredPurpose(from: displayName)
-            let color = parseColor(raw.fillColor) ?? parseColor(raw.frameColor) ?? fallbackColor(for: gdsLayer)
-            let pattern = mapPattern(raw.ditherPattern)
-            let visible = parseBool(raw.visible) ?? true
-
-            layers.append(LayoutLayerDefinition(
-                id: LayoutLayerID(name: idName, purpose: purpose),
-                displayName: displayName,
-                gdsLayer: gdsLayer,
-                gdsDatatype: gdsDatatype,
-                color: color,
-                fillPattern: pattern,
-                preferredDirection: .none,
-                visibleByDefault: visible
-            ))
-        }
-
-        layers.sort {
-            if $0.gdsLayer == $1.gdsLayer { return $0.gdsDatatype < $1.gdsDatatype }
-            return $0.gdsLayer < $1.gdsLayer
-        }
-
-        guard !layers.isEmpty else {
-            throw LayoutIOError.readFailed("No valid layer entries found in .lyp")
-        }
-
-        return LayoutTechDatabase(
-            units: .defaultUnits,
-            grid: 0.01,
-            layers: layers,
-            vias: [],
-            layerRules: []
-        )
-    }
-
-    // MARK: - IRTech Output
 
     /// Parses `.lyp` data into an `IRTechLibrary` intermediate representation.
     public func parseToIRTech(data: Data) throws -> IRTechLibrary {
@@ -224,30 +166,6 @@ public struct KLayoutLypTechParser: Sendable {
         return "drawing"
     }
 
-    private func parseColor(_ hex: String?) -> LayoutColor? {
-        guard let hex else { return nil }
-        let clean = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard clean.hasPrefix("#") else { return nil }
-        let v = String(clean.dropFirst())
-
-        if v.count == 6, let rgb = Int(v, radix: 16) {
-            let r = Double((rgb >> 16) & 0xFF) / 255
-            let g = Double((rgb >> 8) & 0xFF) / 255
-            let b = Double(rgb & 0xFF) / 255
-            return LayoutColor(red: r, green: g, blue: b, alpha: 1.0)
-        }
-
-        if v.count == 8, let argb = Int(v, radix: 16) {
-            let a = Double((argb >> 24) & 0xFF) / 255
-            let r = Double((argb >> 16) & 0xFF) / 255
-            let g = Double((argb >> 8) & 0xFF) / 255
-            let b = Double(argb & 0xFF) / 255
-            return LayoutColor(red: r, green: g, blue: b, alpha: a)
-        }
-
-        return nil
-    }
-
     private func parseBool(_ value: String?) -> Bool? {
         guard let value else { return nil }
         switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
@@ -257,42 +175,6 @@ public struct KLayoutLypTechParser: Sendable {
         }
     }
 
-    private func mapPattern(_ value: String?) -> LayoutFillPattern {
-        guard let value else { return .solid }
-        let p = value.lowercased()
-        if p.contains("dot") { return .dots }
-        if p.contains("grid") { return .grid }
-        if p.contains("cross") || p.contains("hatch") { return .crosshatch }
-        if p.contains("horiz") { return .horizontal }
-        if p.contains("vert") { return .vertical }
-        if p.contains("back") { return .backwardDiagonal }
-        if p.contains("diag") || p.contains("slash") { return .forwardDiagonal }
-        return .solid
-    }
-
-    private func fallbackColor(for layer: Int) -> LayoutColor {
-        let hue = Double((layer * 37) % 360) / 360
-        return hsvToRGB(h: hue, s: 0.55, v: 0.92)
-    }
-
-    private func hsvToRGB(h: Double, s: Double, v: Double) -> LayoutColor {
-        let i = Int(h * 6)
-        let f = h * 6 - Double(i)
-        let p = v * (1 - s)
-        let q = v * (1 - f * s)
-        let t = v * (1 - (1 - f) * s)
-
-        let (r, g, b): (Double, Double, Double)
-        switch i % 6 {
-        case 0: (r, g, b) = (v, t, p)
-        case 1: (r, g, b) = (q, v, p)
-        case 2: (r, g, b) = (p, v, t)
-        case 3: (r, g, b) = (p, q, v)
-        case 4: (r, g, b) = (t, p, v)
-        default: (r, g, b) = (v, p, q)
-        }
-        return LayoutColor(red: r, green: g, blue: b, alpha: 1.0)
-    }
 }
 
 private extension KLayoutLypTechParser {
