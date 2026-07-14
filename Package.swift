@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "LayoutCore", targets: ["LayoutCore"]),
         .library(name: "LayoutTech", targets: ["LayoutTech"]),
+        .library(name: "LayoutLVSExtraction", targets: ["LayoutLVSExtraction"]),
         .library(name: "LayoutVerify", targets: ["LayoutVerify"]),
         .library(name: "LayoutIO", targets: ["LayoutIO"]),
         .library(name: "LayoutIntegration", targets: ["LayoutIntegration"]),
@@ -17,16 +18,28 @@ let package = Package(
         .executable(name: "layout-command", targets: ["LayoutCommandCLI"]),
     ],
     dependencies: [
+        .package(path: "../CircuiteFoundation"),
         .package(path: "../swift-mask-data"),
+        .package(path: "../SignoffToolSupport"),
     ],
     targets: [
         .target(
             name: "LayoutCore",
-            dependencies: []
+            dependencies: [
+                .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
+            ]
         ),
         .target(
             name: "LayoutTech",
             dependencies: ["LayoutCore"]
+        ),
+        .target(
+            name: "LayoutLVSExtraction",
+            dependencies: [
+                "LayoutCore",
+                "LayoutTech",
+                .product(name: "SignoffToolSupport", package: "SignoffToolSupport"),
+            ]
         ),
         .target(
             name: "LayoutVerify",
@@ -95,6 +108,21 @@ let package = Package(
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
+            ]
+        ),
+        .testTarget(
+            name: "LayoutLVSExtractionTests",
+            dependencies: [
+                "LayoutLVSExtraction",
+                "LayoutCore",
+                "LayoutTech",
+            ]
+        ),
+        .testTarget(
+            name: "LayoutCoreTests",
+            dependencies: [
+                "LayoutCore",
+                .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
             ]
         ),
         .testTarget(

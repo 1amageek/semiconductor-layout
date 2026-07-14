@@ -12,8 +12,34 @@ public struct LayoutDRCService {
     public func run(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
-        cellID: UUID? = nil
+        cellID: UUID? = nil,
+        geometryMode: LayoutDRCGeometryMode = .development
     ) -> LayoutDRCResult {
+        guard resolveCell(document: document, cellID: cellID) != nil else {
+            return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
+        }
+        let hierarchyDiagnostics = invalidHierarchyDiagnostics(document: document, cellID: cellID)
+        if !hierarchyDiagnostics.isEmpty {
+            return LayoutDRCResult(diagnostics: hierarchyDiagnostics)
+        }
+        let geometryDiagnostics = LayoutDerivedLayerMaterializer().unsupportedGeometryDiagnostics(
+            document: document,
+            tech: tech,
+            cellID: cellID
+        )
+        if !geometryDiagnostics.isEmpty {
+            return LayoutDRCResult(diagnostics: geometryDiagnostics)
+        }
+        if geometryMode == .exactOnly {
+            let exactGeometryDiagnostics = unsupportedExactGeometryDiagnostics(
+                document: document,
+                tech: tech,
+                cellID: cellID
+            )
+            if !exactGeometryDiagnostics.isEmpty {
+                return LayoutDRCResult(diagnostics: exactGeometryDiagnostics)
+            }
+        }
         guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
             return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
         }
@@ -23,8 +49,43 @@ public struct LayoutDRCService {
     public func runChecked(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
-        cellID: UUID? = nil
+        cellID: UUID? = nil,
+        geometryMode: LayoutDRCGeometryMode = .exactOnly
     ) throws -> LayoutDRCResult {
+        guard resolveCell(document: document, cellID: cellID) != nil else {
+            throw LayoutDRCServiceError.targetCellNotFound(
+                requestedCellID: cellID,
+                topCellID: document.topCellID
+            )
+        }
+        let hierarchyDiagnostics = invalidHierarchyDiagnostics(document: document, cellID: cellID)
+        if !hierarchyDiagnostics.isEmpty {
+            throw LayoutDRCServiceError.invalidHierarchy(
+                messages: hierarchyDiagnostics.map(\.message)
+            )
+        }
+        let geometryDiagnostics = LayoutDerivedLayerMaterializer().unsupportedGeometryDiagnostics(
+            document: document,
+            tech: tech,
+            cellID: cellID
+        )
+        if !geometryDiagnostics.isEmpty {
+            throw LayoutDRCServiceError.unsupportedDerivedGeometry(
+                messages: geometryDiagnostics.map(\.message)
+            )
+        }
+        if geometryMode == .exactOnly {
+            let exactGeometryDiagnostics = unsupportedExactGeometryDiagnostics(
+                document: document,
+                tech: tech,
+                cellID: cellID
+            )
+            if !exactGeometryDiagnostics.isEmpty {
+                throw LayoutDRCServiceError.unsupportedExactGeometry(
+                    messages: exactGeometryDiagnostics.map(\.message)
+                )
+            }
+        }
         guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
             throw LayoutDRCServiceError.targetCellNotFound(
                 requestedCellID: cellID,
@@ -32,6 +93,120 @@ public struct LayoutDRCService {
             )
         }
         return LayoutDRCResult(violations: collectViolations(context: context, tech: tech))
+    }
+
+    private func unsupportedExactGeometryDiagnostics(
+        document: LayoutDocument,
+        tech: LayoutTechDatabase,
+        cellID: UUID?
+    ) -> [LayoutDRCDiagnostic] {
+        guard let targetCell = resolveCell(document: document, cellID: cellID) else { return [] }
+        var shapes: [LayoutShape] = []
+        var vias: [LayoutVia] = []
+        var pins: [LayoutPin] = []
+        var conflicts: [TerminalConnectivityConflict] = []
+        flatten(
+            cell: targetCell,
+            document: document,
+            tech: tech,
+            transforms: [],
+            terminalNetIDs: [:],
+            shapes: &shapes,
+            vias: &vias,
+            pins: &pins,
+            terminalConflicts: &conflicts
+        )
+
+        return shapes.compactMap { shape in
+            switch shape.geometry {
+            case .rect:
+                return nil
+            case .path:
+                return exactGeometryDiagnostic(
+                    shape: shape,
+                    reason: "path geometry has no exact rectilinear boolean representation"
+                )
+            case .polygon(let polygon):
+                guard !polygonEdgesAreRectilinear(polygon.points) else { return nil }
+                return exactGeometryDiagnostic(
+                    shape: shape,
+                    reason: "non-rectilinear polygon requires an exact edge kernel"
+                )
+            }
+        }
+    }
+
+    private func invalidHierarchyDiagnostics(
+        document: LayoutDocument,
+        cellID: UUID?
+    ) -> [LayoutDRCDiagnostic] {
+        guard let root = resolveCell(document: document, cellID: cellID) else { return [] }
+        var visiting: Set<UUID> = []
+        var visited: Set<UUID> = []
+        var diagnostics: [LayoutDRCDiagnostic] = []
+        var emittedMissingChildIDs: Set<UUID> = []
+        var emittedCycleIDs: Set<UUID> = []
+
+        func visit(_ cell: LayoutCell) {
+            guard visited.insert(cell.id).inserted else { return }
+            visiting.insert(cell.id)
+            for instance in cell.instances {
+                guard let child = document.cell(withID: instance.cellID) else {
+                    if emittedMissingChildIDs.insert(instance.cellID).inserted {
+                        diagnostics.append(LayoutDRCDiagnostic(
+                            code: "drc.missing_child_cell",
+                            severity: .error,
+                            message: "Cell '\(cell.name)' references missing child cell '\(instance.cellID.uuidString)'.",
+                            cellID: cell.id,
+                            suggestedActions: ["repair_hierarchy_reference", "inspect_layout_cells"]
+                        ))
+                    }
+                    continue
+                }
+                if visiting.contains(child.id) {
+                    if emittedCycleIDs.insert(child.id).inserted {
+                        diagnostics.append(LayoutDRCDiagnostic(
+                            code: "drc.hierarchy_cycle",
+                            severity: .error,
+                            message: "Cell hierarchy contains a cycle through '\(child.name)'.",
+                            cellID: child.id,
+                            suggestedActions: ["remove_hierarchy_cycle", "inspect_layout_instances"]
+                        ))
+                    }
+                    continue
+                }
+                visit(child)
+            }
+            visiting.remove(cell.id)
+        }
+
+        visit(root)
+        return diagnostics
+    }
+
+    private func exactGeometryDiagnostic(shape: LayoutShape, reason: String) -> LayoutDRCDiagnostic {
+        LayoutDRCDiagnostic(
+            code: "drc.unsupported_exact_geometry",
+            severity: .error,
+            message: "Shape \(shape.id.uuidString) on \(shape.layer.name) cannot be evaluated in exact-only mode: \(reason).",
+            suggestedActions: [
+                "convert_geometry_to_exact_supported_polygon",
+                "run_with_an_exact_geometry_kernel",
+                "inspect_shape_geometry"
+            ]
+        )
+    }
+
+    private func polygonEdgesAreRectilinear(_ points: [LayoutPoint]) -> Bool {
+        guard points.count >= 3 else { return true }
+        for index in points.indices {
+            let next = points[(index + 1) % points.count]
+            let point = points[index]
+            if point.x != next.x && point.y != next.y {
+                return false
+            }
+        }
+        return true
     }
 
     private func makeRunContext(

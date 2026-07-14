@@ -1,4 +1,5 @@
 import Foundation
+import CircuiteFoundation
 import Testing
 import LayoutCore
 import LayoutIR
@@ -7,6 +8,28 @@ import LayoutTech
 
 @Suite("IRLayoutBridge Validation")
 struct IRLayoutBridgeValidationTests {
+    @Test func checkedImportRejectsInvalidDatabaseScale() {
+        let library = IRLibrary(
+            name: "invalid-units",
+            units: IRUnits(dbuPerMicron: 0)
+        )
+
+        #expect(throws: DatabaseUnitScaleError.self) {
+            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+        }
+    }
+
+    @Test func exportRejectsInvalidDatabaseScale() {
+        let document = LayoutDocument(
+            name: "invalid-units",
+            units: LayoutUnits(dbuPerMicron: .infinity)
+        )
+
+        #expect(throws: DatabaseUnitScaleError.self) {
+            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+        }
+    }
+
     @Test func checkedImportRejectsDuplicateCellNames() {
         let library = IRLibrary(
             name: "duplicate",

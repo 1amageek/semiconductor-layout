@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import CircuiteFoundation
 import LayoutCore
 import LayoutTech
 import LayoutIR
@@ -26,7 +28,8 @@ public struct IRLayoutBridge: Sendable {
     // MARK: - Import: IRLibrary → LayoutDocument
 
     public func checkedImportLibrary(_ library: IRLibrary, tech: LayoutTechDatabase) throws -> LayoutDocument {
-        let dbu = library.units.dbuPerMicron
+        let scale = try library.units.validatedScale
+        let dbu = scale.databaseUnitsPerMicrometer
         let layerMap = buildLayerMap(tech: tech)
         try validateUniqueCellNames(in: library)
         let cellNameToID = buildCellNameMap(for: library)
@@ -41,18 +44,18 @@ public struct IRLayoutBridge: Sendable {
             cells.append(cell)
         }
 
-        return makeDocument(name: library.name, dbu: dbu, cells: cells)
+        return makeDocument(name: library.name, scale: scale, cells: cells)
     }
 
     private func buildCellNameMap(for library: IRLibrary) -> [String: UUID] {
         var cellNameToID: [String: UUID] = [:]
         for irCell in library.cells {
-            cellNameToID[irCell.name] = UUID()
+            cellNameToID[irCell.name] = stableUUID(namespace: "cell", payload: "\(library.name)|\(irCell.name)")
         }
         return cellNameToID
     }
 
-    private func makeDocument(name: String, dbu: Double, cells: [LayoutCell]) -> LayoutDocument {
+    private func makeDocument(name: String, scale: DatabaseUnitScale, cells: [LayoutCell]) -> LayoutDocument {
         // GDS carries no explicit top cell; the top is the cell that no
         // other cell references. Multiple roots resolve to the first in
         // library order, deterministically.
@@ -60,7 +63,7 @@ public struct IRLayoutBridge: Sendable {
         let topCellID = cells.first { !referencedCellIDs.contains($0.id) }?.id ?? cells.first?.id
         return LayoutDocument(
             name: name,
-            units: LayoutUnits(dbuPerMicron: dbu),
+            units: LayoutUnits(scale: scale),
             cells: cells,
             topCellID: topCellID
         )
@@ -73,8 +76,8 @@ public struct IRLayoutBridge: Sendable {
         tech: LayoutTechDatabase,
         includeDEFRouteMetadata: Bool = false
     ) throws -> IRLibrary {
-        let dbu = document.units.dbuPerMicron
-        try validateDBU(dbu, context: "document '\(document.name)'")
+        let scale = try document.units.validatedScale
+        let dbu = scale.databaseUnitsPerMicrometer
         let reverseLayerMap = try buildReverseLayerMap(tech: tech)
 
         // Build cell UUID → name mapping
@@ -98,7 +101,7 @@ public struct IRLayoutBridge: Sendable {
 
         return IRLibrary(
             name: document.name,
-            units: IRUnits(dbuPerMicron: dbu),
+            units: IRUnits(scale: scale),
             cells: irCells
         )
     }
@@ -262,13 +265,14 @@ public struct IRLayoutBridge: Sendable {
         let nets = layoutNets(from: cellProperties, elements: irCell.elements)
         let netIDByName = Dictionary(uniqueKeysWithValues: nets.map { ($0.name, $0.id) })
 
-        for element in irCell.elements {
+        for (elementIndex, element) in irCell.elements.enumerated() {
             switch element {
             case .boundary(let b):
                 if let via = convertViaBoundary(b, dbu: dbu, layerMap: layerMap) {
                     vias.append(via)
                 } else if let shape = convertBoundary(
                     b,
+                    id: stableUUID(namespace: "boundary", payload: "\(irCell.name)|\(elementIndex)"),
                     dbu: dbu,
                     layerMap: layerMap,
                     netIDByName: netIDByName
@@ -276,7 +280,13 @@ public struct IRLayoutBridge: Sendable {
                     shapes.append(shape)
                 }
             case .path(let p):
-                if let shape = convertPath(p, dbu: dbu, layerMap: layerMap, netIDByName: netIDByName) {
+                if let shape = convertPath(
+                    p,
+                    id: stableUUID(namespace: "path", payload: "\(irCell.name)|\(elementIndex)"),
+                    dbu: dbu,
+                    layerMap: layerMap,
+                    netIDByName: netIDByName
+                ) {
                     shapes.append(shape)
                 }
                 vias.append(contentsOf: convertRouteVias(
@@ -290,11 +300,21 @@ public struct IRLayoutBridge: Sendable {
                     labels.append(label)
                 }
             case .cellRef(let r):
-                if let inst = convertCellRef(r, dbu: dbu, cellNameToID: cellNameToID) {
+                if let inst = convertCellRef(
+                    r,
+                    id: stableUUID(namespace: "cell-ref", payload: "\(irCell.name)|\(elementIndex)"),
+                    dbu: dbu,
+                    cellNameToID: cellNameToID
+                ) {
                     instances.append(inst)
                 }
             case .arrayRef(let a):
-                if let inst = convertArrayRef(a, dbu: dbu, cellNameToID: cellNameToID) {
+                if let inst = convertArrayRef(
+                    a,
+                    id: stableUUID(namespace: "array-ref", payload: "\(irCell.name)|\(elementIndex)"),
+                    dbu: dbu,
+                    cellNameToID: cellNameToID
+                ) {
                     instances.append(inst)
                 }
             }
@@ -314,6 +334,7 @@ public struct IRLayoutBridge: Sendable {
 
     private func convertBoundary(
         _ b: IRBoundary,
+        id: UUID,
         dbu: Double,
         layerMap: LayerMap,
         netIDByName: [String: UUID]
@@ -331,6 +352,7 @@ public struct IRLayoutBridge: Sendable {
         }
         guard pts.count >= 3 else { return nil }
         return LayoutShape(
+            id: id,
             layer: layerID,
             netID: routeNetID(from: properties, netIDByName: netIDByName),
             geometry: .polygon(LayoutPolygon(points: pts)),
@@ -340,6 +362,7 @@ public struct IRLayoutBridge: Sendable {
 
     private func convertPath(
         _ p: IRPath,
+        id: UUID,
         dbu: Double,
         layerMap: LayerMap,
         netIDByName: [String: UUID]
@@ -366,11 +389,24 @@ public struct IRLayoutBridge: Sendable {
         case .halfWidthExtend, .customExtension: endCap = .extend
         }
         return LayoutShape(
+            id: id,
             layer: layerID,
             netID: routeNetID(from: properties, netIDByName: netIDByName),
             geometry: .path(LayoutPath(points: pts, width: width, endCap: endCap)),
             properties: properties
         )
+    }
+
+    private func stableUUID(namespace: String, payload: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data("lsi.ir-layout|\(namespace)|\(payload)".utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 
     private func routePathWidth(
@@ -466,7 +502,12 @@ public struct IRLayoutBridge: Sendable {
         )
     }
 
-    private func convertCellRef(_ r: IRCellRef, dbu: Double, cellNameToID: [String: UUID]) -> LayoutInstance? {
+    private func convertCellRef(
+        _ r: IRCellRef,
+        id: UUID,
+        dbu: Double,
+        cellNameToID: [String: UUID]
+    ) -> LayoutInstance? {
         guard let cellID = cellNameToID[r.cellName] else { return nil }
         let origin = dbuToMicron(r.origin, dbu: dbu)
         let transform = LayoutTransform(
@@ -476,10 +517,15 @@ public struct IRLayoutBridge: Sendable {
             mirrorX: r.transform.mirrorX
         )
         let instanceName = propertyValue(r.properties, for: Self.defComponentNamePropertyName) ?? r.cellName
-        return LayoutInstance(cellID: cellID, name: instanceName, transform: transform)
+        return LayoutInstance(id: id, cellID: cellID, name: instanceName, transform: transform)
     }
 
-    private func convertArrayRef(_ a: IRArrayRef, dbu: Double, cellNameToID: [String: UUID]) -> LayoutInstance? {
+    private func convertArrayRef(
+        _ a: IRArrayRef,
+        id: UUID,
+        dbu: Double,
+        cellNameToID: [String: UUID]
+    ) -> LayoutInstance? {
         guard let cellID = cellNameToID[a.cellName] else { return nil }
         guard a.referencePoints.count >= 3 else { return nil }
         let cols = Int(a.columns)
@@ -502,6 +548,7 @@ public struct IRLayoutBridge: Sendable {
             mirrorX: a.transform.mirrorX
         )
         return LayoutInstance(
+            id: id,
             cellID: cellID,
             name: propertyValue(a.properties, for: Self.defComponentNamePropertyName) ?? a.cellName,
             transform: transform,
@@ -1045,14 +1092,6 @@ public struct IRLayoutBridge: Sendable {
             )
         }
         return Int32(rounded)
-    }
-
-    private func validateDBU(_ dbu: Double, context: String) throws {
-        guard dbu.isFinite, dbu > 0 else {
-            throw LayoutIOError.conversionFailed(
-                "Invalid database units per micron \(dbu) for \(context)"
-            )
-        }
     }
 
     // MARK: - Layer mapping

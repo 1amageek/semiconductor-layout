@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import LayoutCore
 import LayoutTech
 
@@ -40,6 +41,55 @@ public struct LayoutDerivedLayerMaterializer: Sendable {
             }
         }
         return updated
+    }
+
+    /// Returns blocking diagnostics for source geometry that this materializer
+    /// cannot represent without losing layout semantics.
+    public func unsupportedGeometryDiagnostics(
+        document: LayoutDocument,
+        tech: LayoutTechDatabase,
+        cellID: UUID? = nil
+    ) -> [LayoutDRCDiagnostic] {
+        guard !tech.derivedLayerRules.isEmpty else { return [] }
+        let targetCells = reachableCells(in: document, from: cellID)
+        var diagnostics: [LayoutDRCDiagnostic] = []
+        for cell in targetCells {
+            for rule in tech.derivedLayerRules {
+                let sourceLayers = Set(rule.sourceLayers)
+                for shape in cell.shapes where sourceLayers.contains(shape.layer)
+                    && shape.properties["derivedLayerRuleID"] == nil {
+                    guard let geometryKind = unsupportedGeometryKind(for: shape.geometry) else {
+                        continue
+                    }
+                    diagnostics.append(LayoutDRCDiagnostic(
+                        code: "drc.unsupported_derived_geometry",
+                        severity: .error,
+                        message: "Derived rule '\(rule.id)' cannot safely materialize \(geometryKind) geometry on layer '\(shape.layer.name):\(shape.layer.purpose)'.",
+                        cellID: cell.id,
+                        suggestedActions: [
+                            "convert_geometry_to_exact_supported_polygon",
+                            "run_with_exact_geometry_kernel",
+                            "inspect_derived_layer_rule"
+                        ]
+                    ))
+                }
+            }
+        }
+        return diagnostics
+    }
+
+    private func reachableCells(in document: LayoutDocument, from cellID: UUID?) -> [LayoutCell] {
+        guard let cellID else { return document.cells }
+        var pending = [cellID]
+        var visited: Set<UUID> = []
+        while let currentID = pending.popLast() {
+            guard visited.insert(currentID).inserted,
+                  let cell = document.cells.first(where: { $0.id == currentID }) else {
+                continue
+            }
+            pending.append(contentsOf: cell.instances.map(\.cellID))
+        }
+        return document.cells.filter { visited.contains($0.id) }
     }
 
     public func materializedShapes(
@@ -463,6 +513,7 @@ public struct LayoutDerivedLayerMaterializer: Sendable {
         candidate: DerivedLayerCandidate
     ) -> LayoutShape {
         LayoutShape(
+            id: deterministicDerivedShapeID(rule: rule, candidate: candidate),
             layer: rule.targetLayer,
             netID: candidate.netID,
             geometry: .rect(candidate.rect),
@@ -470,6 +521,41 @@ public struct LayoutDerivedLayerMaterializer: Sendable {
                 "derivedLayerRuleID": rule.id,
                 "derivedSourceShapeIDs": candidate.sourceShapeIDs.map(\.uuidString).joined(separator: ","),
             ]
+        )
+    }
+
+    private static func deterministicDerivedShapeID(
+        rule: LayoutDerivedLayerRule,
+        candidate: DerivedLayerCandidate
+    ) -> UUID {
+        let rect = candidate.rect
+        let sourceIDs = candidate.sourceShapeIDs.map(\.uuidString).sorted().joined(separator: ",")
+        let payload = [
+            "derived-shape-v1",
+            rule.id,
+            Self.format(rect.minX),
+            Self.format(rect.minY),
+            Self.format(rect.maxX),
+            Self.format(rect.maxY),
+            sourceIDs
+        ].joined(separator: "|")
+        var bytes = Array(SHA256.hash(data: Data(payload.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
+
+    private static func format(_ value: Double) -> String {
+        let normalized = value == 0 ? 0 : value
+        return String(
+            format: "%.12f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            normalized
         )
     }
 
@@ -751,6 +837,21 @@ public struct LayoutDerivedLayerMaterializer: Sendable {
             return rectilinearRects(for: polygon)
         case .path:
             return []
+        }
+    }
+
+    private func unsupportedGeometryKind(for geometry: LayoutGeometry) -> String? {
+        switch geometry {
+        case .rect:
+            return nil
+        case .path:
+            return "path"
+        case .polygon(let polygon):
+            var points = polygon.points
+            if let first = points.first, points.last == first {
+                points.removeLast()
+            }
+            return Self.polygonEdgesAreRectilinear(points) ? nil : "non-rectilinear polygon"
         }
     }
 
