@@ -9,6 +9,7 @@ extension IncrementalDRCSession {
         dirtyRects: [LayoutRect]
     ) throws {
         guard let rules = tech.ruleSet(for: layer),
+              layerClusterRulesAreRestrictive(rules),
               shapeKeysByLayer[layer]?.isEmpty == false else {
             clusterStateByLayer[layer] = nil
             return

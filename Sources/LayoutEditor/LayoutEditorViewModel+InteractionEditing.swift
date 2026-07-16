@@ -503,6 +503,8 @@ extension LayoutEditorViewModel {
         } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
+        } else {
+            runDRC()
         }
     }
 
@@ -534,6 +536,8 @@ extension LayoutEditorViewModel {
         } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
+        } else {
+            runDRC()
         }
     }
 
@@ -626,6 +630,8 @@ extension LayoutEditorViewModel {
         } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
+        } else {
+            runDRC()
         }
     }
 
@@ -640,6 +646,8 @@ extension LayoutEditorViewModel {
         } else if let liveDRC {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
+        } else {
+            runDRC()
         }
     }
 

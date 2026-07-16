@@ -121,9 +121,37 @@ extension IncrementalDRCSession {
 
     func validateSupportedGeometry(_ shapes: [LayoutShape]) throws {
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
-        for shape in shapes where !service.isManhattanShape(shape, dbu: dbu) {
+        for shape in shapes where !service.isManhattanShape(shape, dbu: dbu)
+            && !canEvaluateNonRectilinearGeometry(on: shape.layer) {
             throw IncrementalDRCSessionError.unsupportedNonRectilinearGeometry(shapeID: shape.id)
         }
+    }
+
+    func canEvaluateNonRectilinearGeometry(on layer: LayoutLayerID) -> Bool {
+        guard let rules = tech.ruleSet(for: layer),
+              !layerClusterRulesAreRestrictive(rules),
+              !densityRuleIsRestrictive(rules),
+              tech.derivedLayerRules.isEmpty,
+              tech.spacingRules.isEmpty,
+              tech.enclosureRules.isEmpty,
+              tech.minimumCutRules.isEmpty,
+              tech.exactOverlapRules.isEmpty,
+              tech.antennaRules.isEmpty,
+              tech.vias.isEmpty,
+              tech.contacts.isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    func layerClusterRulesAreRestrictive(_ rules: LayoutLayerRuleSet) -> Bool {
+        let hasWideSpacing = rules.wideWidthThreshold != nil && rules.wideSpacing != nil
+        return rules.minWidth > 0
+            || rules.minArea > 0
+            || (rules.minEnclosedArea ?? 0) > 0
+            || rules.minSpacing > 0
+            || (rules.minNotch ?? 0) > 0
+            || hasWideSpacing
     }
 
     private func install(_ configuration: SessionConfiguration) {

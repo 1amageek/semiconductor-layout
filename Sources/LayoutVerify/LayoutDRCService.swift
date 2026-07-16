@@ -364,6 +364,10 @@ public struct LayoutDRCService {
 
         for (layer, layerShapes) in grouped {
             guard let rules = tech.ruleSet(for: layer) else { continue }
+            let checksMergedGeometry = rules.minWidth > 0
+                || rules.minArea > 0
+                || (rules.minEnclosedArea ?? 0) > 0
+            guard checksMergedGeometry else { continue }
             let merged = try mergedRegion(of: layerShapes, dbu: dbu)
             if merged.isEmpty { continue }
 
@@ -752,6 +756,9 @@ public struct LayoutDRCService {
         for (layer, layerShapes) in grouped {
             if let layerFilter, !layerFilter.contains(layer) { continue }
             guard let rules = tech.ruleSet(for: layer) else { continue }
+            let checksDensity = rules.minDensity > Self.numericalTolerance
+                || rules.maxDensity < 1 - Self.numericalTolerance
+            guard checksDensity else { continue }
             let windows = densityWindows(for: overall, rules: rules)
             for window in windows {
                 let area = try mergedClippedArea(

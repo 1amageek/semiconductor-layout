@@ -354,6 +354,17 @@ extension LayoutDRCService {
             return fastCheck
         }
 
+        let pointCoverage = requiredEnclosurePoints(
+            cutRect: cutRect,
+            enclosure: enclosure
+        ).allSatisfy { point in
+            candidates.contains { LayoutGeometryAnalysis.contains(point, in: $0.geometry) }
+        }
+        let measured = measuredEnclosure(cutRect: cutRect, shapes: candidates)
+        guard pointCoverage else {
+            return ViaEnclosureCheck(passed: false, measured: measured)
+        }
+
         // Coverage of the required halo by the merged candidate region is the
         // authoritative test: several abutting shapes may jointly enclose the
         // cut even when no single shape does. The single-shape `measured`
@@ -361,10 +372,6 @@ extension LayoutDRCService {
         let outerRegion = shapesToRegion(candidates, dbu: dbu)
         let requiredRegion = rectToRegion(requiredRect, dbu: dbu)
         let missingCoverage = try requiredRegion.subtracting(outerRegion)
-        let pointCoverage = requiredEnclosurePoints(cutRect: cutRect, enclosure: enclosure).allSatisfy { point in
-            candidates.contains { LayoutGeometryAnalysis.contains(point, in: $0.geometry) }
-        }
-        let measured = measuredEnclosure(cutRect: cutRect, shapes: candidates)
         return ViaEnclosureCheck(
             passed: missingCoverage.isEmpty && pointCoverage,
             measured: measured
