@@ -25,7 +25,7 @@ extension LayoutDRCService {
     /// database-unit rounding (vertices move at most half a database unit,
     /// and bbox comparisons mix IR-derived and micron-native boxes).
     func clusterHalo(for rules: LayoutLayerRuleSet, tech: LayoutTechDatabase) -> Double {
-        let roundingSlack = 2.0 / tech.units.dbuPerMicron
+        let roundingSlack = 2.0 / tech.units.scale.databaseUnitsPerMicrometer
         let ruleReach = max(
             max(rules.minWidth, rules.minSpacing),
             max(rules.minNotch ?? 0, rules.wideSpacing ?? 0)
@@ -93,7 +93,7 @@ extension LayoutDRCService {
         tech: LayoutTechDatabase
     ) -> [LayerShapeCluster] {
         guard !shapes.isEmpty else { return [] }
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let components = mergedRegion(of: shapes, dbu: dbu).connectedComponents()
 
         var componentBoxes: [LayoutRect] = []

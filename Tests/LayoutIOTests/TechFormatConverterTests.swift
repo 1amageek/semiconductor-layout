@@ -82,7 +82,7 @@ struct TechFormatConverterTests {
         #expect(tech.layers.count == 1)
         #expect(tech.layers[0].id.name == "M1")
         #expect(tech.layers[0].gdsLayer == 10)
-        #expect(tech.units.dbuPerMicron == 1000)
+        #expect(tech.units.scale.databaseUnitsPerMicrometer == 1000)
     }
 
     // MARK: - .json save + reload

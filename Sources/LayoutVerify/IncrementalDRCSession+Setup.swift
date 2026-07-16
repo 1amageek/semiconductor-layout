@@ -373,7 +373,7 @@ extension IncrementalDRCSession {
         shapeGridByLayer = [:]
         nonManhattanKeys = []
         nonManhattanCountByLayer = [:]
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         for (layer, layerPairs) in pairsByLayer {
             var keys = Set<FlatShapeKey>()
             keys.reserveCapacity(layerPairs.count)
@@ -434,7 +434,7 @@ extension IncrementalDRCSession {
     func insertShapeIntoGrid(key: FlatShapeKey, shape: LayoutShape) {
         shapeByKey[key] = shape
         shapeKeysByLayer[shape.layer, default: []].insert(key)
-        if !service.isManhattanShape(shape, dbu: tech.units.dbuPerMicron) {
+        if !service.isManhattanShape(shape, dbu: tech.units.scale.databaseUnitsPerMicrometer) {
             nonManhattanKeys.insert(key)
             nonManhattanCountByLayer[shape.layer, default: 0] += 1
         }
@@ -524,7 +524,7 @@ extension IncrementalDRCSession {
         } else {
             return nil
         }
-        let roundingSlack = 1.0 / tech.units.dbuPerMicron
+        let roundingSlack = 1.0 / tech.units.scale.databaseUnitsPerMicrometer
         return service.viaCutBoundingBox(for: via, tech: tech)
             .expanded(by: enclosure + roundingSlack, enclosure + roundingSlack)
     }

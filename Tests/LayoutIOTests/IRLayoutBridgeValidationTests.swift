@@ -19,17 +19,6 @@ struct IRLayoutBridgeValidationTests {
         }
     }
 
-    @Test func exportRejectsInvalidDatabaseScale() {
-        let document = LayoutDocument(
-            name: "invalid-units",
-            units: LayoutUnits(dbuPerMicron: .infinity)
-        )
-
-        #expect(throws: DatabaseUnitScaleError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
-        }
-    }
-
     @Test func checkedImportRejectsDuplicateCellNames() {
         let library = IRLibrary(
             name: "duplicate",

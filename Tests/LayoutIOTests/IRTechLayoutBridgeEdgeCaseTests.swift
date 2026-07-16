@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CircuiteFoundation
 import LayoutCore
 import LayoutTech
 import TechIR
@@ -10,46 +11,54 @@ struct IRTechLayoutBridgeEdgeCaseTests {
 
     private let bridge = IRTechLayoutBridge()
 
+    @Test func invalidDatabaseScaleIsRejectedDuringImport() {
+        let library = IRTechLibrary(dbuPerMicron: 0)
+
+        #expect(throws: DatabaseUnitScaleError.self) {
+            _ = try bridge.importTechLibrary(library)
+        }
+    }
+
     // MARK: - Layer with nil fillPattern defaults to solid
 
-    @Test func nilFillPatternDefaultsSolid() {
+    @Test func nilFillPatternDefaultsSolid() throws {
         let lib = IRTechLibrary(
             layers: [
                 IRTechLayerDef(name: "M1", type: .routing, gdsLayer: 1)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.layers[0].fillPattern == .solid)
     }
 
     // MARK: - Layer with visibleByDefault = false
 
-    @Test func visibleByDefaultFalse() {
+    @Test func visibleByDefaultFalse() throws {
         let lib = IRTechLibrary(
             layers: [
                 IRTechLayerDef(name: "HIDDEN", type: .implant, gdsLayer: 99, visibleByDefault: false)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.layers[0].visibleByDefault == false)
     }
 
     // MARK: - Layer with nil gdsLayer/gdsDatatype defaults to 0
 
-    @Test func nilGdsLayerDefaultsZero() {
+    @Test func nilGdsLayerDefaultsZero() throws {
         let lib = IRTechLibrary(
             layers: [
                 IRTechLayerDef(name: "NOLAYER", type: .masterslice)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.layers[0].gdsLayer == 0)
         #expect(tech.layers[0].gdsDatatype == 0)
     }
 
     // MARK: - Via with nil cutWidth (only one nil)
 
-    @Test func viaWithOnlyWidthNil() {
+    @Test func viaWithOnlyWidthNil() throws {
         let lib = IRTechLibrary(
             vias: [
                 IRTechViaDef(
@@ -61,7 +70,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 )
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         // cutWidth is nil → fallback size
         #expect(tech.vias[0].cutSize.width == 0.1)
         #expect(tech.vias[0].cutSize.height == 0.1)
@@ -69,7 +78,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
 
     // MARK: - Via with nil enclosure defaults to zero
 
-    @Test func viaWithNilEnclosure() {
+    @Test func viaWithNilEnclosure() throws {
         let lib = IRTechLibrary(
             vias: [
                 IRTechViaDef(
@@ -82,14 +91,14 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 )
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.vias[0].enclosure.top == 0)
         #expect(tech.vias[0].enclosure.bottom == 0)
     }
 
     // MARK: - Via with nil spacing defaults to zero
 
-    @Test func viaWithNilSpacing() {
+    @Test func viaWithNilSpacing() throws {
         let lib = IRTechLibrary(
             vias: [
                 IRTechViaDef(
@@ -102,13 +111,13 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 )
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.vias[0].cutSpacing == 0)
     }
 
     // MARK: - Mixed valid/invalid vias
 
-    @Test func mixedValidInvalidVias() {
+    @Test func mixedValidInvalidVias() throws {
         let lib = IRTechLibrary(
             vias: [
                 IRTechViaDef(name: "GOOD", cutLayerName: "CUT", topLayerName: "M2", bottomLayerName: "M1"),
@@ -116,7 +125,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechViaDef(name: "ALSO_GOOD", cutLayerName: "CUT2", topLayerName: "M3", bottomLayerName: "M2"),
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.vias.count == 2)
         #expect(tech.vias[0].id == "GOOD")
         #expect(tech.vias[1].id == "ALSO_GOOD")
@@ -124,13 +133,13 @@ struct IRTechLayoutBridgeEdgeCaseTests {
 
     // MARK: - Design rule with nil density fields
 
-    @Test func designRuleNilDensities() {
+    @Test func designRuleNilDensities() throws {
         let lib = IRTechLibrary(
             designRules: [
                 IRTechDesignRule(layerName: "M1", minWidth: 0.14)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.layerRules.count == 1)
         #expect(tech.layerRules[0].minWidth == 0.14)
@@ -142,29 +151,29 @@ struct IRTechLayoutBridgeEdgeCaseTests {
 
     // MARK: - inferPurposeFromName for unknown layer
 
-    @Test func purposeInferenceForUnknownName() {
+    @Test func purposeInferenceForUnknownName() throws {
         let lib = IRTechLibrary(
             designRules: [
                 IRTechDesignRule(layerName: "UNKNOWN_LAYER", minWidth: 0.1)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.layerRules[0].layerID.purpose == "drawing")
     }
 
-    @Test func purposeInferenceForViaName() {
+    @Test func purposeInferenceForViaName() throws {
         let lib = IRTechLibrary(
             designRules: [
                 IRTechDesignRule(layerName: "VIA1", minSpacing: 0.17)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.layerRules[0].layerID.purpose == "cut")
     }
 
     // MARK: - All fill patterns round-trip through export
 
-    @Test func allFillPatternsExport() {
+    @Test func allFillPatternsExport() throws {
         let patterns: [LayoutFillPattern] = [
             .solid, .forwardDiagonal, .backwardDiagonal, .crosshatch,
             .horizontal, .vertical, .grid, .dots
@@ -187,14 +196,14 @@ struct IRTechLayoutBridgeEdgeCaseTests {
             )
 
             let exported = bridge.exportTechLibrary(tech)
-            let reimported = bridge.importTechLibrary(exported)
+            let reimported = try bridge.importTechLibrary(exported)
             #expect(reimported.layers[0].fillPattern == pattern)
         }
     }
 
     // MARK: - Fallback color for different layer numbers
 
-    @Test func fallbackColorDifferentLayers() {
+    @Test func fallbackColorDifferentLayers() throws {
         let lib = IRTechLibrary(
             layers: [
                 IRTechLayerDef(name: "L0", type: .routing, gdsLayer: 0),
@@ -203,7 +212,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechLayerDef(name: "L360", type: .routing, gdsLayer: 360),
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         // All should have valid RGB values
         for layer in tech.layers {
@@ -218,13 +227,13 @@ struct IRTechLayoutBridgeEdgeCaseTests {
 
     // MARK: - Grid calculation from dbuPerMicron
 
-    @Test func gridFromDBU() {
+    @Test func gridFromDBU() throws {
         let lib1 = IRTechLibrary(dbuPerMicron: 1000)
-        let tech1 = bridge.importTechLibrary(lib1)
+        let tech1 = try bridge.importTechLibrary(lib1)
         #expect(tech1.grid == 0.001)
 
         let lib2 = IRTechLibrary(dbuPerMicron: 100)
-        let tech2 = bridge.importTechLibrary(lib2)
+        let tech2 = try bridge.importTechLibrary(lib2)
         #expect(tech2.grid == 0.01)
     }
 }

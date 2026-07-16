@@ -20,7 +20,7 @@ public struct TechFormatConverter: Sendable {
     /// Loads a technology file from `url` and returns a `LayoutTechDatabase`.
     public func loadTech(from url: URL) throws -> LayoutTechDatabase {
         let irLib = try loadIRTech(from: url)
-        return bridge.importTechLibrary(irLib)
+        return try bridge.importTechLibrary(irLib)
     }
 
     /// Loads a technology file from `url` and returns the intermediate `IRTechLibrary`.

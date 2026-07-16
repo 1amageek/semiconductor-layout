@@ -339,7 +339,7 @@ public struct LayoutDRCService {
     func checkWidthAndArea(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
 
         for (layer, layerShapes) in grouped {
             guard let rules = tech.ruleSet(for: layer) else { continue }
@@ -564,7 +564,7 @@ public struct LayoutDRCService {
     func checkSpacing(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
 
         for (layer, layerShapes) in grouped {
             guard let rules = tech.ruleSet(for: layer) else { continue }
@@ -662,7 +662,7 @@ public struct LayoutDRCService {
         let spacingRules = rules ?? tech.spacingRules
         guard !spacingRules.isEmpty else { return [] }
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         var violations: [LayoutViolation] = []
 
         for rule in spacingRules {
@@ -734,7 +734,7 @@ public struct LayoutDRCService {
             let windows = densityWindows(for: overall, rules: rules)
             for window in windows {
                 let area = mergedClippedArea(
-                    of: layerShapes, in: window, dbu: tech.units.dbuPerMicron
+                    of: layerShapes, in: window, dbu: tech.units.scale.databaseUnitsPerMicrometer
                 )
                 if let violation = densityViolation(
                     layerShapes: layerShapes, layer: layer, rules: rules, window: window, area: area

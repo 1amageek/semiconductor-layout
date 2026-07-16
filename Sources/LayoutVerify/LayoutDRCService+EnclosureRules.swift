@@ -12,7 +12,7 @@ extension LayoutDRCService {
     ) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         guard !vias.isEmpty else { return violations }
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
 
         // Group shapes and build spatial indices per layer once; each via
         // then only merges the geometry near its own cut. Shapes outside the
@@ -84,7 +84,7 @@ extension LayoutDRCService {
         tech: LayoutTechDatabase
     ) -> LayoutViolation? {
         guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return nil }
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let effectiveTopCandidates = topCandidates
             + explicitViaLayerShapes(for: via, layer: def.topLayer, tech: tech)
         let effectiveBottomCandidates = bottomCandidates
@@ -131,7 +131,7 @@ extension LayoutDRCService {
         rules: [LayoutEnclosureRule]? = nil
     ) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
 
         for rule in rules ?? tech.enclosureRules {

@@ -129,7 +129,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
         return DEFViaDefinitionTechAugmentor().augmenting(
             tech,
             with: viaDefs,
-            dbuPerMicron: document.units.dbuPerMicron
+            dbuPerMicron: document.units.scale.databaseUnitsPerMicrometer
         )
     }
 

@@ -43,7 +43,7 @@ struct TechFormatConverterEdgeCaseTests {
         let tech = try converter.loadTech(from: tempURL)
 
         #expect(tech.layers.count == 3)
-        #expect(tech.units.dbuPerMicron == 2000)
+        #expect(tech.units.scale.databaseUnitsPerMicrometer == 2000)
         #expect(tech.layers[0].id.name == "POLY")
         #expect(tech.layers[1].id.name == "M1")
         #expect(tech.layers[1].preferredDirection == .horizontal)
@@ -198,7 +198,7 @@ struct TechFormatConverterEdgeCaseTests {
         #expect(m1Rule?.minSpacing == 0.14)
         #expect(m1Rule?.minArea == 0.058)
 
-        #expect(tech.units.dbuPerMicron == 1000)
+        #expect(tech.units.scale.databaseUnitsPerMicrometer == 1000)
     }
 
     private func removeTemporaryItem(_ url: URL) {

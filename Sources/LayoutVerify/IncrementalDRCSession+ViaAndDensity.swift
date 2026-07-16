@@ -5,7 +5,7 @@ import LayoutTech
 extension IncrementalDRCSession {
     func checkViaEnclosure(vias: [LayoutVia]) -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
-        let roundingSlack = 1.0 / tech.units.dbuPerMicron
+        let roundingSlack = 1.0 / tech.units.scale.databaseUnitsPerMicrometer
         for via in vias {
             guard let def = tech.viaDefinition(for: via.viaDefinitionID) else {
                 violations.append(service.unknownViaDefinitionViolation(for: via))
@@ -84,7 +84,7 @@ extension IncrementalDRCSession {
             rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
             return
         }
-        let slack = 1.0 / tech.units.dbuPerMicron
+        let slack = 1.0 / tech.units.scale.databaseUnitsPerMicrometer
         for (windowIndex, window) in state.windows.enumerated() {
             // A window's merged area can only change where a shape's old or
             // new bounding box (plus rounding slack) meets the window.
@@ -114,7 +114,7 @@ extension IncrementalDRCSession {
         let area = service.mergedClippedArea(
             of: layerPairs.map(\.shape),
             in: state.windows[windowIndex],
-            dbu: tech.units.dbuPerMicron
+            dbu: tech.units.scale.databaseUnitsPerMicrometer
         )
         state.violationByWindow[windowIndex] = service.densityViolation(
             layerShapes: layerPairs.map(\.shape),

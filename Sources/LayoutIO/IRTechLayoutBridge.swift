@@ -1,4 +1,5 @@
 import Foundation
+import CircuiteFoundation
 import LayoutCore
 import LayoutTech
 import TechIR
@@ -10,7 +11,8 @@ public struct IRTechLayoutBridge: Sendable {
 
     // MARK: - Import: IRTechLibrary → LayoutTechDatabase
 
-    public func importTechLibrary(_ lib: IRTechLibrary) -> LayoutTechDatabase {
+    public func importTechLibrary(_ lib: IRTechLibrary) throws -> LayoutTechDatabase {
+        let scale = try DatabaseUnitScale(databaseUnitsPerMicrometer: lib.dbuPerMicron)
         let layers = lib.layers.map { convertLayer($0) }
         let vias = lib.vias.compactMap { convertVia($0) }
         let layerRules = buildLayerRules(from: lib)
@@ -20,8 +22,8 @@ public struct IRTechLayoutBridge: Sendable {
         let minimumCutRules = lib.minimumCutRules.map { convertMinimumCutRule($0) }
 
         return LayoutTechDatabase(
-            units: LayoutUnits(dbuPerMicron: lib.dbuPerMicron),
-            grid: 1.0 / lib.dbuPerMicron,
+            units: LayoutUnits(scale: scale),
+            grid: 1.0 / scale.databaseUnitsPerMicrometer,
             layers: layers,
             vias: vias,
             layerRules: layerRules,
@@ -45,7 +47,7 @@ public struct IRTechLayoutBridge: Sendable {
 
         return IRTechLibrary(
             name: name,
-            dbuPerMicron: tech.units.dbuPerMicron,
+            dbuPerMicron: tech.units.scale.databaseUnitsPerMicrometer,
             layers: layers,
             vias: vias,
             designRules: designRules,

@@ -5,7 +5,7 @@ public struct LayoutDocumentSummary: Codable, Sendable, Equatable {
     public let documentID: UUID
     public let name: String
     public let topCellID: UUID?
-    public let unitDBUPerMicron: Double
+    public let databaseUnitsPerMicrometer: Double
     public let cellCount: Int
     public let shapeCount: Int
     public let viaCount: Int
@@ -22,7 +22,8 @@ public struct LayoutDocumentSummary: Codable, Sendable, Equatable {
         self.documentID = document.id
         self.name = document.name
         self.topCellID = document.topCellID
-        self.unitDBUPerMicron = document.units.dbuPerMicron
+        self.databaseUnitsPerMicrometer =
+            document.units.scale.databaseUnitsPerMicrometer
         self.cellCount = document.cells.count
         self.shapeCount = document.cells.reduce(0) { $0 + $1.shapes.count }
         self.viaCount = document.cells.reduce(0) { $0 + $1.vias.count }

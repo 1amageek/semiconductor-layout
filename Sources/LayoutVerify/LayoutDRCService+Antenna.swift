@@ -217,7 +217,7 @@ extension LayoutDRCService {
             }
         }
 
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let rulesByRank = Dictionary(grouping: stagedRules, by: { $0.rank })
 
         for rank in rulesByRank.keys.sorted() {

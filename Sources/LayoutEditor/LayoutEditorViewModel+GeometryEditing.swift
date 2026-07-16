@@ -45,7 +45,12 @@ extension LayoutEditorViewModel {
 
             guard polygons.count >= 2 else { continue }
 
-            let mergedPolygons = union(polygons: polygons, dbuPerMicron: editor.document.units.dbuPerMicron)
+            let databaseUnitsPerMicrometer =
+                editor.document.units.scale.databaseUnitsPerMicrometer
+            let mergedPolygons = union(
+                polygons: polygons,
+                dbuPerMicron: databaseUnitsPerMicrometer
+            )
             guard !mergedPolygons.isEmpty else { continue }
             let mergedNetID = commonNetID(in: mergeable)
             let mergedProperties = commonProperties(in: mergeable)

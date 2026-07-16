@@ -13,7 +13,7 @@ extension LayoutDRCService {
         guard !tech.minimumCutRules.isEmpty else { return [] }
 
         let shapesByLayer = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.dbuPerMicron
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         var violations: [LayoutViolation] = []
 
         for rule in tech.minimumCutRules {

@@ -1,3 +1,4 @@
+import Foundation
 import CircuiteFoundation
 import LayoutCore
 import Testing
@@ -9,16 +10,16 @@ struct LayoutUnitsFoundationTests {
         let scale = try DatabaseUnitScale(databaseUnitsPerMicrometer: 1_000.25)
         let units = LayoutUnits(scale: scale)
 
-        #expect(units.dbuPerMicron == 1_000.25)
-        #expect(try units.validatedScale == scale)
+        #expect(units.scale.databaseUnitsPerMicrometer == 1_000.25)
+        #expect(units.scale == scale)
     }
 
-    @Test("Invalid layout units are rejected at the shared boundary")
-    func rejectsInvalidScale() {
-        let units = LayoutUnits(dbuPerMicron: .nan)
+    @Test("Invalid layout units are rejected while decoding")
+    func rejectsInvalidScaleWhileDecoding() {
+        let data = Data(#"{"scale":0}"#.utf8)
 
         #expect(throws: DatabaseUnitScaleError.self) {
-            _ = try units.validatedScale
+            _ = try JSONDecoder().decode(LayoutUnits.self, from: data)
         }
     }
 }

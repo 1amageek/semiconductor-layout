@@ -118,12 +118,12 @@ struct IRTechLayoutBridgeTests {
 
     // MARK: - Import Tests
 
-    @Test func importLayers() {
+    @Test func importLayers() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.layers.count == 4)
-        #expect(tech.units.dbuPerMicron == 1000)
+        #expect(tech.units.scale.databaseUnitsPerMicrometer == 1000)
 
         let active = tech.layers[0]
         #expect(active.id.name == "ACTIVE")
@@ -147,9 +147,9 @@ struct IRTechLayoutBridgeTests {
         #expect(m2.preferredDirection == .vertical)
     }
 
-    @Test func importVias() {
+    @Test func importVias() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.vias.count == 1)
         let via = tech.vias[0]
@@ -169,9 +169,9 @@ struct IRTechLayoutBridgeTests {
         #expect(via.layerGeometries[1].rects.first?.size.width == 0.1)
     }
 
-    @Test func importDesignRules() {
+    @Test func importDesignRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.layerRules.count == 1)
         let rule = tech.layerRules[0]
@@ -184,9 +184,9 @@ struct IRTechLayoutBridgeTests {
         #expect(rule.allowedAngleStepDegrees == 45)
     }
 
-    @Test func importEnclosureRules() {
+    @Test func importEnclosureRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.enclosureRules.count == 1)
         #expect(tech.enclosureRules[0].outerLayer.name == "M1")
@@ -194,9 +194,9 @@ struct IRTechLayoutBridgeTests {
         #expect(tech.enclosureRules[0].minEnclosure == 0.05)
     }
 
-    @Test func importExtensionRules() {
+    @Test func importExtensionRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.extensionRules.count == 1)
         #expect(tech.extensionRules[0].extendingLayer.name == "POLY")
@@ -205,9 +205,9 @@ struct IRTechLayoutBridgeTests {
         #expect(tech.extensionRules[0].direction == .horizontal)
     }
 
-    @Test func importMinimumCutRules() {
+    @Test func importMinimumCutRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.minimumCutRules.count == 1)
         #expect(tech.minimumCutRules[0].id == "mincut.CONT")
@@ -217,18 +217,18 @@ struct IRTechLayoutBridgeTests {
         #expect(tech.minimumCutRules[0].minimumCount == 2)
     }
 
-    @Test func importAntennaRules() {
+    @Test func importAntennaRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.antennaRules.count == 1)
         #expect(tech.antennaRules[0].layerID.name == "M1")
         #expect(tech.antennaRules[0].maxRatio == 400)
     }
 
-    @Test func importEmptyLibrary() {
+    @Test func importEmptyLibrary() throws {
         let lib = IRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.layers.isEmpty)
         #expect(tech.vias.isEmpty)
@@ -259,9 +259,9 @@ struct IRTechLayoutBridgeTests {
 
     // MARK: - Export Tests
 
-    @Test func exportRoundTrip() {
+    @Test func exportRoundTrip() throws {
         let lib = sampleIRTechLibrary()
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         let exported = bridge.exportTechLibrary(tech, name: "round_trip")
 
         #expect(exported.name == "round_trip")
@@ -292,13 +292,13 @@ struct IRTechLayoutBridgeTests {
 
     // MARK: - Color Fallback
 
-    @Test func importLayerWithoutColor() {
+    @Test func importLayerWithoutColor() throws {
         let lib = IRTechLibrary(
             layers: [
                 IRTechLayerDef(name: "NOIMPLANT", type: .implant, gdsLayer: 99)
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
 
         #expect(tech.layers.count == 1)
         let layer = tech.layers[0]
@@ -310,13 +310,13 @@ struct IRTechLayoutBridgeTests {
 
     // MARK: - Via without cut layer
 
-    @Test func importViaWithEmptyCutLayer() {
+    @Test func importViaWithEmptyCutLayer() throws {
         let lib = IRTechLibrary(
             vias: [
                 IRTechViaDef(name: "BAD_VIA", cutLayerName: "", topLayerName: "M2", bottomLayerName: "M1")
             ]
         )
-        let tech = bridge.importTechLibrary(lib)
+        let tech = try bridge.importTechLibrary(lib)
         #expect(tech.vias.isEmpty)
     }
 }

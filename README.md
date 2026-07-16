@@ -24,11 +24,10 @@ flowchart LR
   Core --> Editor["LayoutEditor\ninteractive editing"]
 ```
 
-`LayoutCore.LayoutUnits` is the layout-specific representation of database
-units. It can be created from and validated through
-`CircuiteFoundation.DatabaseUnitScale`. The non-throwing initializer remains
-for Codable and format compatibility; new I/O and signoff boundaries should
-use `validatedScale` before converting coordinates.
+`LayoutCore.LayoutUnits` owns a validated
+`CircuiteFoundation.DatabaseUnitScale`. Construction and decoding reject
+non-finite or non-positive scales, so every layout and technology boundary can
+convert coordinates without carrying an invalid unit state.
 
 `CircuiteFoundation` supplies shared artifact, evidence, diagnostic, and
 engine vocabulary. Layout geometry, technology rules, DRC violations, and
@@ -66,9 +65,20 @@ repair algorithms remain owned here.
 ## Build and test
 
 ```bash
-swift build
-swift test
+xcodebuild \
+  -scheme SemiconductorLayout-Package \
+  -destination 'platform=macOS' \
+  -test-timeouts-enabled YES \
+  -maximum-test-execution-time-allowance 30 \
+  test
 ```
+
+For a bounded verification run, invoke the seven test targets separately with
+`-only-testing:<target>` and a 120-second process deadline per invocation:
+`LayoutIOTests`, `LayoutLVSExtractionTests`, `LayoutCoreTests`,
+`LayoutIntegrationTests`, `LayoutAutoGenTests`, `LayoutEngineTests`, and
+`LayoutCommandsTests`. This keeps compilation and runner shutdown attributable
+to a single target while preserving the package-wide test surface.
 
 The package requires Swift 6.3 or later and macOS 26 or later. The package has
 local development dependencies on `CircuiteFoundation`, `swift-mask-data`, and

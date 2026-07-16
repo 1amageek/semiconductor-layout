@@ -76,7 +76,7 @@ public struct IRLayoutBridge: Sendable {
         tech: LayoutTechDatabase,
         includeDEFRouteMetadata: Bool = false
     ) throws -> IRLibrary {
-        let scale = try document.units.validatedScale
+        let scale = document.units.scale
         let dbu = scale.databaseUnitsPerMicrometer
         let reverseLayerMap = try buildReverseLayerMap(tech: tech)
 
