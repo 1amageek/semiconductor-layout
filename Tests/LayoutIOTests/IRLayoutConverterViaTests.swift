@@ -5,8 +5,8 @@ import LayoutTech
 import LayoutIR
 @testable import LayoutIO
 
-@Suite("IRLayoutBridge Vias")
-struct IRLayoutBridgeViaTests {
+@Suite("IRLayoutConverter Vias")
+struct IRLayoutConverterViaTests {
 
     @Test("Cell properties round trip through IR cells")
     func cellPropertiesRoundTripThroughIRCells() throws {
@@ -18,14 +18,14 @@ struct IRLayoutBridgeViaTests {
             ]
         )
         let document = LayoutDocument(name: "cell-properties", cells: [cell], topCellID: cell.id)
-        let bridge = IRLayoutBridge()
+        let converter = IRLayoutConverter()
 
-        let library = try bridge.exportLibrary(document, tech: .standard())
+        let library = try converter.exportLibrary(document, tech: .standard())
         let irCell = try #require(library.cells.first)
         #expect(irCell.properties.contains { $0.attribute == 0 && $0.value == "FIXED_BBOX=0 0 10 5" })
         #expect(irCell.properties.contains { $0.attribute == 0 && $0.value == "lsi.intent=abutment-box" })
 
-        let imported = try bridge.checkedImportLibrary(library, tech: .standard())
+        let imported = try converter.checkedImportLibrary(library, tech: .standard())
         let importedTop = try #require(imported.cells.first)
         #expect(importedTop.properties == cell.properties)
     }
@@ -46,9 +46,9 @@ struct IRLayoutBridgeViaTests {
                 ),
             ]
         )
-        let bridge = IRLayoutBridge()
+        let converter = IRLayoutConverter()
 
-        let imported = try bridge.checkedImportLibrary(library, tech: .standard())
+        let imported = try converter.checkedImportLibrary(library, tech: .standard())
         let importedTop = try #require(imported.cells.first)
 
         #expect(importedTop.properties["lsi.fixedBBox"] == "0 0 1 1")
@@ -65,7 +65,7 @@ struct IRLayoutBridgeViaTests {
         let top = LayoutCell(name: "TOP", vias: [via])
         let document = LayoutDocument(name: "via-export", cells: [top], topCellID: top.id)
 
-        let library = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+        let library = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         let boundaries = library.cells.first?.elements.compactMap { element -> IRBoundary? in
             if case .boundary(let boundary) = element {
                 return boundary
@@ -88,7 +88,7 @@ struct IRLayoutBridgeViaTests {
         ])
     }
 
-    @Test("Import restores bridge-authored via boundaries as vias")
+    @Test("Import restores converter-authored via boundaries as vias")
     func importRestoresBridgeAuthoredViaBoundariesAsVias() throws {
         let originalVia = LayoutVia(
             viaDefinitionID: "VIA1",
@@ -96,10 +96,10 @@ struct IRLayoutBridgeViaTests {
         )
         let top = LayoutCell(name: "TOP", vias: [originalVia])
         let document = LayoutDocument(name: "via-round-trip", cells: [top], topCellID: top.id)
-        let bridge = IRLayoutBridge()
+        let converter = IRLayoutConverter()
 
-        let library = try bridge.exportLibrary(document, tech: .standard())
-        let imported = try bridge.checkedImportLibrary(library, tech: .standard())
+        let library = try converter.exportLibrary(document, tech: .standard())
+        let imported = try converter.checkedImportLibrary(library, tech: .standard())
         let importedTop = imported.cells.first
 
         #expect(importedTop?.vias.count == 1)
@@ -131,7 +131,7 @@ struct IRLayoutBridgeViaTests {
             ]
         )
 
-        let document = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+        let document = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         let top = document.cells.first
 
         #expect(top?.vias.isEmpty == true)
@@ -163,7 +163,7 @@ struct IRLayoutBridgeViaTests {
             ]
         )
 
-        let document = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+        let document = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         let top = document.cells.first
 
         #expect(top?.vias.count == 1)
@@ -198,7 +198,7 @@ struct IRLayoutBridgeViaTests {
             ]
         )
 
-        let document = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+        let document = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         let top = document.cells.first
 
         #expect(top?.vias.isEmpty == true)
@@ -247,7 +247,7 @@ struct IRLayoutBridgeViaTests {
         let document = LayoutDocument(name: "missing-cut-layer", cells: [top], topCellID: top.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: tech)
+            _ = try IRLayoutConverter().exportLibrary(document, tech: tech)
         }
     }
 

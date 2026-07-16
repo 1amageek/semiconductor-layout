@@ -5,10 +5,10 @@ import LayoutTech
 import TechIR
 @testable import LayoutIO
 
-@Suite("IRTechLayoutBridge")
-struct IRTechLayoutBridgeTests {
+@Suite("IRTechLayoutConverter")
+struct IRTechLayoutConverterTests {
 
-    private let bridge = IRTechLayoutBridge()
+    private let converter = IRTechLayoutConverter()
 
     private func sampleIRTechLibrary() -> IRTechLibrary {
         IRTechLibrary(
@@ -120,7 +120,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importLayers() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.layers.count == 4)
         #expect(tech.units.scale.databaseUnitsPerMicrometer == 1000)
@@ -149,7 +149,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importVias() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.vias.count == 1)
         let via = tech.vias[0]
@@ -171,7 +171,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importDesignRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.layerRules.count == 1)
         let rule = tech.layerRules[0]
@@ -186,7 +186,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importEnclosureRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.enclosureRules.count == 1)
         #expect(tech.enclosureRules[0].outerLayer.name == "M1")
@@ -196,7 +196,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importExtensionRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.extensionRules.count == 1)
         #expect(tech.extensionRules[0].extendingLayer.name == "POLY")
@@ -207,7 +207,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importMinimumCutRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.minimumCutRules.count == 1)
         #expect(tech.minimumCutRules[0].id == "mincut.CONT")
@@ -219,7 +219,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importAntennaRules() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.antennaRules.count == 1)
         #expect(tech.antennaRules[0].layerID.name == "M1")
@@ -228,7 +228,7 @@ struct IRTechLayoutBridgeTests {
 
     @Test func importEmptyLibrary() throws {
         let lib = IRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.layers.isEmpty)
         #expect(tech.vias.isEmpty)
@@ -261,8 +261,8 @@ struct IRTechLayoutBridgeTests {
 
     @Test func exportRoundTrip() throws {
         let lib = sampleIRTechLibrary()
-        let tech = try bridge.importTechLibrary(lib)
-        let exported = bridge.exportTechLibrary(tech, name: "round_trip")
+        let tech = try converter.importTechLibrary(lib)
+        let exported = converter.exportTechLibrary(tech, name: "round_trip")
 
         #expect(exported.name == "round_trip")
         #expect(exported.dbuPerMicron == 1000)
@@ -298,7 +298,7 @@ struct IRTechLayoutBridgeTests {
                 IRTechLayerDef(name: "NOIMPLANT", type: .implant, gdsLayer: 99)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.layers.count == 1)
         let layer = tech.layers[0]
@@ -316,7 +316,7 @@ struct IRTechLayoutBridgeTests {
                 IRTechViaDef(name: "BAD_VIA", cutLayerName: "", topLayerName: "M2", bottomLayerName: "M1")
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.vias.isEmpty)
     }
 }

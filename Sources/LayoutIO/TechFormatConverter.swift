@@ -7,20 +7,20 @@ import LEF
 public struct TechFormatConverter: Sendable {
 
     private let lypParser: KLayoutLypTechParser
-    private let bridge: IRTechLayoutBridge
+    private let converter: IRTechLayoutConverter
 
     public init(
         lypParser: KLayoutLypTechParser = KLayoutLypTechParser(),
-        bridge: IRTechLayoutBridge = IRTechLayoutBridge()
+        converter: IRTechLayoutConverter = IRTechLayoutConverter()
     ) {
         self.lypParser = lypParser
-        self.bridge = bridge
+        self.converter = converter
     }
 
     /// Loads a technology file from `url` and returns a `LayoutTechDatabase`.
     public func loadTech(from url: URL) throws -> LayoutTechDatabase {
         let irLib = try loadIRTech(from: url)
-        return try bridge.importTechLibrary(irLib)
+        return try converter.importTechLibrary(irLib)
     }
 
     /// Loads a technology file from `url` and returns the intermediate `IRTechLibrary`.

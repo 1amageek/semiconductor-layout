@@ -6,16 +6,16 @@ import LayoutTech
 import TechIR
 @testable import LayoutIO
 
-@Suite("IRTechLayoutBridge Edge Cases")
-struct IRTechLayoutBridgeEdgeCaseTests {
+@Suite("IRTechLayoutConverter Edge Cases")
+struct IRTechLayoutConverterEdgeCaseTests {
 
-    private let bridge = IRTechLayoutBridge()
+    private let converter = IRTechLayoutConverter()
 
     @Test func invalidDatabaseScaleIsRejectedDuringImport() {
         let library = IRTechLibrary(dbuPerMicron: 0)
 
         #expect(throws: DatabaseUnitScaleError.self) {
-            _ = try bridge.importTechLibrary(library)
+            _ = try converter.importTechLibrary(library)
         }
     }
 
@@ -27,7 +27,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechLayerDef(name: "M1", type: .routing, gdsLayer: 1)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.layers[0].fillPattern == .solid)
     }
 
@@ -39,7 +39,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechLayerDef(name: "HIDDEN", type: .implant, gdsLayer: 99, visibleByDefault: false)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.layers[0].visibleByDefault == false)
     }
 
@@ -51,7 +51,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechLayerDef(name: "NOLAYER", type: .masterslice)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.layers[0].gdsLayer == 0)
         #expect(tech.layers[0].gdsDatatype == 0)
     }
@@ -70,7 +70,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 )
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         // cutWidth is nil → fallback size
         #expect(tech.vias[0].cutSize.width == 0.1)
         #expect(tech.vias[0].cutSize.height == 0.1)
@@ -91,7 +91,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 )
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.vias[0].enclosure.top == 0)
         #expect(tech.vias[0].enclosure.bottom == 0)
     }
@@ -111,7 +111,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 )
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.vias[0].cutSpacing == 0)
     }
 
@@ -125,7 +125,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechViaDef(name: "ALSO_GOOD", cutLayerName: "CUT2", topLayerName: "M3", bottomLayerName: "M2"),
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.vias.count == 2)
         #expect(tech.vias[0].id == "GOOD")
         #expect(tech.vias[1].id == "ALSO_GOOD")
@@ -139,7 +139,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechDesignRule(layerName: "M1", minWidth: 0.14)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         #expect(tech.layerRules.count == 1)
         #expect(tech.layerRules[0].minWidth == 0.14)
@@ -157,7 +157,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechDesignRule(layerName: "UNKNOWN_LAYER", minWidth: 0.1)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.layerRules[0].layerID.purpose == "drawing")
     }
 
@@ -167,7 +167,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechDesignRule(layerName: "VIA1", minSpacing: 0.17)
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
         #expect(tech.layerRules[0].layerID.purpose == "cut")
     }
 
@@ -195,8 +195,8 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 layerRules: []
             )
 
-            let exported = bridge.exportTechLibrary(tech)
-            let reimported = try bridge.importTechLibrary(exported)
+            let exported = converter.exportTechLibrary(tech)
+            let reimported = try converter.importTechLibrary(exported)
             #expect(reimported.layers[0].fillPattern == pattern)
         }
     }
@@ -212,7 +212,7 @@ struct IRTechLayoutBridgeEdgeCaseTests {
                 IRTechLayerDef(name: "L360", type: .routing, gdsLayer: 360),
             ]
         )
-        let tech = try bridge.importTechLibrary(lib)
+        let tech = try converter.importTechLibrary(lib)
 
         // All should have valid RGB values
         for layer in tech.layers {
@@ -229,11 +229,11 @@ struct IRTechLayoutBridgeEdgeCaseTests {
 
     @Test func gridFromDBU() throws {
         let lib1 = IRTechLibrary(dbuPerMicron: 1000)
-        let tech1 = try bridge.importTechLibrary(lib1)
+        let tech1 = try converter.importTechLibrary(lib1)
         #expect(tech1.grid == 0.001)
 
         let lib2 = IRTechLibrary(dbuPerMicron: 100)
-        let tech2 = try bridge.importTechLibrary(lib2)
+        let tech2 = try converter.importTechLibrary(lib2)
         #expect(tech2.grid == 0.01)
     }
 }

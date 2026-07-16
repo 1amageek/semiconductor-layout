@@ -5,8 +5,8 @@ import LayoutIO
 import LayoutIR
 import LayoutTech
 
-@Suite("IRLayoutBridge ArrayRef")
-struct IRLayoutBridgeArrayRefTests {
+@Suite("IRLayoutConverter ArrayRef")
+struct IRLayoutConverterArrayRefTests {
     @Test func importsArrayRefAsRepetitionAndExportsArrayRef() throws {
         let child = IRCell(name: "UNIT")
         let top = IRCell(name: "TOP", elements: [
@@ -28,8 +28,8 @@ struct IRLayoutBridgeArrayRefTests {
             cells: [child, top]
         )
 
-        let bridge = IRLayoutBridge()
-        let document = try bridge.checkedImportLibrary(library, tech: .standard())
+        let converter = IRLayoutConverter()
+        let document = try converter.checkedImportLibrary(library, tech: .standard())
         let topCell = document.cells.first { $0.name == "TOP" }
         let instance = topCell?.instances.first
 
@@ -40,7 +40,7 @@ struct IRLayoutBridgeArrayRefTests {
         #expect(instance?.repetition?.columnStep == LayoutPoint(x: 1, y: 0))
         #expect(instance?.repetition?.rowStep == LayoutPoint(x: 0, y: 1))
 
-        let exported = try bridge.exportLibrary(document, tech: .standard())
+        let exported = try converter.exportLibrary(document, tech: .standard())
         let exportedTop = exported.cells.first { $0.name == "TOP" }
         guard case .arrayRef(let array)? = exportedTop?.elements.first else {
             Issue.record("Expected a single arrayRef after round-trip")
@@ -72,7 +72,7 @@ struct IRLayoutBridgeArrayRefTests {
         let document = LayoutDocument(name: "huge", cells: [child, top], topCellID: top.id)
 
         #expect(throws: LayoutIOError.self) {
-            try IRLayoutBridge().exportLibrary(document, tech: .standard())
+            try IRLayoutConverter().exportLibrary(document, tech: .standard())
         }
     }
 }

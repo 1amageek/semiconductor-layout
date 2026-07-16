@@ -6,11 +6,11 @@ import GDSII
 
 /// GDSII format converter implementing LayoutFormatConverter protocol.
 public struct GDSFormatConverter: LayoutFormatConverter {
-    private let bridge: IRLayoutBridge
+    private let converter: IRLayoutConverter
     private let tech: LayoutTechDatabase
 
     public init(tech: LayoutTechDatabase) {
-        self.bridge = IRLayoutBridge()
+        self.converter = IRLayoutConverter()
         self.tech = tech
     }
 
@@ -33,14 +33,14 @@ public struct GDSFormatConverter: LayoutFormatConverter {
         } catch {
             throw LayoutIOError.conversionFailed("Failed to parse GDS: \(error)")
         }
-        return try bridge.checkedImportLibrary(irLibrary, tech: tech)
+        return try converter.checkedImportLibrary(irLibrary, tech: tech)
     }
 
     public func exportDocument(_ document: LayoutDocument, to url: URL, format: LayoutFileFormat) throws {
         guard format == .gds else {
             throw LayoutIOError.unsupportedFormat(format)
         }
-        let irLibrary = try bridge.exportLibrary(document, tech: tech)
+        let irLibrary = try converter.exportLibrary(document, tech: tech)
         let data: Data
         do {
             data = try GDSLibraryWriter.write(irLibrary)

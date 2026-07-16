@@ -12,11 +12,11 @@ import FormatDetector
 /// Unified format converter that supports all swift-mask-data formats
 /// with automatic format detection.
 public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
-    private let bridge: IRLayoutBridge
+    private let converter: IRLayoutConverter
     private let tech: LayoutTechDatabase
 
     public init(tech: LayoutTechDatabase) {
-        self.bridge = IRLayoutBridge()
+        self.converter = IRLayoutConverter()
         self.tech = tech
     }
 
@@ -28,7 +28,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             return try importDEFDocument(document)
         }
         let irLibrary = try readIRLibrary(from: data, format: format)
-        return try bridge.checkedImportLibrary(irLibrary, tech: tech)
+        return try converter.checkedImportLibrary(irLibrary, tech: tech)
     }
 
     // MARK: - LayoutFormatConverter
@@ -50,12 +50,12 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             return try importDEFDocument(document)
         }
         let irLibrary = try readIRLibrary(from: data, format: detectedFormat)
-        return try bridge.checkedImportLibrary(irLibrary, tech: tech)
+        return try converter.checkedImportLibrary(irLibrary, tech: tech)
     }
 
     public func exportDocument(_ document: LayoutDocument, to url: URL, format: LayoutFileFormat) throws {
         let exportTech = try effectiveExportTechnology(for: document, format: format)
-        let exportedLibrary = try bridge.exportLibrary(
+        let exportedLibrary = try converter.exportLibrary(
             document,
             tech: exportTech,
             includeDEFRouteMetadata: format == .def
@@ -113,7 +113,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             document,
             layerNumbers: try defLayerNumberMapping(from: importTech)
         )
-        return try bridge.checkedImportLibrary(library, tech: importTech)
+        return try converter.checkedImportLibrary(library, tech: importTech)
     }
 
     private func effectiveExportTechnology(

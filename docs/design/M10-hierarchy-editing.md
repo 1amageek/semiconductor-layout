@@ -35,7 +35,7 @@
 
 ### M10.0 現状確認（書く前に読む）
 
-- `IRLayoutBridge` で GDS AREF がどの段階で展開されるか特定する（LayoutIR レベルか、bridge か）。round-trip（AREF → 編集 → AREF）の現状損失を fixture で記録する。
+- `IRLayoutConverter` で GDS AREF がどの段階で展開されるか特定する（LayoutIR レベルか、converter か）。round-trip（AREF → 編集 → AREF）の現状損失を fixture で記録する。
 - 既存の `terminalNetIDs`（インスタンス端子→ネット割付）が flatten でどう使われているかを確認し、EIP の delta 変換と矛盾しないことを固定する。
 
 ### M10.1 インスタンス動詞
@@ -76,7 +76,7 @@ public struct LayoutRepetition: Hashable, Sendable, Codable {
 
 - **flatten**: `repetition` を仮想インスタンス (col, row) へ展開して既存経路に流す。展開後の各 shape の出自（instanceID + (col, row)）は flatten 内部でのみ保持（選択ヒットテストが「配列のどの要素か」を返せるように）。
 - **編集動詞**: 配列全体の move/rotate は transform 更新。**要素単体の編集は「配列の分解（explode）」を経由**する — 配列のまま 1 要素だけ違う、という状態は作らない（GDS で表現不能な状態をモデルに入れない）。explode は repetition→N 個の個別インスタンス置換で、undo 1 単位。
-- **IO round-trip**: GDS AREF ↔ `LayoutRepetition` を `IRLayoutBridge` で無展開対応（reader/writer は対応済みなので bridge の写像のみ）。OASIS は既存 8 種 repetition のうち矩形格子型と相互変換、その他の型は**読み込み時に個別展開し、その事実を import 結果に申告**する。
+- **IO round-trip**: GDS AREF ↔ `LayoutRepetition` を `IRLayoutConverter` で無展開対応（reader/writer は対応済みなので converter の写像のみ）。OASIS は既存 8 種 repetition のうち矩形格子型と相互変換、その他の型は**読み込み時に個別展開し、その事実を import 結果に申告**する。
 - **オラクル**: `flatten(repetition)` == `flatten(explode した N インスタンス)` が bit-exact（同一 transform 計算経路を通す）。
 
 ### M10.4 スケールとベンチマーク

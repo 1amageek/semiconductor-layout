@@ -5,8 +5,8 @@ import LayoutTech
 import Testing
 @testable import LayoutIO
 
-@Suite("IRLayoutBridge layer purposes")
-struct IRLayoutBridgeLayerPurposeTests {
+@Suite("IRLayoutConverter layer purposes")
+struct IRLayoutConverterLayerPurposeTests {
     private let drawing = LayoutLayerID(name: "met1", purpose: "drawing")
     private let label = LayoutLayerID(name: "met1", purpose: "label")
     private let pin = LayoutLayerID(name: "met1", purpose: "pin")
@@ -31,7 +31,7 @@ struct IRLayoutBridgeLayerPurposeTests {
         )
         let document = LayoutDocument(name: "purpose", cells: [cell], topCellID: cell.id)
 
-        let library = try IRLayoutBridge().exportLibrary(document, tech: tech)
+        let library = try IRLayoutConverter().exportLibrary(document, tech: tech)
         let exportedCell = try #require(library.cells.first)
         let boundary = try #require(exportedCell.elements.compactMap { element -> IRBoundary? in
             guard case .boundary(let boundary) = element else { return nil }
@@ -47,7 +47,7 @@ struct IRLayoutBridgeLayerPurposeTests {
         #expect(text.layer == 68)
         #expect(text.texttype == 5)
 
-        let imported = try IRLayoutBridge().checkedImportLibrary(library, tech: tech)
+        let imported = try IRLayoutConverter().checkedImportLibrary(library, tech: tech)
         let importedCell = try #require(imported.cells.first)
         #expect(importedCell.shapes.first?.layer == drawing)
         #expect(importedCell.labels.first?.layer == drawing)
@@ -67,7 +67,7 @@ struct IRLayoutBridgeLayerPurposeTests {
         let document = LayoutDocument(name: "duplicate", cells: [cell], topCellID: cell.id)
 
         do {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: tech)
+            _ = try IRLayoutConverter().exportLibrary(document, tech: tech)
             Issue.record("Expected duplicate layer identifier rejection")
         } catch let LayoutIOError.conversionFailed(message) {
             #expect(message.contains("duplicate layer identifier 'met1/drawing'"))

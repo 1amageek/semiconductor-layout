@@ -6,8 +6,8 @@ import LayoutTech
 import LayoutIR
 @testable import LayoutIO
 
-@Suite("IRLayoutBridge Transforms")
-struct IRLayoutBridgeTransformTests {
+@Suite("IRLayoutConverter Transforms")
+struct IRLayoutConverterTransformTests {
 
     @Test("Import preserves arbitrary rotation and magnification")
     func importPreservesArbitraryRotationAndMagnification() throws {
@@ -26,7 +26,7 @@ struct IRLayoutBridgeTransformTests {
             ]
         )
 
-        let document = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+        let document = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         let top = document.cells.first { $0.name == "TOP" }
         let instance = top?.instances.first
 
@@ -56,7 +56,7 @@ struct IRLayoutBridgeTransformTests {
             topCellID: top.id
         )
 
-        let library = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+        let library = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         let topCell = library.cells.first { $0.name == "TOP" }
         let cellRef = topCell?.elements.compactMap { element -> IRCellRef? in
             if case .cellRef(let ref) = element {

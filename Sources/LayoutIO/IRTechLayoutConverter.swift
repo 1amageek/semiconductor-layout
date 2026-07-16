@@ -5,7 +5,7 @@ import LayoutTech
 import TechIR
 
 /// Converts between `IRTechLibrary` (format-agnostic IR) and `LayoutTechDatabase` (editor model).
-public struct IRTechLayoutBridge: Sendable {
+public struct IRTechLayoutConverter: Sendable {
 
     public init() {}
 

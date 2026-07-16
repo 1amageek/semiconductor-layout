@@ -283,11 +283,11 @@ extension LayoutEditorView {
             }
         }
 
-        let bridge = IRLayoutBridge()
+        let converter = IRLayoutConverter()
         let irLib = buildNAND2IRLibrary(databaseUnitScale: tech.units.scale)
         let document: LayoutDocument
         do {
-            document = try bridge.checkedImportLibrary(irLib, tech: tech)
+            document = try converter.checkedImportLibrary(irLib, tech: tech)
         } catch {
             preconditionFailure("Built-in NAND preview IR is invalid: \(error)")
         }

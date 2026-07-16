@@ -6,7 +6,7 @@ import LayoutIR
 import LayoutTech
 
 @Suite("IR layout identity")
-struct IRLayoutBridgeIdentityTests {
+struct IRLayoutConverterIdentityTests {
     @Test func repeatedImportKeepsCellAndShapeIDsStable() throws {
         let library = IRLibrary(
             name: "identity",
@@ -46,9 +46,9 @@ struct IRLayoutBridgeIdentityTests {
             vias: [],
             layerRules: []
         )
-        let bridge = IRLayoutBridge()
-        let first = try bridge.checkedImportLibrary(library, tech: tech)
-        let second = try bridge.checkedImportLibrary(library, tech: tech)
+        let converter = IRLayoutConverter()
+        let first = try converter.checkedImportLibrary(library, tech: tech)
+        let second = try converter.checkedImportLibrary(library, tech: tech)
         #expect(first.cells.map(\.id) == second.cells.map(\.id))
         #expect(first.cells.flatMap(\.shapes).map(\.id) == second.cells.flatMap(\.shapes).map(\.id))
         #expect(first.cells.flatMap(\.instances).map(\.id) == second.cells.flatMap(\.instances).map(\.id))

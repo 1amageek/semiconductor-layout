@@ -7,7 +7,7 @@ import LayoutIR
 
 /// Converts between IRLibrary (GDSII/OASIS intermediate representation)
 /// and LayoutDocument (editor-native model).
-public struct IRLayoutBridge: Sendable {
+public struct IRLayoutConverter: Sendable {
     private static let viaDefinitionPropertyAttribute: Int16 = 7301
     private static let viaDefinitionPropertyName = "lsi.viaDefinition"
     private static let defComponentNamePropertyName = "def.component.name"

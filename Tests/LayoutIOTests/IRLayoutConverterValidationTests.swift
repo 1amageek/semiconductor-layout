@@ -6,8 +6,8 @@ import LayoutIR
 import LayoutTech
 @testable import LayoutIO
 
-@Suite("IRLayoutBridge Validation")
-struct IRLayoutBridgeValidationTests {
+@Suite("IRLayoutConverter Validation")
+struct IRLayoutConverterValidationTests {
     @Test func databaseUnitScaleRejectsInvalidValue() {
         #expect(throws: DatabaseUnitScaleError.self) {
             _ = try DatabaseUnitScale(databaseUnitsPerMicrometer: 0)
@@ -25,7 +25,7 @@ struct IRLayoutBridgeValidationTests {
         )
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         }
     }
 
@@ -41,7 +41,7 @@ struct IRLayoutBridgeValidationTests {
         )
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         }
     }
 
@@ -66,7 +66,7 @@ struct IRLayoutBridgeValidationTests {
         )
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         }
     }
 
@@ -93,7 +93,7 @@ struct IRLayoutBridgeValidationTests {
         )
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         }
     }
 
@@ -120,7 +120,7 @@ struct IRLayoutBridgeValidationTests {
         )
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         }
     }
 
@@ -148,7 +148,7 @@ struct IRLayoutBridgeValidationTests {
         )
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try IRLayoutConverter().checkedImportLibrary(library, tech: .standard())
         }
     }
 
@@ -169,7 +169,7 @@ struct IRLayoutBridgeValidationTests {
         let document = LayoutDocument(name: "unmapped", cells: [cell], topCellID: cell.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+            _ = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         }
     }
 
@@ -182,7 +182,7 @@ struct IRLayoutBridgeValidationTests {
         let document = LayoutDocument(name: "missing-instance-target", cells: [cell], topCellID: cell.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+            _ = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         }
     }
 
@@ -202,7 +202,7 @@ struct IRLayoutBridgeValidationTests {
         let document = LayoutDocument(name: "non-finite-coordinate", cells: [cell], topCellID: cell.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+            _ = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         }
     }
 
@@ -225,7 +225,7 @@ struct IRLayoutBridgeValidationTests {
         let document = LayoutDocument(name: "oversized-coordinate", cells: [cell], topCellID: cell.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+            _ = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         }
     }
 
@@ -248,7 +248,7 @@ struct IRLayoutBridgeValidationTests {
         let document = LayoutDocument(name: "non-finite-width", cells: [cell], topCellID: cell.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: .standard())
+            _ = try IRLayoutConverter().exportLibrary(document, tech: .standard())
         }
     }
 
@@ -270,7 +270,7 @@ struct IRLayoutBridgeValidationTests {
         let document = LayoutDocument(name: "invalid-tech-layer", cells: [cell], topCellID: cell.id)
 
         #expect(throws: LayoutIOError.self) {
-            _ = try IRLayoutBridge().exportLibrary(document, tech: tech)
+            _ = try IRLayoutConverter().exportLibrary(document, tech: tech)
         }
     }
 }
