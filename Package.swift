@@ -83,7 +83,8 @@ let package = Package(
                 .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
-            ]
+            ],
+            resources: [.copy("Resources")]
         ),
         .target(
             name: "LayoutAutoGen",
@@ -154,6 +155,10 @@ let package = Package(
                 "LayoutVerify",
                 "LayoutEditor",
             ]
+        ),
+        .testTarget(
+            name: "LayoutEditorTests",
+            dependencies: ["LayoutEditor"]
         ),
         .testTarget(
             name: "LayoutEngineTests",

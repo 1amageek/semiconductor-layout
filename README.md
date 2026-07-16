@@ -57,6 +57,12 @@ Artifact creation is injected through `ArtifactReferencing` and defaults to
 | `LayoutIntegration` | Host application and external signoff integration |
 | `layout-command` | CLI for canonical layout edits, conversion, inspection, and connectivity diagnosis |
 
+The `LayoutEditor` NAND Flash preview loads its GDSII artifact and technology
+sidecar from packaged resources through `LayoutPreviewResourceLoader`.
+Missing or invalid resources produce `LayoutPreviewResourceError`; the preview
+surfaces that error instead of searching developer-specific paths or silently
+substituting unrelated geometry.
+
 ## Invariants
 
 - Canonical layout state is `LayoutDocument`; UI state is not a source of
@@ -84,11 +90,12 @@ xcodebuild \
   test
 ```
 
-For a bounded verification run, invoke the seven test targets separately with
+For a bounded verification run, invoke the eight test targets separately with
 `-only-testing:<target>` and a 120-second process deadline per invocation:
 `LayoutIOTests`, `LayoutLVSExtractionTests`, `LayoutCoreTests`,
-`LayoutIntegrationTests`, `LayoutAutoGenTests`, `LayoutEngineTests`, and
-`LayoutCommandsTests`. This keeps compilation and runner shutdown attributable
+`LayoutIntegrationTests`, `LayoutAutoGenTests`, `LayoutEditorTests`,
+`LayoutEngineTests`, and `LayoutCommandsTests`. `LayoutEditorFocused` is the
+shared scheme for the small editor API/resource shard. This keeps compilation and runner shutdown attributable
 to a single target while preserving the package-wide test surface.
 
 The package requires Swift 6.3 or later and macOS 26 or later. The package has
