@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutAutoGen
 import LayoutCommands
@@ -93,10 +94,10 @@ struct LayoutAnalogArrayCommandTests {
         #expect(report.arrangedMemberInstanceIDs == [memberIDs[0], memberIDs[2], memberIDs[3], memberIDs[1]])
 
         let manifest = try JSONDecoder().decode(
-            LayoutCommandArtifactManifest.self,
+            EvidenceManifest.self,
             from: Data(contentsOf: rootURL.appendingPathComponent("artifacts/manifest.json"))
         )
-        #expect(manifest.artifacts.contains { $0.id == "layout-analog-array-7" })
+        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "layout-analog-array-7" })
     }
 
     private func makeRootURL() throws -> URL {

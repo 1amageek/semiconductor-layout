@@ -1,4 +1,4 @@
-import CryptoKit
+import CircuiteFoundation
 import Foundation
 import LayoutAutoGen
 import LayoutCore
@@ -6,35 +6,49 @@ import LayoutIO
 import LayoutTech
 import LayoutVerify
 
-public struct LayoutCommandRunner: Sendable {
+public struct LayoutCommandRunner: LayoutCommandRunning {
     private let serializer: LayoutDocumentSerializer
     private let encoder: JSONEncoder
+    private let artifactReferencer: any ArtifactReferencing
 
     struct PendingCommandArtifact: Sendable {
-        var id: String
-        var kind: String
-        var format: String
+        var role: String
         var url: URL
         var data: Data
         var status: String?
     }
 
-    public init(serializer: LayoutDocumentSerializer = LayoutDocumentSerializer()) {
+    public init(
+        serializer: LayoutDocumentSerializer = LayoutDocumentSerializer(),
+        artifactReferencer: any ArtifactReferencing = LocalArtifactReferencer()
+    ) {
         self.serializer = serializer
+        self.artifactReferencer = artifactReferencer
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         self.encoder = encoder
     }
 
     public func run(request: LayoutCommandRequest, baseURL: URL) throws -> LayoutCommandResult {
+        let startedAt = Date()
         try validateSchemaVersion(request.schemaVersion)
+        let inputArtifact = try request.inputDocumentPath.map { path in
+            try referenceArtifact(
+                at: resolve(path: path, baseURL: baseURL),
+                role: "input-layout-document",
+                kind: .layout,
+                format: .json
+            )
+        }
         let execution = try execute(request: request, baseURL: baseURL)
         return try persistResult(
             for: request,
             editor: execution.editor,
             appliedCommands: execution.appliedCommands,
             pendingArtifacts: execution.pendingArtifacts,
-            baseURL: baseURL
+            baseURL: baseURL,
+            inputArtifact: inputArtifact,
+            startedAt: startedAt
         )
     }
 
@@ -46,8 +60,6 @@ public struct LayoutCommandRunner: Sendable {
 
     private struct WrittenDocument {
         var url: URL
-        var data: Data
-        var digest: String
     }
 
     private struct ArtifactPathEntry {
@@ -89,7 +101,9 @@ public struct LayoutCommandRunner: Sendable {
         editor: LayoutDocumentEditor,
         appliedCommands: [LayoutAppliedCommand],
         pendingArtifacts: [PendingCommandArtifact],
-        baseURL: URL
+        baseURL: URL,
+        inputArtifact: ArtifactReference?,
+        startedAt: Date
     ) throws -> LayoutCommandResult {
         let outputURL = resolve(path: request.outputDocumentPath, baseURL: baseURL)
         let manifestURL = request.artifactManifestPath.map { resolve(path: $0, baseURL: baseURL) }
@@ -102,21 +116,33 @@ public struct LayoutCommandRunner: Sendable {
             pendingArtifacts: pendingArtifacts
         )
         let output = try writeOutputDocument(editor.document, to: outputURL)
+        let outputArtifact = try referenceArtifact(
+            at: output.url,
+            role: "output-layout-document",
+            kind: .layout,
+            format: .json,
+            producer: try producerIdentity()
+        )
         let result = makeResult(
             request: request,
             appliedCommands: appliedCommands,
             pendingArtifacts: pendingArtifacts,
-            output: output,
-            manifestURL: manifestURL,
+            outputArtifact: outputArtifact,
             document: editor.document
         )
         let artifacts = try persistArtifacts(
-            output: output,
+            outputArtifact: outputArtifact,
             result: result,
             resultURL: resultURL,
             pendingArtifacts: pendingArtifacts
         )
-        try writeArtifactManifest(artifacts, to: manifestURL)
+        let manifestArtifacts = inputArtifact.map { [$0] } ?? []
+        try writeEvidenceManifest(
+            artifacts: manifestArtifacts + artifacts,
+            inputs: inputArtifact.map { [$0] } ?? [],
+            to: manifestURL,
+            startedAt: startedAt
+        )
         return result
     }
 
@@ -130,15 +156,14 @@ public struct LayoutCommandRunner: Sendable {
         )
         let outputData = try serializer.encodeDocument(document)
         try outputData.write(to: outputURL, options: [.atomic])
-        return WrittenDocument(url: outputURL, data: outputData, digest: Self.sha256Hex(outputData))
+        return WrittenDocument(url: outputURL)
     }
 
     private func makeResult(
         request: LayoutCommandRequest,
         appliedCommands: [LayoutAppliedCommand],
         pendingArtifacts: [PendingCommandArtifact],
-        output: WrittenDocument,
-        manifestURL: URL,
+        outputArtifact: ArtifactReference,
         document: LayoutDocument
     ) -> LayoutCommandResult {
         let counts = countElements(in: document)
@@ -146,10 +171,7 @@ public struct LayoutCommandRunner: Sendable {
             status: resultStatus(for: pendingArtifacts),
             commandCount: request.commands.count,
             appliedCommands: appliedCommands,
-            outputDocumentPath: output.url.path,
-            outputDocumentSHA256: output.digest,
-            outputDocumentByteCount: output.data.count,
-            artifactManifestPath: manifestURL.path,
+            outputArtifact: outputArtifact,
             cellCount: counts.cells,
             shapeCount: counts.shapes,
             viaCount: counts.vias,
@@ -159,21 +181,12 @@ public struct LayoutCommandRunner: Sendable {
     }
 
     private func persistArtifacts(
-        output: WrittenDocument,
+        outputArtifact: ArtifactReference,
         result: LayoutCommandResult,
         resultURL: URL?,
         pendingArtifacts: [PendingCommandArtifact]
-    ) throws -> [LayoutCommandArtifact] {
-        var artifacts = [
-            LayoutCommandArtifact(
-                id: "output-layout-document",
-                kind: "layout",
-                format: "LayoutDocumentJSON",
-                path: output.url.path,
-                sha256: output.digest,
-                byteCount: output.data.count
-            )
-        ]
+    ) throws -> [ArtifactReference] {
+        var artifacts = [outputArtifact]
         for pending in pendingArtifacts {
             artifacts.append(try writePendingArtifact(pending))
         }
@@ -183,50 +196,81 @@ public struct LayoutCommandRunner: Sendable {
         return artifacts
     }
 
-    private func writePendingArtifact(_ pending: PendingCommandArtifact) throws -> LayoutCommandArtifact {
+    private func writePendingArtifact(_ pending: PendingCommandArtifact) throws -> ArtifactReference {
         try FileManager.default.createDirectory(
             at: pending.url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         try pending.data.write(to: pending.url, options: [.atomic])
-        return LayoutCommandArtifact(
-            id: pending.id,
-            kind: pending.kind,
-            format: pending.format,
-            path: pending.url.path,
-            sha256: Self.sha256Hex(pending.data),
-            byteCount: pending.data.count
+        return try referenceArtifact(
+            at: pending.url,
+            role: pending.role,
+            kind: .report,
+            format: .json,
+            producer: try producerIdentity()
         )
     }
 
     private func writeResultArtifact(
         _ result: LayoutCommandResult,
         to resultURL: URL
-    ) throws -> LayoutCommandArtifact {
+    ) throws -> ArtifactReference {
         try FileManager.default.createDirectory(
             at: resultURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         let resultData = try encoder.encode(result)
         try resultData.write(to: resultURL, options: [.atomic])
-        return LayoutCommandArtifact(
-            id: "layout-command-result",
-            kind: "result",
-            format: "LayoutCommandResultJSON",
-            path: resultURL.path,
-            sha256: Self.sha256Hex(resultData),
-            byteCount: resultData.count
+        return try referenceArtifact(
+            at: resultURL,
+            role: "layout-command-result",
+            kind: .report,
+            format: .json,
+            producer: try producerIdentity()
         )
     }
 
-    private func writeArtifactManifest(_ artifacts: [LayoutCommandArtifact], to manifestURL: URL) throws {
-        let manifest = LayoutCommandArtifactManifest(artifacts: artifacts)
+    private func writeEvidenceManifest(
+        artifacts: [ArtifactReference],
+        inputs: [ArtifactReference],
+        to manifestURL: URL,
+        startedAt: Date
+    ) throws {
+        let producer = try producerIdentity()
+        let provenance = try ExecutionProvenance(
+            producer: producer,
+            inputs: inputs,
+            invocation: try ExecutionInvocation.inProcess(entryPoint: "LayoutCommandRunner.run"),
+            startedAt: startedAt,
+            completedAt: Date()
+        )
+        let manifest = EvidenceManifest(provenance: provenance, artifacts: artifacts)
         try FileManager.default.createDirectory(
             at: manifestURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         let manifestData = try encoder.encode(manifest)
         try manifestData.write(to: manifestURL, options: [.atomic])
+    }
+
+    private func referenceArtifact(
+        at url: URL,
+        role: String,
+        kind: ArtifactKind,
+        format: ArtifactFormat,
+        producer: ProducerIdentity? = nil
+    ) throws -> ArtifactReference {
+        let locator = ArtifactLocator(
+            location: try ArtifactLocation(fileURL: url),
+            role: try ArtifactRole(validatingRawValue: role),
+            kind: kind,
+            format: format
+        )
+        return try artifactReferencer.reference(locator, relativeTo: nil, producer: producer)
+    }
+
+    private func producerIdentity() throws -> ProducerIdentity {
+        try ProducerIdentity(kind: .tool, identifier: "layout-command", version: "2")
     }
 
     private func validateDistinctArtifactPaths(
@@ -243,7 +287,7 @@ public struct LayoutCommandRunner: Sendable {
             entries.append(ArtifactPathEntry(role: "result", url: resultURL))
         }
         entries.append(contentsOf: pendingArtifacts.map { pending in
-            ArtifactPathEntry(role: "pending-artifact:\(pending.id)", url: pending.url)
+            ArtifactPathEntry(role: "pending-artifact:\(pending.role)", url: pending.url)
         })
         try validateDistinctArtifactPaths(entries)
     }
@@ -742,9 +786,7 @@ public struct LayoutCommandRunner: Sendable {
         if let reportPath = payload.reportPath {
             let reportData = try encoder.encode(result)
             pendingArtifacts.append(PendingCommandArtifact(
-                id: "layout-guard-ring-\(index)",
-                kind: "layout-guard-ring-report",
-                format: "GuardRingGenerationResultJSON",
+                role: "layout-guard-ring-\(index)",
                 url: resolve(path: reportPath, baseURL: baseURL),
                 data: reportData,
                 status: "passed"
@@ -787,9 +829,7 @@ public struct LayoutCommandRunner: Sendable {
         if let reportPath = payload.reportPath {
             let reportData = try encoder.encode(result)
             pendingArtifacts.append(PendingCommandArtifact(
-                id: "layout-analog-array-\(index)",
-                kind: "layout-analog-array-report",
-                format: "AnalogArrayPlacementResultJSON",
+                role: "layout-analog-array-\(index)",
                 url: resolve(path: reportPath, baseURL: baseURL),
                 data: reportData,
                 status: "passed"
@@ -1222,9 +1262,7 @@ public struct LayoutCommandRunner: Sendable {
         let reportData = try encoder.encode(report)
         let reportURL = resolve(path: payload.reportPath, baseURL: baseURL)
         pendingArtifacts.append(PendingCommandArtifact(
-            id: "layout-repair-sweep-\(index)",
-            kind: "layout-repair-sweep",
-            format: "LayoutRepairSweepReportJSON",
+            role: "layout-repair-sweep-\(index)",
             url: reportURL,
             data: reportData,
             status: report.status
@@ -1273,9 +1311,7 @@ public struct LayoutCommandRunner: Sendable {
         let reportData = try encoder.encode(report)
         let reportURL = resolve(path: reportPath, baseURL: baseURL)
         pendingArtifacts.append(PendingCommandArtifact(
-            id: "layout-finish-net-\(index)",
-            kind: "layout-finish-net-report",
-            format: "LayoutFinishNetReportJSON",
+            role: "layout-finish-net-\(index)",
             url: reportURL,
             data: reportData,
             status: report.status
@@ -1316,9 +1352,7 @@ public struct LayoutCommandRunner: Sendable {
         let reportData = try encoder.encode(report)
         let reportURL = resolve(path: reportPath, baseURL: baseURL)
         pendingArtifacts.append(PendingCommandArtifact(
-            id: "layout-finish-net-\(index)",
-            kind: "layout-finish-net-report",
-            format: "LayoutFinishNetReportJSON",
+            role: "layout-finish-net-\(index)",
             url: reportURL,
             data: reportData,
             status: report.status
@@ -1422,7 +1456,7 @@ public struct LayoutCommandRunner: Sendable {
 
         for shape in cell.shapes {
             content.shapes.append(LayoutShape(
-                id: deterministicUUID(kind: "shape", parts: idPath + [cell.id.uuidString, shape.id.uuidString]),
+                id: try deterministicUUID(kind: "shape", parts: idPath + [cell.id.uuidString, shape.id.uuidString]),
                 layer: shape.layer,
                 netID: mappedNetID(shape.netID, bindings: netBindings),
                 geometry: transformedGeometry(shape.geometry, transforms: transforms),
@@ -1431,7 +1465,7 @@ public struct LayoutCommandRunner: Sendable {
         }
         for via in cell.vias {
             content.vias.append(LayoutVia(
-                id: deterministicUUID(kind: "via", parts: idPath + [cell.id.uuidString, via.id.uuidString]),
+                id: try deterministicUUID(kind: "via", parts: idPath + [cell.id.uuidString, via.id.uuidString]),
                 viaDefinitionID: via.viaDefinitionID,
                 position: transformedPoint(via.position, transforms: transforms),
                 netID: mappedNetID(via.netID, bindings: netBindings)
@@ -1439,7 +1473,7 @@ public struct LayoutCommandRunner: Sendable {
         }
         for label in cell.labels {
             content.labels.append(LayoutLabel(
-                id: deterministicUUID(kind: "label", parts: idPath + [cell.id.uuidString, label.id.uuidString]),
+                id: try deterministicUUID(kind: "label", parts: idPath + [cell.id.uuidString, label.id.uuidString]),
                 text: label.text,
                 position: transformedPoint(label.position, transforms: transforms),
                 layer: label.layer,
@@ -1448,7 +1482,7 @@ public struct LayoutCommandRunner: Sendable {
         }
         for pin in cell.pins {
             content.pins.append(LayoutPin(
-                id: deterministicUUID(kind: "pin", parts: idPath + [cell.id.uuidString, pin.id.uuidString]),
+                id: try deterministicUUID(kind: "pin", parts: idPath + [cell.id.uuidString, pin.id.uuidString]),
                 name: pin.name,
                 position: transformedPoint(pin.position, transforms: transforms),
                 size: pin.size,
@@ -1582,10 +1616,21 @@ public struct LayoutCommandRunner: Sendable {
         return current
     }
 
-    private func deterministicUUID(kind: String, parts: [String]) -> UUID {
+    private func deterministicUUID(kind: String, parts: [String]) throws -> UUID {
         let input = (["layout-command", kind] + parts).joined(separator: "|")
-        let digest = SHA256.hash(data: Data(input.utf8))
-        var bytes = Array(digest)
+        let digest = try SHA256ContentDigester().digest(data: Data(input.utf8), using: .sha256)
+        let hexadecimalValue = digest.hexadecimalValue
+        var bytes: [UInt8] = []
+        var index = hexadecimalValue.startIndex
+        for _ in 0..<16 {
+            let nextIndex = hexadecimalValue.index(index, offsetBy: 2)
+            let pair = String(hexadecimalValue[index..<nextIndex])
+            guard let byte = UInt8(pair, radix: 16) else {
+                throw ContentDigestError.invalidHexadecimalValue(hexadecimalValue)
+            }
+            bytes.append(byte)
+            index = nextIndex
+        }
         bytes[6] = (bytes[6] & 0x0f) | 0x50
         bytes[8] = (bytes[8] & 0x3f) | 0x80
         return UUID(uuid: (
@@ -1861,10 +1906,6 @@ public struct LayoutCommandRunner: Sendable {
         return baseURL.appendingPathComponent(path)
     }
 
-    public static func sha256Hex(_ data: Data) -> String {
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
 }
 
 private enum NormalizedInstanceMirrorAxis {

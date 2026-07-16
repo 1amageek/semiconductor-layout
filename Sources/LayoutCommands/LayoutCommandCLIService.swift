@@ -1,5 +1,5 @@
+import CircuiteFoundation
 import Foundation
-import CryptoKit
 import LayoutCore
 import LayoutIO
 import LayoutTech
@@ -9,13 +9,15 @@ public struct LayoutCommandCLIService: Sendable {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
     private let serializer: LayoutDocumentSerializer
-    private let runner: LayoutCommandRunner
+    private let runner: any LayoutCommandRunning
     private let actionDomainExporter: LayoutActionDomainExporter
+    private let artifactReferencer: any ArtifactReferencing
 
     public init(
         serializer: LayoutDocumentSerializer = LayoutDocumentSerializer(),
-        runner: LayoutCommandRunner = LayoutCommandRunner(),
-        actionDomainExporter: LayoutActionDomainExporter = LayoutActionDomainExporter()
+        runner: any LayoutCommandRunning = LayoutCommandRunner(),
+        actionDomainExporter: LayoutActionDomainExporter = LayoutActionDomainExporter(),
+        artifactReferencer: any ArtifactReferencing = LocalArtifactReferencer()
     ) {
         self.decoder = JSONDecoder()
         let encoder = JSONEncoder()
@@ -24,6 +26,7 @@ public struct LayoutCommandCLIService: Sendable {
         self.serializer = serializer
         self.runner = runner
         self.actionDomainExporter = actionDomainExporter
+        self.artifactReferencer = artifactReferencer
     }
 
     public func run(options: LayoutCommandCLIOptions) throws -> String {
@@ -63,7 +66,7 @@ public struct LayoutCommandCLIService: Sendable {
         }
 
         return (
-            "layout-command \(result.status): \(result.commandCount) commands, \(result.shapeCount) shapes, \(result.outputDocumentPath)",
+            "layout-command \(result.status): \(result.commandCount) commands, \(result.shapeCount) shapes, \(result.outputArtifact.path)",
             result.status
         )
     }
@@ -77,11 +80,11 @@ public struct LayoutCommandCLIService: Sendable {
     }
 
     private func convertDocument(_ request: LayoutDocumentConversionRequest, emitsJSON: Bool) throws -> String {
-        let pathPlan = try LayoutCommandArtifactPathPlan.conversion(request)
+        let startedAt = Date()
+        let pathPlan = try LayoutCommandOutputPathPlan.conversion(request)
         guard let outputURL = pathPlan.outputURL else {
             throw LayoutCommandError.missingRequiredArgument("--output")
         }
-        let inputData = try Data(contentsOf: pathPlan.inputURL)
         let effectiveTech = try loadEffectiveTechnology(
             inputURL: pathPlan.inputURL,
             inputFormat: request.inputFormat,
@@ -90,23 +93,41 @@ public struct LayoutCommandCLIService: Sendable {
         )
         let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech)
         try writeConvertedDocument(document, to: outputURL, format: request.outputFormat, tech: effectiveTech)
-        let outputData = try Data(contentsOf: outputURL)
+        let inputArtifact = try referenceArtifact(
+            at: pathPlan.inputURL,
+            role: "input-layout-document",
+            kind: .layout,
+            format: try Self.artifactFormat(for: request.inputFormat)
+        )
+        let outputArtifact = try referenceArtifact(
+            at: outputURL,
+            role: "output-layout-document",
+            kind: .layout,
+            format: try Self.artifactFormat(for: request.outputFormat),
+            producer: try producerIdentity()
+        )
+        let technologyArtifact = try technologyArtifact(path: request.technologyPath)
         let result = makeConversionResult(
-            request: request,
-            pathPlan: pathPlan,
-            inputData: inputData,
-            outputData: outputData,
+            inputArtifact: inputArtifact,
+            outputArtifact: outputArtifact,
+            technologyArtifact: technologyArtifact,
             document: document
         )
         let resultData = try encoder.encode(result)
         let artifacts = try conversionArtifacts(
-            request: request,
             resultData: resultData,
             pathPlan: pathPlan,
-            inputData: inputData,
-            outputData: outputData
+            inputArtifact: inputArtifact,
+            outputArtifact: outputArtifact,
+            technologyArtifact: technologyArtifact
         )
-        try writeManifestIfRequested(artifacts: artifacts, to: pathPlan.manifestURL)
+        try writeManifestIfRequested(
+            artifacts: artifacts,
+            inputs: [inputArtifact] + [technologyArtifact].compactMap { $0 },
+            to: pathPlan.manifestURL,
+            entryPoint: "LayoutCommandCLIService.convertDocument",
+            startedAt: startedAt
+        )
 
         return renderConversion(result: result, resultData: resultData, emitsJSON: emitsJSON)
     }
@@ -115,8 +136,8 @@ public struct LayoutCommandCLIService: Sendable {
         _ request: LayoutDocumentInspectionRequest,
         emitsJSON: Bool
     ) throws -> (output: String, status: String) {
-        let pathPlan = try LayoutCommandArtifactPathPlan.inspection(request)
-        let inputData = try Data(contentsOf: pathPlan.inputURL)
+        let startedAt = Date()
+        let pathPlan = try LayoutCommandOutputPathPlan.inspection(request)
         let effectiveTech = try loadEffectiveTechnology(
             inputURL: pathPlan.inputURL,
             inputFormat: request.inputFormat,
@@ -125,41 +146,38 @@ public struct LayoutCommandCLIService: Sendable {
         )
         let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech)
         let verification = try inspectionVerification(document: document, tech: effectiveTech)
+        let inputArtifact = try referenceArtifact(
+            at: pathPlan.inputURL,
+            role: "input-layout-document",
+            kind: .layout,
+            format: try Self.artifactFormat(for: request.inputFormat)
+        )
+        let technologyArtifact = try technologyArtifact(path: request.technologyPath)
         let result = LayoutDocumentInspectionResult(
-            inputPath: pathPlan.inputURL.path,
-            inputFormat: request.inputFormat,
-            technologyPath: request.technologyPath,
-            inputSHA256: Self.sha256Hex(inputData),
-            inputByteCount: inputData.count,
-            resultPath: pathPlan.resultURL?.path,
-            artifactManifestPath: pathPlan.manifestURL?.path,
+            inputArtifact: inputArtifact,
+            technologyArtifact: technologyArtifact,
             summary: LayoutDocumentSummary(document: document),
             verification: verification
         )
         let resultData = try encoder.encode(result)
-        var artifacts = [
-            LayoutCommandArtifact(
-                id: "input-layout-document",
-                kind: "layout",
-                format: Self.artifactFormat(for: request.inputFormat),
-                path: pathPlan.inputURL.path,
-                sha256: Self.sha256Hex(inputData),
-                byteCount: inputData.count
-            ),
-        ]
-        if let technologyArtifact = try technologyArtifact(path: request.technologyPath) {
-            artifacts.append(technologyArtifact)
-        }
+        var artifacts = [inputArtifact]
+        if let technologyArtifact { artifacts.append(technologyArtifact) }
         if let resultArtifact = try writeArtifact(
-            id: "layout-inspection-result",
-            kind: "result",
-            format: "LayoutDocumentInspectionResultJSON",
+            role: "layout-inspection-result",
+            kind: .report,
+            format: .json,
             url: pathPlan.resultURL,
             data: resultData
         ) {
             artifacts.append(resultArtifact)
         }
-        try writeManifestIfRequested(artifacts: artifacts, to: pathPlan.manifestURL)
+        try writeManifestIfRequested(
+            artifacts: artifacts,
+            inputs: [inputArtifact] + [technologyArtifact].compactMap { $0 },
+            to: pathPlan.manifestURL,
+            entryPoint: "LayoutCommandCLIService.inspectDocument",
+            startedAt: startedAt
+        )
 
         if emitsJSON {
             return (jsonString(from: resultData), result.status)
@@ -176,8 +194,8 @@ public struct LayoutCommandCLIService: Sendable {
         _ request: LayoutConstraintValidationRequest,
         emitsJSON: Bool
     ) throws -> (output: String, exitCode: Int32) {
-        let pathPlan = try LayoutCommandArtifactPathPlan.constraintValidation(request)
-        let inputData = try Data(contentsOf: pathPlan.inputURL)
+        let startedAt = Date()
+        let pathPlan = try LayoutCommandOutputPathPlan.constraintValidation(request)
         let effectiveTech = try loadEffectiveTechnology(
             inputURL: pathPlan.inputURL,
             inputFormat: request.inputFormat,
@@ -195,41 +213,38 @@ public struct LayoutCommandCLIService: Sendable {
             tolerance: tolerance,
             violations: violations
         )
+        let inputArtifact = try referenceArtifact(
+            at: pathPlan.inputURL,
+            role: "input-layout-document",
+            kind: .layout,
+            format: try Self.artifactFormat(for: request.inputFormat)
+        )
+        let technologyArtifact = try technologyArtifact(path: request.technologyPath)
         let result = LayoutConstraintValidationResult(
-            inputPath: pathPlan.inputURL.path,
-            inputFormat: request.inputFormat,
-            technologyPath: request.technologyPath,
-            inputSHA256: Self.sha256Hex(inputData),
-            inputByteCount: inputData.count,
-            resultPath: pathPlan.resultURL?.path,
-            artifactManifestPath: pathPlan.manifestURL?.path,
+            inputArtifact: inputArtifact,
+            technologyArtifact: technologyArtifact,
             summary: LayoutDocumentSummary(document: document),
             validation: validation
         )
         let resultData = try encoder.encode(result)
-        var artifacts = [
-            LayoutCommandArtifact(
-                id: "input-layout-document",
-                kind: "layout",
-                format: Self.artifactFormat(for: request.inputFormat),
-                path: pathPlan.inputURL.path,
-                sha256: Self.sha256Hex(inputData),
-                byteCount: inputData.count
-            ),
-        ]
-        if let technologyArtifact = try technologyArtifact(path: request.technologyPath) {
-            artifacts.append(technologyArtifact)
-        }
+        var artifacts = [inputArtifact]
+        if let technologyArtifact { artifacts.append(technologyArtifact) }
         if let resultArtifact = try writeArtifact(
-            id: "layout-constraint-validation-result",
-            kind: "result",
-            format: "LayoutConstraintValidationResultJSON",
+            role: "layout-constraint-validation-result",
+            kind: .report,
+            format: .json,
             url: pathPlan.resultURL,
             data: resultData
         ) {
             artifacts.append(resultArtifact)
         }
-        try writeManifestIfRequested(artifacts: artifacts, to: pathPlan.manifestURL)
+        try writeManifestIfRequested(
+            artifacts: artifacts,
+            inputs: [inputArtifact] + [technologyArtifact].compactMap { $0 },
+            to: pathPlan.manifestURL,
+            entryPoint: "LayoutCommandCLIService.validateConstraints",
+            startedAt: startedAt
+        )
 
         let exitCode: Int32 = result.status == "failed" ? 2 : 0
         if emitsJSON {
@@ -254,7 +269,6 @@ public struct LayoutCommandCLIService: Sendable {
         emitsJSON: Bool
     ) throws -> (output: String, exitCode: Int32) {
         let inputURL = URL(fileURLWithPath: request.inputPath)
-        let inputData = try Data(contentsOf: inputURL)
         guard let tech = try loadEffectiveTechnology(
             inputURL: inputURL,
             inputFormat: request.inputFormat,
@@ -265,12 +279,16 @@ public struct LayoutCommandCLIService: Sendable {
         }
         let document = try loadDocument(from: inputURL, format: request.inputFormat, tech: tech)
         let diagnosis = try LayoutConnectivityDiagnoser().diagnose(document: document, tech: tech)
+        let inputArtifact = try referenceArtifact(
+            at: inputURL,
+            role: "input-layout-document",
+            kind: .layout,
+            format: try Self.artifactFormat(for: request.inputFormat)
+        )
+        let technologyArtifact = try technologyArtifact(path: request.technologyPath)
         let result = LayoutConnectivityDiagnosisResult(
-            inputPath: inputURL.path,
-            inputFormat: request.inputFormat,
-            technologyPath: request.technologyPath,
-            inputSHA256: Self.sha256Hex(inputData),
-            inputByteCount: inputData.count,
+            inputArtifact: inputArtifact,
+            technologyArtifact: technologyArtifact,
             diagnosis: diagnosis
         )
         let exitCode: Int32 = result.status == "passed" ? 0 : 2
@@ -319,60 +337,34 @@ public struct LayoutCommandCLIService: Sendable {
     }
 
     private func makeConversionResult(
-        request: LayoutDocumentConversionRequest,
-        pathPlan: LayoutCommandArtifactPathPlan,
-        inputData: Data,
-        outputData: Data,
+        inputArtifact: ArtifactReference,
+        outputArtifact: ArtifactReference,
+        technologyArtifact: ArtifactReference?,
         document: LayoutDocument
     ) -> LayoutDocumentConversionResult {
         LayoutDocumentConversionResult(
-            inputPath: pathPlan.inputURL.path,
-            inputFormat: request.inputFormat,
-            outputPath: pathPlan.outputURL?.path ?? request.outputPath,
-            outputFormat: request.outputFormat,
-            technologyPath: request.technologyPath,
-            inputSHA256: Self.sha256Hex(inputData),
-            inputByteCount: inputData.count,
-            outputSHA256: Self.sha256Hex(outputData),
-            outputByteCount: outputData.count,
-            resultPath: pathPlan.resultURL?.path,
-            artifactManifestPath: pathPlan.manifestURL?.path,
+            inputArtifact: inputArtifact,
+            outputArtifact: outputArtifact,
+            technologyArtifact: technologyArtifact,
             summary: LayoutDocumentSummary(document: document)
         )
     }
 
     private func conversionArtifacts(
-        request: LayoutDocumentConversionRequest,
         resultData: Data,
-        pathPlan: LayoutCommandArtifactPathPlan,
-        inputData: Data,
-        outputData: Data
-    ) throws -> [LayoutCommandArtifact] {
-        var artifacts = [
-            LayoutCommandArtifact(
-                id: "input-layout-document",
-                kind: "layout",
-                format: Self.artifactFormat(for: request.inputFormat),
-                path: pathPlan.inputURL.path,
-                sha256: Self.sha256Hex(inputData),
-                byteCount: inputData.count
-            ),
-            LayoutCommandArtifact(
-                id: "output-layout-document",
-                kind: "layout",
-                format: Self.artifactFormat(for: request.outputFormat),
-                path: pathPlan.outputURL?.path ?? request.outputPath,
-                sha256: Self.sha256Hex(outputData),
-                byteCount: outputData.count
-            ),
-        ]
-        if let technologyArtifact = try technologyArtifact(path: request.technologyPath) {
+        pathPlan: LayoutCommandOutputPathPlan,
+        inputArtifact: ArtifactReference,
+        outputArtifact: ArtifactReference,
+        technologyArtifact: ArtifactReference?
+    ) throws -> [ArtifactReference] {
+        var artifacts = [inputArtifact, outputArtifact]
+        if let technologyArtifact {
             artifacts.append(technologyArtifact)
         }
         if let resultArtifact = try writeArtifact(
-            id: "layout-conversion-result",
-            kind: "result",
-            format: "LayoutDocumentConversionResultJSON",
+            role: "layout-conversion-result",
+            kind: .report,
+            format: .json,
             url: pathPlan.resultURL,
             data: resultData
         ) {
@@ -390,7 +382,7 @@ public struct LayoutCommandCLIService: Sendable {
             return jsonString(from: resultData)
         }
         return """
-        layout-command convert-document passed: \(result.inputFormat.rawValue) -> \(result.outputFormat.rawValue), \(result.summary.cellCount) cells, \(result.summary.shapeCount) shapes, \(result.outputPath)
+        layout-command convert-document passed: \(result.inputArtifact.format.rawValue) -> \(result.outputArtifact.format.rawValue), \(result.summary.cellCount) cells, \(result.summary.shapeCount) shapes, \(result.outputArtifact.path)
         """
     }
 
@@ -601,29 +593,32 @@ public struct LayoutCommandCLIService: Sendable {
         return try TechFormatConverter().loadTech(from: url)
     }
 
-    private func technologyArtifact(path: String?) throws -> LayoutCommandArtifact? {
+    private func technologyArtifact(path: String?) throws -> ArtifactReference? {
         guard let path else {
             return nil
         }
         let url = URL(fileURLWithPath: path)
-        let data = try Data(contentsOf: url)
-        return LayoutCommandArtifact(
-            id: "technology-profile",
-            kind: "technology",
-            format: url.pathExtension.isEmpty ? "TechnologyProfile" : url.pathExtension.uppercased(),
-            path: url.path,
-            sha256: Self.sha256Hex(data),
-            byteCount: data.count
+        let format: ArtifactFormat
+        if url.pathExtension.isEmpty {
+            format = .unknown
+        } else {
+            format = try ArtifactFormat(rawValue: url.pathExtension.lowercased())
+        }
+        return try referenceArtifact(
+            at: url,
+            role: "technology-profile",
+            kind: .technology,
+            format: format
         )
     }
 
     private func writeArtifact(
-        id: String,
-        kind: String,
-        format: String,
+        role: String,
+        kind: ArtifactKind,
+        format: ArtifactFormat,
         url: URL?,
         data: Data
-    ) throws -> LayoutCommandArtifact? {
+    ) throws -> ArtifactReference? {
         guard let url else {
             return nil
         }
@@ -632,17 +627,22 @@ public struct LayoutCommandCLIService: Sendable {
             withIntermediateDirectories: true
         )
         try data.write(to: url, options: .atomic)
-        return LayoutCommandArtifact(
-            id: id,
+        return try referenceArtifact(
+            at: url,
+            role: role,
             kind: kind,
             format: format,
-            path: url.path,
-            sha256: Self.sha256Hex(data),
-            byteCount: data.count
+            producer: try producerIdentity()
         )
     }
 
-    private func writeManifestIfRequested(artifacts: [LayoutCommandArtifact], to url: URL?) throws {
+    private func writeManifestIfRequested(
+        artifacts: [ArtifactReference],
+        inputs: [ArtifactReference],
+        to url: URL?,
+        entryPoint: String,
+        startedAt: Date
+    ) throws {
         guard let url else {
             return
         }
@@ -650,22 +650,53 @@ public struct LayoutCommandCLIService: Sendable {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let data = try encoder.encode(LayoutCommandArtifactManifest(artifacts: artifacts))
+        let producer = try producerIdentity()
+        let provenance = try ExecutionProvenance(
+            producer: producer,
+            inputs: inputs,
+            invocation: try ExecutionInvocation.inProcess(entryPoint: entryPoint),
+            startedAt: startedAt,
+            completedAt: Date()
+        )
+        let data = try encoder.encode(EvidenceManifest(provenance: provenance, artifacts: artifacts))
         try data.write(to: url, options: .atomic)
     }
 
-    private static func artifactFormat(for format: LayoutFileFormat) -> String {
-        switch format {
-        case .json:
-            return "LayoutDocumentJSON"
-        default:
-            return format.rawValue.uppercased()
-        }
+    private func referenceArtifact(
+        at url: URL,
+        role: String,
+        kind: ArtifactKind,
+        format: ArtifactFormat,
+        producer: ProducerIdentity? = nil
+    ) throws -> ArtifactReference {
+        let locator = ArtifactLocator(
+            location: try ArtifactLocation(fileURL: url),
+            role: try ArtifactRole(validatingRawValue: role),
+            kind: kind,
+            format: format
+        )
+        return try artifactReferencer.reference(locator, relativeTo: nil, producer: producer)
     }
 
-    private static func sha256Hex(_ data: Data) -> String {
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
+    private func producerIdentity() throws -> ProducerIdentity {
+        try ProducerIdentity(kind: .tool, identifier: "layout-command", version: "2")
+    }
+
+    private static func artifactFormat(for format: LayoutFileFormat) throws -> ArtifactFormat {
+        switch format {
+        case .json:
+            return .json
+        case .gds:
+            return .gdsii
+        case .oasis:
+            return .oasis
+        case .lef:
+            return .lef
+        case .def:
+            return .def
+        case .cif, .dxf, .odb:
+            return try ArtifactFormat(rawValue: format.rawValue)
+        }
     }
 
     private func jsonString(from data: Data) -> String {

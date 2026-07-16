@@ -1,41 +1,27 @@
+import CircuiteFoundation
 import Foundation
 import LayoutCore
 import LayoutIO
 
 public struct LayoutDocumentInspectionResult: Codable, Sendable, Equatable {
-    public let schemaVersion: Int
+    public let schemaVersion: SchemaVersion
     public let status: String
-    public let inputPath: String
-    public let inputFormat: LayoutFileFormat
-    public let technologyPath: String?
-    public let inputSHA256: String
-    public let inputByteCount: Int
-    public let resultPath: String?
-    public let artifactManifestPath: String?
+    public let inputArtifact: ArtifactReference
+    public let technologyArtifact: ArtifactReference?
     public let summary: LayoutDocumentSummary
     public let verification: LayoutDocumentInspectionVerification?
 
     public init(
         status: String? = nil,
-        inputPath: String,
-        inputFormat: LayoutFileFormat,
-        technologyPath: String?,
-        inputSHA256: String,
-        inputByteCount: Int,
-        resultPath: String? = nil,
-        artifactManifestPath: String? = nil,
+        inputArtifact: ArtifactReference,
+        technologyArtifact: ArtifactReference? = nil,
         summary: LayoutDocumentSummary,
         verification: LayoutDocumentInspectionVerification? = nil
     ) {
-        self.schemaVersion = 1
+        self.schemaVersion = .v2
         self.status = status ?? verification?.status ?? "unverified"
-        self.inputPath = inputPath
-        self.inputFormat = inputFormat
-        self.technologyPath = technologyPath
-        self.inputSHA256 = inputSHA256
-        self.inputByteCount = inputByteCount
-        self.resultPath = resultPath
-        self.artifactManifestPath = artifactManifestPath
+        self.inputArtifact = inputArtifact
+        self.technologyArtifact = technologyArtifact
         self.summary = summary
         self.verification = verification
     }

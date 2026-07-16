@@ -6,6 +6,8 @@
 - `LayoutCore.LayoutUnits` owns a validated `DatabaseUnitScale` and cannot
   represent a non-finite or non-positive database-unit scale.
 - The Foundation bridge is covered by the dedicated `LayoutCoreTests` suite.
+- `LayoutCommands` directly returns `ArtifactReference` values, persists
+  `EvidenceManifest`, and has no package-local artifact schema or digest path.
 - Deterministic import, hierarchy safety, and exact-geometry behavior are
   documented and covered by regression tests.
 - Package responsibilities and agent hand-off rules are documented in
@@ -35,8 +37,8 @@ signoff qualification remains outside this package's baseline completion.
 
 ## Next implementation work
 
-1. Migrate consuming engines to Foundation artifact/provenance types where
-   their outputs cross package boundaries.
+1. Keep consuming engines aligned with the Foundation artifact/provenance
+   contract now emitted directly by `LayoutCommands`.
 2. Add qualified technology-rule fixtures for exact DRC/LVS extraction.
-3. Extend CLI artifacts with immutable run references supplied by the flow
-   layer, without moving orchestration into this package.
+3. Extend flow-owned run references without duplicating artifact identity in
+   this package or moving orchestration into it.

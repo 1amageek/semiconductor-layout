@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -44,11 +45,11 @@ struct LayoutConstraintValidationCommandTests {
         #expect(FileManager.default.fileExists(atPath: fixture.manifestURL.path))
 
         let manifest = try JSONDecoder().decode(
-            LayoutCommandArtifactManifest.self,
+            EvidenceManifest.self,
             from: Data(contentsOf: fixture.manifestURL)
         )
-        #expect(manifest.artifacts.contains { $0.id == "input-layout-document" })
-        #expect(manifest.artifacts.contains { $0.id == "layout-constraint-validation-result" })
+        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "input-layout-document" })
+        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "layout-constraint-validation-result" })
     }
 
     @Test("CLI service returns zero when constraint errors are absent")

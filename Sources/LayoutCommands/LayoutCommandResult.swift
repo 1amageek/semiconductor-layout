@@ -1,14 +1,12 @@
+import CircuiteFoundation
 import Foundation
 
 public struct LayoutCommandResult: Codable, Sendable, Equatable {
-    public let schemaVersion: Int
+    public let schemaVersion: SchemaVersion
     public let status: String
     public let commandCount: Int
     public let appliedCommands: [LayoutAppliedCommand]
-    public let outputDocumentPath: String
-    public let outputDocumentSHA256: String
-    public let outputDocumentByteCount: Int
-    public let artifactManifestPath: String
+    public let outputArtifact: ArtifactReference
     public let cellCount: Int
     public let shapeCount: Int
     public let viaCount: Int
@@ -16,14 +14,11 @@ public struct LayoutCommandResult: Codable, Sendable, Equatable {
     public let netCount: Int
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: SchemaVersion = .v2,
         status: String,
         commandCount: Int,
         appliedCommands: [LayoutAppliedCommand],
-        outputDocumentPath: String,
-        outputDocumentSHA256: String,
-        outputDocumentByteCount: Int,
-        artifactManifestPath: String,
+        outputArtifact: ArtifactReference,
         cellCount: Int,
         shapeCount: Int,
         viaCount: Int,
@@ -34,10 +29,7 @@ public struct LayoutCommandResult: Codable, Sendable, Equatable {
         self.status = status
         self.commandCount = commandCount
         self.appliedCommands = appliedCommands
-        self.outputDocumentPath = outputDocumentPath
-        self.outputDocumentSHA256 = outputDocumentSHA256
-        self.outputDocumentByteCount = outputDocumentByteCount
-        self.artifactManifestPath = artifactManifestPath
+        self.outputArtifact = outputArtifact
         self.cellCount = cellCount
         self.shapeCount = shapeCount
         self.viaCount = viaCount

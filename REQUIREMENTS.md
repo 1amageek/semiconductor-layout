@@ -18,7 +18,9 @@
 | Unit boundary | `LayoutUnits(scale:)` and `validatedScale` use `DatabaseUnitScale` |
 | Dependency direction | Foundation is depended on by domain targets; Foundation never imports layout targets |
 | Domain ownership | Geometry, rules, extraction, and DRC result types remain in this package |
-| Evidence readiness | Higher layers can attach Foundation artifact/provenance values without parsing log text |
+| Evidence contract | `LayoutCommands` returns `ArtifactReference`, persists `EvidenceManifest`, and injects `ArtifactReferencing` directly |
+| Artifact SSOT | Result JSON never duplicates artifact location, digest, or byte count outside `ArtifactReference` |
+| Command execution | Public command execution is expressed by `LayoutCommandRunning`; the native runner conforms directly |
 
 ## Explicit non-goals
 

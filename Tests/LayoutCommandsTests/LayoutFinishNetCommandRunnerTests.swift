@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -400,19 +401,19 @@ struct LayoutFinishNetCommandRunnerTests {
     ) throws {
         let manifestURL = root.appendingPathComponent("artifacts/manifest.json")
         let manifest = try JSONDecoder().decode(
-            LayoutCommandArtifactManifest.self,
+            EvidenceManifest.self,
             from: Data(contentsOf: manifestURL)
         )
         if artifactID == "layout-finish-net-2" {
             #expect(manifest.artifacts.count == 3)
         }
         let reportURL = root.appendingPathComponent("artifacts/finish-net-report.json")
-        let reportArtifact = try #require(manifest.artifacts.first { $0.id == artifactID })
-        #expect(reportArtifact.kind == "layout-finish-net-report")
-        #expect(reportArtifact.format == "LayoutFinishNetReportJSON")
+        let reportArtifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == artifactID })
+        #expect(reportArtifact.kind == .report)
+        #expect(reportArtifact.format == .json)
         #expect(reportArtifact.path == reportURL.path)
-        #expect(reportArtifact.sha256 == LayoutCommandRunner.sha256Hex(reportData))
-        #expect(reportArtifact.byteCount == reportData.count)
+        #expect(reportArtifact.digest == (try SHA256ContentDigester().digest(data: reportData, using: .sha256)))
+        #expect(reportArtifact.byteCount == UInt64(reportData.count))
     }
 
     private func makeRoot() throws -> URL {

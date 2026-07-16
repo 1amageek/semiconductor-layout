@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -26,7 +27,7 @@ struct LayoutConnectivityDiagnosisTests {
 
         #expect(response.exitCode == 0)
         #expect(result.status == "passed")
-        #expect(result.inputFormat == .json)
+        #expect(result.inputArtifact.format == .json)
         #expect(result.diagnosis.totals.netCount == 1)
         #expect(result.diagnosis.totals.openCount == 0)
         #expect(result.diagnosis.totals.shortCount == 0)

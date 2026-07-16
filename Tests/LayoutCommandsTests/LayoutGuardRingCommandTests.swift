@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutAutoGen
 import LayoutCommands
@@ -68,10 +69,10 @@ struct LayoutGuardRingCommandTests {
         #expect(report.contactCount > 0)
 
         let manifest = try JSONDecoder().decode(
-            LayoutCommandArtifactManifest.self,
+            EvidenceManifest.self,
             from: Data(contentsOf: rootURL.appendingPathComponent("artifacts/manifest.json"))
         )
-        #expect(manifest.artifacts.contains { $0.id == "layout-guard-ring-2" })
+        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "layout-guard-ring-2" })
     }
 
     private func makeRootURL() throws -> URL {

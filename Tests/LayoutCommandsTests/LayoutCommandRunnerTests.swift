@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -184,7 +185,7 @@ struct LayoutCommandRunnerTests {
     private func expectReplayedDocument(root: URL, result: LayoutCommandResult) throws -> Data {
         let documentURL = root.appendingPathComponent("artifacts/layout.json")
         let documentData = try Data(contentsOf: documentURL)
-        #expect(LayoutCommandRunner.sha256Hex(documentData) == result.outputDocumentSHA256)
+        #expect(result.outputArtifact.digest == (try SHA256ContentDigester().digest(data: documentData, using: .sha256)))
         let document = try LayoutDocumentSerializer().decodeDocument(documentData)
         #expect(document.id == documentID)
         #expect(document.topCellID == cellID)
@@ -248,23 +249,23 @@ struct LayoutCommandRunnerTests {
         #expect(FileManager.default.fileExists(atPath: documentURL.path))
         #expect(FileManager.default.fileExists(atPath: manifestURL.path))
         #expect(FileManager.default.fileExists(atPath: resultURL.path))
-        let manifest = try JSONDecoder().decode(LayoutCommandArtifactManifest.self, from: Data(contentsOf: manifestURL))
+        let manifest = try JSONDecoder().decode(EvidenceManifest.self, from: Data(contentsOf: manifestURL))
         #expect(manifest.artifacts.count == 2)
-        let artifact = try #require(manifest.artifacts.first { $0.id == "output-layout-document" })
-        #expect(artifact.kind == "layout")
-        #expect(artifact.format == "LayoutDocumentJSON")
+        let artifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "output-layout-document" })
+        #expect(artifact.kind == .layout)
+        #expect(artifact.format == .json)
         #expect(artifact.path == documentURL.path)
-        #expect(artifact.sha256 == result.outputDocumentSHA256)
-        #expect(artifact.byteCount == documentData.count)
+        #expect(artifact == result.outputArtifact)
+        #expect(artifact.byteCount == UInt64(documentData.count))
         let savedResult = try JSONDecoder().decode(LayoutCommandResult.self, from: Data(contentsOf: resultURL))
         #expect(savedResult == result)
         let resultData = try Data(contentsOf: resultURL)
-        let resultArtifact = try #require(manifest.artifacts.first { $0.id == "layout-command-result" })
-        #expect(resultArtifact.kind == "result")
-        #expect(resultArtifact.format == "LayoutCommandResultJSON")
+        let resultArtifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "layout-command-result" })
+        #expect(resultArtifact.kind == .report)
+        #expect(resultArtifact.format == .json)
         #expect(resultArtifact.path == resultURL.path)
-        #expect(resultArtifact.sha256 == LayoutCommandRunner.sha256Hex(resultData))
-        #expect(resultArtifact.byteCount == resultData.count)
+        #expect(resultArtifact.digest == (try SHA256ContentDigester().digest(data: resultData, using: .sha256)))
+        #expect(resultArtifact.byteCount == UInt64(resultData.count))
     }
 
     @Test("Runner creates generic polygon and path shapes")
@@ -668,16 +669,16 @@ struct LayoutCommandRunnerTests {
 
         let manifestURL = root.appendingPathComponent("artifacts/manifest.json")
         let manifest = try JSONDecoder().decode(
-            LayoutCommandArtifactManifest.self,
+            EvidenceManifest.self,
             from: Data(contentsOf: manifestURL)
         )
         #expect(manifest.artifacts.count == 3)
-        let repairArtifact = try #require(manifest.artifacts.first { $0.id == "layout-repair-sweep-0" })
-        #expect(repairArtifact.kind == "layout-repair-sweep")
-        #expect(repairArtifact.format == "LayoutRepairSweepReportJSON")
+        let repairArtifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "layout-repair-sweep-0" })
+        #expect(repairArtifact.kind == .report)
+        #expect(repairArtifact.format == .json)
         #expect(repairArtifact.path == reportURL.path)
-        #expect(repairArtifact.sha256 == LayoutCommandRunner.sha256Hex(reportData))
-        #expect(repairArtifact.byteCount == reportData.count)
+        #expect(repairArtifact.digest == (try SHA256ContentDigester().digest(data: reportData, using: .sha256)))
+        #expect(repairArtifact.byteCount == UInt64(reportData.count))
     }
 
     @Test("Runner resizes and splits polygon shapes")
@@ -1606,8 +1607,8 @@ struct LayoutCommandRunnerTests {
         #expect(results.second.status == "passed")
         #expect(results.first.commandCount == 4)
         #expect(results.second.commandCount == 4)
-        #expect(results.first.outputDocumentSHA256 == results.second.outputDocumentSHA256)
-        #expect(results.first.outputDocumentByteCount == results.second.outputDocumentByteCount)
+        #expect(results.first.outputArtifact.digest == results.second.outputArtifact.digest)
+        #expect(results.first.outputArtifact.byteCount == results.second.outputArtifact.byteCount)
         #expect(results.first.appliedCommands == results.second.appliedCommands)
     }
 
@@ -1620,12 +1621,12 @@ struct LayoutCommandRunnerTests {
         #expect(firstDocumentData == secondDocumentData)
 
         let firstManifest = try JSONDecoder().decode(
-            LayoutCommandArtifactManifest.self,
+            EvidenceManifest.self,
             from: Data(contentsOf: roots.first.appendingPathComponent("artifacts/manifest.json"))
         )
-        let layoutArtifact = try #require(firstManifest.artifacts.first { $0.id == "output-layout-document" })
-        #expect(layoutArtifact.sha256 == firstResult.outputDocumentSHA256)
-        #expect(layoutArtifact.byteCount == firstDocumentData.count)
+        let layoutArtifact = try #require(firstManifest.artifacts.first { $0.locator.role.rawValue == "output-layout-document" })
+        #expect(layoutArtifact == firstResult.outputArtifact)
+        #expect(layoutArtifact.byteCount == UInt64(firstDocumentData.count))
     }
 
     private func removeTemporaryRoots(_ roots: [URL]) {

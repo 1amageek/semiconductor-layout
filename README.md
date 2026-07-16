@@ -22,6 +22,8 @@ flowchart LR
   Core --> Verify["LayoutVerify\nDRC/connectivity"]
   Core --> Auto["LayoutAutoGen\nplacement/routing"]
   Core --> Editor["LayoutEditor\ninteractive editing"]
+  Foundation --> Commands["LayoutCommands\nFoundation-native evidence"]
+  Core --> Commands
 ```
 
 `LayoutCore.LayoutUnits` owns a validated
@@ -32,6 +34,13 @@ convert coordinates without carrying an invalid unit state.
 `CircuiteFoundation` supplies shared artifact, evidence, diagnostic, and
 engine vocabulary. Layout geometry, technology rules, DRC violations, and
 repair algorithms remain owned here.
+
+`LayoutCommands` emits `ArtifactReference` values and persists
+`EvidenceManifest` directly. Artifact locations, roles, kinds, formats,
+SHA-256 digests, and byte counts have a single source of truth in
+`CircuiteFoundation`; command result JSON does not duplicate those fields.
+Artifact creation is injected through `ArtifactReferencing` and defaults to
+`LocalArtifactReferencer`.
 
 ## Products
 
@@ -61,6 +70,8 @@ repair algorithms remain owned here.
   results.
 - Standard mask formats and structured JSON artifacts are the interchange
   boundary; project and run orchestration belongs to higher-level packages.
+- Every `layout-command` evidence manifest uses Foundation schema v2,
+  execution provenance, and Foundation artifact references.
 
 ## Build and test
 

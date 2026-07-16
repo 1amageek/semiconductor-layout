@@ -1,13 +1,13 @@
 import Foundation
 
-struct LayoutCommandArtifactPathPlan: Sendable, Equatable {
+struct LayoutCommandOutputPathPlan: Sendable, Equatable {
     let inputURL: URL
     let outputURL: URL?
     let resultURL: URL?
     let manifestURL: URL?
 
-    static func conversion(_ request: LayoutDocumentConversionRequest) throws -> LayoutCommandArtifactPathPlan {
-        let plan = LayoutCommandArtifactPathPlan(
+    static func conversion(_ request: LayoutDocumentConversionRequest) throws -> LayoutCommandOutputPathPlan {
+        let plan = LayoutCommandOutputPathPlan(
             inputURL: URL(fileURLWithPath: request.inputPath),
             outputURL: URL(fileURLWithPath: request.outputPath),
             resultURL: request.resultPath.map { URL(fileURLWithPath: $0) },
@@ -22,8 +22,8 @@ struct LayoutCommandArtifactPathPlan: Sendable, Equatable {
         return plan
     }
 
-    static func inspection(_ request: LayoutDocumentInspectionRequest) throws -> LayoutCommandArtifactPathPlan {
-        let plan = LayoutCommandArtifactPathPlan(
+    static func inspection(_ request: LayoutDocumentInspectionRequest) throws -> LayoutCommandOutputPathPlan {
+        let plan = LayoutCommandOutputPathPlan(
             inputURL: URL(fileURLWithPath: request.inputPath),
             outputURL: nil,
             resultURL: request.resultPath.map { URL(fileURLWithPath: $0) },
@@ -37,8 +37,8 @@ struct LayoutCommandArtifactPathPlan: Sendable, Equatable {
         return plan
     }
 
-    static func constraintValidation(_ request: LayoutConstraintValidationRequest) throws -> LayoutCommandArtifactPathPlan {
-        let plan = LayoutCommandArtifactPathPlan(
+    static func constraintValidation(_ request: LayoutConstraintValidationRequest) throws -> LayoutCommandOutputPathPlan {
+        let plan = LayoutCommandOutputPathPlan(
             inputURL: URL(fileURLWithPath: request.inputPath),
             outputURL: nil,
             resultURL: request.resultPath.map { URL(fileURLWithPath: $0) },

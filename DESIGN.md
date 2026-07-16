@@ -18,7 +18,7 @@ policy, or the cross-engine workflow.
 | `LayoutLVSExtraction` | Layout extraction deck/IR preparation and audit | Netlist comparison policy owned by verification consumers |
 | `LayoutAutoGen` | Placement/routing/generation algorithms | Tool trust or human approval |
 | `LayoutEditor` | Interactive command application and live feedback | Persistence workflow |
-| `LayoutCommands` | Replayable command and artifact-producing CLI services | Long-running orchestration |
+| `LayoutCommands` | Replayable commands plus Foundation-native artifact references and evidence manifests | Long-running orchestration |
 
 ## Shared foundation contract
 
@@ -32,6 +32,14 @@ policy, or the cross-engine workflow.
 4. Layout-specific types remain strongly typed and are not replaced by generic
    Foundation values.
 
+`LayoutCommands` depends on `CircuiteFoundation` directly. Its public result
+types carry `ArtifactReference` values instead of parallel path, digest, and
+byte-count fields. The CLI persists `EvidenceManifest` with
+`ExecutionProvenance`; `ArtifactReferencing` is the protocol boundary and
+`LocalArtifactReferencer` is the default implementation. No layout-specific
+artifact facade or compatibility schema exists. `LayoutCommandRunning` is the
+execution boundary; `LayoutCommandRunner` conforms directly.
+
 ```mermaid
 flowchart TD
   Input["GDSII/OASIS/LEF/DEF/JSON"] --> IO["LayoutIO"]
@@ -41,6 +49,8 @@ flowchart TD
   Verify --> Findings["layout findings\nowned by this package"]
   Findings --> Higher["Xcircuite / flow orchestration"]
   Foundation["CircuiteFoundation\nunits + evidence vocabulary"] --> IO
+  Foundation --> Commands["LayoutCommands\nArtifactReference + EvidenceManifest"]
+  State --> Commands
   Foundation --> Higher
 ```
 

@@ -1,3 +1,4 @@
+import CircuiteFoundation
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -98,7 +99,7 @@ struct LayoutCommandCLIServiceFormatTests {
         )
 
         #expect(inspection.status == "passed")
-        #expect(inspection.inputFormat == .def)
+        #expect(inspection.inputArtifact.format == .def)
         #expect(inspection.summary.netCount == 2)
         #expect(inspection.summary.shapeCount == 4)
         #expect(inspection.summary.viaCount == 2)
@@ -357,12 +358,11 @@ struct LayoutCommandCLIServiceFormatTests {
         fixture: Fixture
     ) {
         #expect(result.status == "passed")
-        #expect(result.outputFormat == .gds)
-        #expect(result.outputByteCount > 0)
-        #expect(result.outputSHA256.count == 64)
-        #expect(result.inputSHA256.count == 64)
-        #expect(result.resultPath == fixture.conversionResultURL.path)
-        #expect(result.artifactManifestPath == fixture.conversionManifestURL.path)
+        #expect(result.outputArtifact.format == .gdsii)
+        #expect(result.outputArtifact.byteCount > 0)
+        #expect(result.outputArtifact.digest.hexadecimalValue.count == 64)
+        #expect(result.inputArtifact.digest.hexadecimalValue.count == 64)
+        #expect(result.outputArtifact.path == fixture.gdsURL.path)
         #expect(result.summary.cellCount == 1)
         #expect(result.summary.shapeCount == 3)
         #expect(FileManager.default.fileExists(atPath: fixture.gdsURL.path))
@@ -374,22 +374,20 @@ struct LayoutCommandCLIServiceFormatTests {
         _ result: LayoutDocumentConversionResult,
         fixture: Fixture
     ) throws {
-        let manifest = try decodeFile(LayoutCommandArtifactManifest.self, from: fixture.conversionManifestURL)
+        let manifest = try decodeFile(EvidenceManifest.self, from: fixture.conversionManifestURL)
         #expect(manifest.artifacts.contains {
-            $0.id == "input-layout-document"
-                && $0.sha256 == result.inputSHA256
-                && $0.byteCount == result.inputByteCount
+            $0.locator.role.rawValue == "input-layout-document"
+                && $0 == result.inputArtifact
         })
         #expect(manifest.artifacts.contains {
-            $0.id == "output-layout-document"
-                && $0.sha256 == result.outputSHA256
-                && $0.byteCount == result.outputByteCount
+            $0.locator.role.rawValue == "output-layout-document"
+                && $0 == result.outputArtifact
         })
         #expect(manifest.artifacts.contains {
-            $0.id == "technology-profile" && $0.path == fixture.techURL.path
+            $0.locator.role.rawValue == "technology-profile" && $0.path == fixture.techURL.path
         })
         #expect(manifest.artifacts.contains {
-            $0.id == "layout-conversion-result" && $0.path == fixture.conversionResultURL.path
+            $0.locator.role.rawValue == "layout-conversion-result" && $0.path == fixture.conversionResultURL.path
         })
     }
 
@@ -398,11 +396,9 @@ struct LayoutCommandCLIServiceFormatTests {
         fixture: Fixture
     ) throws {
         #expect(result.status == "passed")
-        #expect(result.inputFormat == .gds)
-        #expect(result.inputSHA256.count == 64)
-        #expect(result.inputByteCount > 0)
-        #expect(result.resultPath == fixture.inspectionResultURL.path)
-        #expect(result.artifactManifestPath == fixture.inspectionManifestURL.path)
+        #expect(result.inputArtifact.format == .gdsii)
+        #expect(result.inputArtifact.digest.hexadecimalValue.count == 64)
+        #expect(result.inputArtifact.byteCount > 0)
         #expect(result.summary.cellCount == 1)
         #expect(result.summary.shapeCount == 3)
         #expect(result.summary.layerUsage.contains {
@@ -423,24 +419,23 @@ struct LayoutCommandCLIServiceFormatTests {
         _ result: LayoutDocumentInspectionResult,
         fixture: Fixture
     ) throws {
-        let manifest = try decodeFile(LayoutCommandArtifactManifest.self, from: fixture.inspectionManifestURL)
+        let manifest = try decodeFile(EvidenceManifest.self, from: fixture.inspectionManifestURL)
         #expect(manifest.artifacts.contains {
-            $0.id == "input-layout-document"
-                && $0.sha256 == result.inputSHA256
-                && $0.byteCount == result.inputByteCount
+            $0.locator.role.rawValue == "input-layout-document"
+                && $0 == result.inputArtifact
         })
         #expect(manifest.artifacts.contains {
-            $0.id == "technology-profile" && $0.path == fixture.techURL.path
+            $0.locator.role.rawValue == "technology-profile" && $0.path == fixture.techURL.path
         })
         #expect(manifest.artifacts.contains {
-            $0.id == "layout-inspection-result" && $0.path == fixture.inspectionResultURL.path
+            $0.locator.role.rawValue == "layout-inspection-result" && $0.path == fixture.inspectionResultURL.path
         })
     }
 
     private static func expectPlacementDEFConversion(_ conversion: LayoutDocumentConversionResult) {
         #expect(conversion.status == "passed")
-        #expect(conversion.outputFormat == .def)
-        #expect(conversion.outputByteCount > 0)
+        #expect(conversion.outputArtifact.format == .def)
+        #expect(conversion.outputArtifact.byteCount > 0)
         #expect(conversion.summary.cellCount == 2)
         #expect(conversion.summary.instanceCount == 1)
     }
@@ -450,7 +445,7 @@ struct LayoutCommandCLIServiceFormatTests {
         fixture: PlacementFixture
     ) {
         #expect(inspection.status == "passed")
-        #expect(inspection.inputFormat == .def)
+        #expect(inspection.inputArtifact.format == .def)
         #expect(inspection.summary.cellCount == 2)
         #expect(inspection.summary.instanceCount == 1)
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))

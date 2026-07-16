@@ -80,6 +80,7 @@ let package = Package(
                 "LayoutIO",
                 "LayoutIntegration",
                 "LayoutAutoGen",
+                .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
             ]
@@ -94,7 +95,14 @@ let package = Package(
         ),
         .target(
             name: "LayoutCommands",
-            dependencies: ["LayoutCore", "LayoutIO", "LayoutTech", "LayoutVerify", "LayoutAutoGen"]
+            dependencies: [
+                "LayoutCore",
+                "LayoutIO",
+                "LayoutTech",
+                "LayoutVerify",
+                "LayoutAutoGen",
+                .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
+            ]
         ),
         .executableTarget(
             name: "LayoutCommandCLI",
@@ -106,6 +114,7 @@ let package = Package(
                 "LayoutIO",
                 "LayoutCore",
                 "LayoutTech",
+                .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
@@ -163,6 +172,7 @@ let package = Package(
                 "LayoutIO",
                 "LayoutTech",
                 "LayoutVerify",
+                .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
             ],
             resources: [
                 .process("Fixtures"),
