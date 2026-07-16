@@ -1,5 +1,36 @@
 // swift-tools-version: 6.3
 import PackageDescription
+import Foundation
+
+let workspaceRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+let circuiteFoundationDependency: Package.Dependency = FileManager.default.fileExists(
+    atPath: workspaceRoot.appendingPathComponent("CircuiteFoundation/Package.swift").path
+)
+    ? .package(path: "../CircuiteFoundation")
+    : .package(
+        url: "https://github.com/1amageek/CircuiteFoundation.git",
+        revision: "2ec6ee13a89ac6885be3c26b41a9ee0ef89948ac"
+    )
+
+let swiftMaskDataDependency: Package.Dependency = FileManager.default.fileExists(
+    atPath: workspaceRoot.appendingPathComponent("swift-mask-data/Package.swift").path
+)
+    ? .package(path: "../swift-mask-data")
+    : .package(
+        url: "https://github.com/1amageek/swift-mask-data.git",
+        revision: "69e345fb89b47884bc80fad1c293005a8156e78b"
+    )
+
+let signoffToolSupportDependency: Package.Dependency = FileManager.default.fileExists(
+    atPath: workspaceRoot.appendingPathComponent("SignoffToolSupport/Package.swift").path
+)
+    ? .package(path: "../SignoffToolSupport")
+    : .package(
+        url: "https://github.com/1amageek/SignoffToolSupport.git",
+        revision: "7bfd1864edd147c59a1dc79e58f297120d165323"
+    )
 
 let package = Package(
     name: "SemiconductorLayout",
@@ -18,9 +49,9 @@ let package = Package(
         .executable(name: "layout-command", targets: ["LayoutCommandCLI"]),
     ],
     dependencies: [
-        .package(path: "../CircuiteFoundation"),
-        .package(path: "../swift-mask-data"),
-        .package(path: "../SignoffToolSupport"),
+        circuiteFoundationDependency,
+        swiftMaskDataDependency,
+        signoffToolSupportDependency,
     ],
     targets: [
         .target(
