@@ -153,7 +153,7 @@ public struct IRLayoutBridge: Sendable {
                     try requireMappedLayer(
                         gdsLayer: Int(text.layer),
                         gdsDatatype: Int(text.texttype),
-                        layerMap: layerMap.ids,
+                        layerMap: layerMap.textIDs,
                         context: "text in cell '\(cell.name)'"
                     )
                 case .cellRef(let reference):
@@ -296,7 +296,12 @@ public struct IRLayoutBridge: Sendable {
                     netIDByName: netIDByName
                 ))
             case .text(let t):
-                if let label = convertText(t, dbu: dbu, layerMap: layerMap.ids, netIDByName: netIDByName) {
+                if let label = convertText(
+                    t,
+                    dbu: dbu,
+                    layerMap: layerMap.textIDs,
+                    netIDByName: netIDByName
+                ) {
                     labels.append(label)
                 }
             case .cellRef(let r):
@@ -681,7 +686,11 @@ public struct IRLayoutBridge: Sendable {
         }
 
         for label in cell.labels {
-            let (layer, texttype) = try exportedLayerPair(label.layer, reverseLayerMap: reverseLayerMap, context: "label '\(label.id)' in cell '\(cell.name)'")
+            let (layer, texttype) = try exportedLabelLayerPair(
+                label.layer,
+                reverseLayerMap: reverseLayerMap,
+                context: "label '\(label.id)' in cell '\(cell.name)'"
+            )
             elements.append(.text(IRText(
                 layer: layer, texttype: texttype,
                 transform: .identity,
@@ -1103,28 +1112,46 @@ public struct IRLayoutBridge: Sendable {
 
     private struct LayerMap {
         let ids: [LayerKey: LayoutLayerID]
+        let textIDs: [LayerKey: LayoutLayerID]
         let idsByDEFName: [String: LayoutLayerID]
         let tech: LayoutTechDatabase
     }
 
     private struct ReverseLayerMap {
         let ids: [LayoutLayerID: (Int16, Int16)]
+        let labelIDsByName: [String: (Int16, Int16)]
         let tech: LayoutTechDatabase
     }
 
     private func buildLayerMap(tech: LayoutTechDatabase) -> LayerMap {
         var map: [LayerKey: LayoutLayerID] = [:]
+        var textMap: [LayerKey: LayoutLayerID] = [:]
         var names: [String: LayoutLayerID] = [:]
         for def in tech.layers {
-            map[LayerKey(gdsLayer: def.gdsLayer, gdsDatatype: def.gdsDatatype)] = def.id
+            let key = LayerKey(gdsLayer: def.gdsLayer, gdsDatatype: def.gdsDatatype)
+            map[key] = def.id
+            textMap[key] = def.id
             names[normalizedDEFName(def.id.name)] = def.id
             names[normalizedDEFName(def.displayName)] = def.id
         }
-        return LayerMap(ids: map, idsByDEFName: names, tech: tech)
+        // A GDS text record carries its semantic purpose in TEXTTYPE. The
+        // editor model already carries that semantic in LayoutLabel itself,
+        // so expose the conductor layer as the label's layer. This keeps a
+        // label on met1 connected to met1 while preserving the foundry's
+        // distinct met1/label GDS pair at the serialization boundary.
+        for def in tech.layers where def.id.purpose == "label" {
+            let conductorID = tech.layers.first {
+                $0.id.name == def.id.name && $0.id.purpose == "drawing"
+            }?.id ?? def.id
+            let key = LayerKey(gdsLayer: def.gdsLayer, gdsDatatype: def.gdsDatatype)
+            textMap[key] = conductorID
+        }
+        return LayerMap(ids: map, textIDs: textMap, idsByDEFName: names, tech: tech)
     }
 
     private func buildReverseLayerMap(tech: LayoutTechDatabase) throws -> ReverseLayerMap {
         var map: [LayoutLayerID: (Int16, Int16)] = [:]
+        var labelMap: [String: (Int16, Int16)] = [:]
         for def in tech.layers {
             guard def.gdsLayer >= Int(Int16.min), def.gdsLayer <= Int(Int16.max),
                   def.gdsDatatype >= Int(Int16.min), def.gdsDatatype <= Int(Int16.max) else {
@@ -1132,9 +1159,33 @@ public struct IRLayoutBridge: Sendable {
                     "Layer '\(def.id)' has GDS layer/datatype outside Int16 range"
                 )
             }
-            map[def.id] = (Int16(def.gdsLayer), Int16(def.gdsDatatype))
+            let pair = (Int16(def.gdsLayer), Int16(def.gdsDatatype))
+            guard map[def.id] == nil else {
+                throw LayoutIOError.conversionFailed(
+                    "Technology has duplicate layer identifier '\(def.id.name)/\(def.id.purpose)'"
+                )
+            }
+            map[def.id] = pair
+            if def.id.purpose == "label" {
+                labelMap[def.id.name] = pair
+            }
         }
-        return ReverseLayerMap(ids: map, tech: tech)
+        return ReverseLayerMap(ids: map, labelIDsByName: labelMap, tech: tech)
+    }
+
+    private func exportedLabelLayerPair(
+        _ layerID: LayoutLayerID,
+        reverseLayerMap: ReverseLayerMap,
+        context: String
+    ) throws -> (Int16, Int16) {
+        if let pair = reverseLayerMap.labelIDsByName[layerID.name] {
+            return pair
+        }
+        return try exportedLayerPair(
+            layerID,
+            reverseLayerMap: reverseLayerMap,
+            context: context
+        )
     }
 
     private func resolveLayer(gdsLayer: Int, gdsDatatype: Int, layerMap: [LayerKey: LayoutLayerID]) -> LayoutLayerID {
