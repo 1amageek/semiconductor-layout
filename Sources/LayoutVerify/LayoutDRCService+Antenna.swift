@@ -10,7 +10,7 @@ extension LayoutDRCService {
         vias: [LayoutVia],
         pins: [LayoutPin],
         tech: LayoutTechDatabase
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         guard !tech.antennaRules.isEmpty else { return [] }
 
         let stack: LayoutConductorStack
@@ -264,7 +264,7 @@ extension LayoutDRCService {
                 for staged in rulesByRank[rank] ?? [] {
                     let rule = staged.rule
                     let layerShapes = componentShapes.filter { $0.layer == rule.layerID }
-                    let layerArea = mergedArea(of: layerShapes, dbu: dbu)
+                    let layerArea = try mergedArea(of: layerShapes, dbu: dbu)
                     if layerArea > 0 {
                         let ratio = layerArea / gateArea
                         if ratio > rule.maxRatio {
@@ -293,7 +293,7 @@ extension LayoutDRCService {
                         for contributing in stagedRules where contributing.rank <= rank {
                             guard seenLayers.insert(contributing.rule.layerID).inserted else { continue }
                             let shapesOnLayer = componentShapes.filter { $0.layer == contributing.rule.layerID }
-                            cumulativeArea += mergedArea(of: shapesOnLayer, dbu: dbu)
+                            cumulativeArea += try mergedArea(of: shapesOnLayer, dbu: dbu)
                             cumulativeShapes.append(contentsOf: shapesOnLayer)
                         }
                         guard cumulativeArea > 0 else { continue }
@@ -337,9 +337,9 @@ extension LayoutDRCService {
         return result
     }
 
-    private func mergedArea(of shapes: [LayoutShape], dbu: Double) -> Double {
+    private func mergedArea(of shapes: [LayoutShape], dbu: Double) throws -> Double {
         guard !shapes.isEmpty else { return 0 }
-        let region = mergedRegion(of: shapes, dbu: dbu)
+        let region = try mergedRegion(of: shapes, dbu: dbu)
         return abs(Double(region.area)) / (dbu * dbu)
     }
 }

@@ -43,7 +43,11 @@ public struct LayoutDRCService {
         guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
             return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
         }
-        return LayoutDRCResult(violations: collectViolations(context: context, tech: tech))
+        do {
+            return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech))
+        } catch {
+            return LayoutDRCResult(diagnostics: [geometryOperationDiagnostic(error)])
+        }
     }
 
     public func runChecked(
@@ -92,7 +96,11 @@ public struct LayoutDRCService {
                 topCellID: document.topCellID
             )
         }
-        return LayoutDRCResult(violations: collectViolations(context: context, tech: tech))
+        do {
+            return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech))
+        } catch {
+            throw LayoutDRCServiceError.geometryOperationFailed(message: String(describing: error))
+        }
     }
 
     private func unsupportedExactGeometryDiagnostics(
@@ -246,26 +254,26 @@ public struct LayoutDRCService {
     private func collectViolations(
         context: LayoutDRCRunContext,
         tech: LayoutTechDatabase
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
 
         violations.append(contentsOf: context.terminalConflicts.map(makeTerminalConflictViolation))
         violations.append(contentsOf: checkRuleCoverage(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkForbiddenLayers(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkWidthAndArea(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkWidthAndArea(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkRectangularGeometry(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkAngleRules(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkSpacing(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkSpacingRules(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkViaEnclosure(shapes: context.shapes, vias: context.vias, tech: tech))
-        violations.append(contentsOf: checkMinimumCuts(shapes: context.shapes, vias: context.vias, tech: tech))
+        violations.append(contentsOf: try checkSpacing(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkSpacingRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkViaEnclosure(shapes: context.shapes, vias: context.vias, tech: tech))
+        violations.append(contentsOf: try checkMinimumCuts(shapes: context.shapes, vias: context.vias, tech: tech))
         violations.append(contentsOf: checkExactOverlaps(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkEnclosureRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkEnclosureRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkExtensionRules(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkDensity(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkDensity(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkShorts(shapes: context.shapes))
         violations.append(contentsOf: checkOpens(shapes: context.shapes, vias: context.vias, tech: tech))
-        violations.append(contentsOf: checkAntenna(
+        violations.append(contentsOf: try checkAntenna(
             shapes: context.shapes,
             vias: context.vias,
             pins: context.pins,
@@ -289,6 +297,19 @@ public struct LayoutDRCService {
                 "inspect_document_cells",
                 "set_valid_top_cell",
                 "pass_existing_cell_id"
+            ]
+        )
+    }
+
+    func geometryOperationDiagnostic(_ error: any Error) -> LayoutDRCDiagnostic {
+        LayoutDRCDiagnostic(
+            code: "drc.geometry_operation_failed",
+            severity: .error,
+            message: "Exact DRC geometry operation failed: \(error)",
+            suggestedActions: [
+                "inspect_geometry_validity",
+                "inspect_database_unit_scale",
+                "rerun_exact_geometry_validation"
             ]
         )
     }
@@ -336,20 +357,20 @@ public struct LayoutDRCService {
         }
     }
 
-    func checkWidthAndArea(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkWidthAndArea(shapes: [LayoutShape], tech: LayoutTechDatabase) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
 
         for (layer, layerShapes) in grouped {
             guard let rules = tech.ruleSet(for: layer) else { continue }
-            let merged = mergedRegion(of: layerShapes, dbu: dbu)
+            let merged = try mergedRegion(of: layerShapes, dbu: dbu)
             if merged.isEmpty { continue }
 
             if rules.minWidth > 0 {
                 let minWidthDBU = Int32((rules.minWidth * dbu).rounded())
                 var reportedRegions: Set<LayoutRect> = []
-                for pair in merged.widthViolations(minWidth: minWidthDBU) {
+                for pair in try merged.widthViolations(minWidth: minWidthDBU) {
                     let rect = edgePairToRect(pair, dbu: dbu)
                     guard reportedRegions.insert(rect).inserted else { continue }
                     let measured = pair.distance / dbu
@@ -397,7 +418,7 @@ public struct LayoutDRCService {
             }
 
             if let minEnclosedArea = rules.minEnclosedArea, minEnclosedArea > 0 {
-                for hole in merged.holes() {
+                for hole in try merged.holes() {
                     let area = Double(hole.area) / (dbu * dbu)
                     guard area > 0, area + Self.numericalTolerance < minEnclosedArea else { continue }
                     guard let bb = hole.boundingBox else { continue }
@@ -561,7 +582,7 @@ public struct LayoutDRCService {
     /// touching or overlapping shapes never flag (they are one feature), and
     /// any exterior gap narrower than the rule flags regardless of net —
     /// including notches within one feature and diagonal corner gaps.
-    func checkSpacing(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkSpacing(shapes: [LayoutShape], tech: LayoutTechDatabase) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
@@ -570,12 +591,12 @@ public struct LayoutDRCService {
             guard let rules = tech.ruleSet(for: layer) else { continue }
             let hasWideRule = rules.wideWidthThreshold != nil && rules.wideSpacing != nil
             guard rules.minSpacing > 0 || rules.minNotch != nil || hasWideRule else { continue }
-            let merged = mergedRegion(of: layerShapes, dbu: dbu)
+            let merged = try mergedRegion(of: layerShapes, dbu: dbu)
             if merged.isEmpty { continue }
 
             if rules.minSpacing > 0 {
                 let minSpacingDBU = Int32((rules.minSpacing * dbu).rounded())
-                for pair in merged.selfSpaceViolations(minSpace: minSpacingDBU) {
+                for pair in try merged.selfSpaceViolations(minSpace: minSpacingDBU) {
                     let rect = edgePairToRect(pair, dbu: dbu)
                     let measured = pair.distance / dbu
                     let contributors = contributingShapes(layerShapes, around: rect)
@@ -598,7 +619,7 @@ public struct LayoutDRCService {
             if let minNotch = rules.minNotch, minNotch > rules.minSpacing {
                 let minNotchDBU = Int32((minNotch * dbu).rounded())
                 let components = merged.connectedComponents()
-                for pair in merged.selfSpaceViolations(minSpace: minNotchDBU) {
+                for pair in try merged.selfSpaceViolations(minSpace: minNotchDBU) {
                     let measured = pair.distance / dbu
                     // Gaps below minSpacing are already reported by the base rule.
                     guard measured + Self.numericalTolerance >= rules.minSpacing else { continue }
@@ -625,10 +646,10 @@ public struct LayoutDRCService {
                let wideSpacing = rules.wideSpacing,
                wideWidth > 0, wideSpacing > rules.minSpacing {
                 let halfWidthDBU = Int32(((wideWidth / 2) * dbu).rounded())
-                let wide = merged.sized(by: -halfWidthDBU).sized(by: halfWidthDBU)
+                let wide = try merged.sized(by: -halfWidthDBU).sized(by: halfWidthDBU)
                 if !wide.isEmpty {
                     let wideSpacingDBU = Int32((wideSpacing * dbu).rounded())
-                    for pair in wide.spaceViolations(to: merged, minSpace: wideSpacingDBU) {
+                    for pair in try wide.spaceViolations(to: merged, minSpace: wideSpacingDBU) {
                         let measured = pair.distance / dbu
                         // Gaps below minSpacing are already reported by the base rule.
                         guard measured + Self.numericalTolerance >= rules.minSpacing else { continue }
@@ -658,7 +679,7 @@ public struct LayoutDRCService {
         shapes: [LayoutShape],
         tech: LayoutTechDatabase,
         rules: [LayoutSpacingRule]? = nil
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         let spacingRules = rules ?? tech.spacingRules
         guard !spacingRules.isEmpty else { return [] }
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
@@ -674,12 +695,12 @@ public struct LayoutDRCService {
                   let secondaryShapes = grouped[rule.secondaryLayer], !secondaryShapes.isEmpty else {
                 continue
             }
-            let primary = mergedRegion(of: primaryShapes, dbu: dbu)
-            let secondary = mergedRegion(of: secondaryShapes, dbu: dbu)
+            let primary = try mergedRegion(of: primaryShapes, dbu: dbu)
+            let secondary = try mergedRegion(of: secondaryShapes, dbu: dbu)
             if primary.isEmpty || secondary.isEmpty { continue }
 
             let minSpacingDBU = Int32((rule.minSpacing * dbu).rounded())
-            for pair in primary.spaceViolations(to: secondary, minSpace: minSpacingDBU) {
+            for pair in try primary.spaceViolations(to: secondary, minSpace: minSpacingDBU) {
                 let rect = edgePairToRect(pair, dbu: dbu)
                 let measured = pair.distance / dbu
                 let contributors = contributingShapes(primaryShapes + secondaryShapes, around: rect)
@@ -723,7 +744,7 @@ public struct LayoutDRCService {
         shapes: [LayoutShape],
         tech: LayoutTechDatabase,
         layerFilter: Set<LayoutLayerID>? = nil
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         guard let overall = overallBoundingBox(shapes: shapes) else { return violations }
 
@@ -733,7 +754,7 @@ public struct LayoutDRCService {
             guard let rules = tech.ruleSet(for: layer) else { continue }
             let windows = densityWindows(for: overall, rules: rules)
             for window in windows {
-                let area = mergedClippedArea(
+                let area = try mergedClippedArea(
                     of: layerShapes, in: window, dbu: tech.units.scale.databaseUnitsPerMicrometer
                 )
                 if let violation = densityViolation(
@@ -894,7 +915,7 @@ public struct LayoutDRCService {
     /// independent of shape order and of which zero-contribution shapes
     /// are passed; the incremental session relies on this to reproduce the
     /// full run exactly.
-    func mergedClippedArea(of shapes: [LayoutShape], in window: LayoutRect, dbu: Double) -> Double {
+    func mergedClippedArea(of shapes: [LayoutShape], in window: LayoutRect, dbu: Double) throws -> Double {
         let slack = 1.0 / dbu
         var boundaries: [IRBoundary] = []
         for shape in shapes {
@@ -908,8 +929,8 @@ public struct LayoutDRCService {
         // OR with the empty region normalizes overlapping input polygons
         // into disjoint ones; the AND of disjoint polygons with the window
         // is disjoint, so the shoelace `area` is the exact union area.
-        let merged = Region(polygons: boundaries).or(Region())
-        let clipped = merged.and(rectToRegion(window, dbu: dbu))
+        let merged = try Region(polygons: boundaries).union(Region())
+        let clipped = try merged.intersection(rectToRegion(window, dbu: dbu))
         return abs(Double(clipped.area)) / (dbu * dbu)
     }
 
@@ -956,9 +977,9 @@ public struct LayoutDRCService {
 
     /// Boolean-merged region of the shapes: abutting and overlapping shapes
     /// become single features, matching what lands on the mask.
-    func mergedRegion(of shapes: [LayoutShape], dbu: Double) -> Region {
+    func mergedRegion(of shapes: [LayoutShape], dbu: Double) throws -> Region {
         let region = shapesToRegion(shapes, dbu: dbu)
-        return region.or(Region(layer: region.layer))
+        return try region.union(Region(layer: region.layer))
     }
 
     /// Shapes whose bounding box touches the violation marker, in document

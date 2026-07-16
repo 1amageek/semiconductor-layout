@@ -1,4 +1,5 @@
 import Testing
+import CircuiteFoundation
 import LayoutCore
 import LayoutIO
 import LayoutIR
@@ -23,7 +24,7 @@ struct IRLayoutBridgeArrayRefTests {
         ])
         let library = IRLibrary(
             name: "AREF",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: try DatabaseUnitScale(databaseUnitsPerMicrometer: 1000),
             cells: [child, top]
         )
 

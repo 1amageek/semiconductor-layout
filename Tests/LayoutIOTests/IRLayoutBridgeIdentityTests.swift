@@ -1,4 +1,5 @@
 import Testing
+import CircuiteFoundation
 import LayoutCore
 import LayoutIO
 import LayoutIR
@@ -9,7 +10,7 @@ struct IRLayoutBridgeIdentityTests {
     @Test func repeatedImportKeepsCellAndShapeIDsStable() throws {
         let library = IRLibrary(
             name: "identity",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: try DatabaseUnitScale(databaseUnitsPerMicrometer: 1000),
             cells: [
                 IRCell(name: "child", elements: []),
                 IRCell(

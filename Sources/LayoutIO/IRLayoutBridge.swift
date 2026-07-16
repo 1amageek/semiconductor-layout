@@ -28,7 +28,7 @@ public struct IRLayoutBridge: Sendable {
     // MARK: - Import: IRLibrary → LayoutDocument
 
     public func checkedImportLibrary(_ library: IRLibrary, tech: LayoutTechDatabase) throws -> LayoutDocument {
-        let scale = try library.units.validatedScale
+        let scale = library.databaseUnitScale
         let dbu = scale.databaseUnitsPerMicrometer
         let layerMap = buildLayerMap(tech: tech)
         try validateUniqueCellNames(in: library)
@@ -101,7 +101,7 @@ public struct IRLayoutBridge: Sendable {
 
         return IRLibrary(
             name: document.name,
-            units: IRUnits(scale: scale),
+            databaseUnitScale: scale,
             cells: irCells
         )
     }

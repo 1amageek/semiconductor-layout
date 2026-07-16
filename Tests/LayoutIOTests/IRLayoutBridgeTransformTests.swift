@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import CircuiteFoundation
 import LayoutCore
 import LayoutTech
 import LayoutIR
@@ -12,6 +13,7 @@ struct IRLayoutBridgeTransformTests {
     func importPreservesArbitraryRotationAndMagnification() throws {
         let library = IRLibrary(
             name: "transform-import",
+            databaseUnitScale: try DatabaseUnitScale(databaseUnitsPerMicrometer: 1000),
             cells: [
                 IRCell(name: "CHILD"),
                 IRCell(name: "TOP", elements: [

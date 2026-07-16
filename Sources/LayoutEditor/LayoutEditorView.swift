@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import CircuiteFoundation
 import LayoutCore
 import LayoutTech
 import LayoutIO
@@ -283,7 +284,7 @@ extension LayoutEditorView {
         }
 
         let bridge = IRLayoutBridge()
-        let irLib = buildNAND2IRLibrary()
+        let irLib = buildNAND2IRLibrary(databaseUnitScale: tech.units.scale)
         let document: LayoutDocument
         do {
             document = try bridge.checkedImportLibrary(irLib, tech: tech)
@@ -319,7 +320,7 @@ extension LayoutEditorView {
         return nil
     }
 
-    private static func buildNAND2IRLibrary() -> IRLibrary {
+    private static func buildNAND2IRLibrary(databaseUnitScale: DatabaseUnitScale) -> IRLibrary {
         let diffLayer: Int16 = 1
         let polyLayer: Int16 = 2
         let metal1Layer: Int16 = 3
@@ -400,7 +401,7 @@ extension LayoutEditorView {
 
         return IRLibrary(
             name: "NANDLIB",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: databaseUnitScale,
             cells: [IRCell(name: "NAND2", elements: elements)]
         )
     }

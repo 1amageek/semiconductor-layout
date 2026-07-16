@@ -128,12 +128,18 @@ public final class IncrementalDRCSession {
     /// Re-verifies the deferred checks and returns the exact full result.
     public func commit() -> LayoutDRCResult {
         if antennaIsStale {
-            antennaViolations = service.checkAntenna(
-                shapes: topShapes + childShapes,
-                vias: topVias + childVias,
-                pins: topPins + childPins,
-                tech: tech
-            )
+            do {
+                antennaViolations = try service.checkAntenna(
+                    shapes: topShapes + childShapes,
+                    vias: topVias + childVias,
+                    pins: topPins + childPins,
+                    tech: tech
+                )
+            } catch {
+                var result = assembleResult()
+                result.diagnostics.append(service.geometryOperationDiagnostic(error))
+                return result
+            }
             antennaIsStale = false
         }
         return assembleResult()

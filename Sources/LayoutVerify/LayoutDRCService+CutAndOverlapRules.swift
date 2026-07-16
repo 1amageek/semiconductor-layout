@@ -9,7 +9,7 @@ extension LayoutDRCService {
         shapes: [LayoutShape],
         vias: [LayoutVia],
         tech: LayoutTechDatabase
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         guard !tech.minimumCutRules.isEmpty else { return [] }
 
         let shapesByLayer = Dictionary(grouping: shapes, by: { $0.layer })
@@ -38,7 +38,7 @@ extension LayoutDRCService {
                         guard top.netID == nil else { continue }
                         sharedNetID = nil
                     }
-                    guard let overlap = overlapRegion(
+                    guard let overlap = try overlapRegion(
                         first: bottom.geometry,
                         second: top.geometry,
                         dbu: dbu
@@ -46,20 +46,20 @@ extension LayoutDRCService {
                         continue
                     }
 
-                    let explicitCutIDs = explicitCutShapes.compactMap { cutShape -> UUID? in
+                    let explicitCutIDs = try explicitCutShapes.compactMap { cutShape -> UUID? in
                         if let sharedNetID {
                             guard cutShape.netID == nil || cutShape.netID == sharedNetID else { return nil }
                         } else {
                             guard cutShape.netID == nil else { return nil }
                         }
-                        guard overlapRegion(first: cutShape.geometry, second: .rect(overlap), dbu: dbu) != nil else {
+                        guard try overlapRegion(first: cutShape.geometry, second: .rect(overlap), dbu: dbu) != nil else {
                             return nil
                         }
                         return cutShape.id
                     }
                     var viaIDs: [UUID] = []
                     var seenViaIDs: Set<UUID> = []
-                    let viaCutCount = matchingVias.reduce(into: 0) { count, entry in
+                    let viaCutCount = try matchingVias.reduce(into: 0) { count, entry in
                         if let sharedNetID {
                             guard entry.via.netID == nil || entry.via.netID == sharedNetID else { return }
                         } else {
@@ -67,7 +67,7 @@ extension LayoutDRCService {
                         }
                         var contributed = false
                         for rect in entry.rects {
-                            guard overlapRegion(first: .rect(rect), second: .rect(overlap), dbu: dbu) != nil else {
+                            guard try overlapRegion(first: .rect(rect), second: .rect(overlap), dbu: dbu) != nil else {
                                 continue
                             }
                             count += 1
@@ -218,12 +218,12 @@ extension LayoutDRCService {
         first: LayoutGeometry,
         second: LayoutGeometry,
         dbu: Double
-    ) -> LayoutRect? {
+    ) throws -> LayoutRect? {
         guard let firstBoundary = geometryToIRBoundary(first, dbu: dbu),
               let secondBoundary = geometryToIRBoundary(second, dbu: dbu) else {
             return nil
         }
-        let overlap = Region(polygons: [firstBoundary]).and(Region(polygons: [secondBoundary]))
+        let overlap = try Region(polygons: [firstBoundary]).intersection(Region(polygons: [secondBoundary]))
         guard !overlap.isEmpty, let box = overlap.boundingBox else { return nil }
         guard box.maxX > box.minX, box.maxY > box.minY else { return nil }
         return irBoundingBoxToRect(box, dbu: dbu)

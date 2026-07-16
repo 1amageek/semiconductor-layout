@@ -47,10 +47,16 @@ extension LayoutEditorViewModel {
 
             let databaseUnitsPerMicrometer =
                 editor.document.units.scale.databaseUnitsPerMicrometer
-            let mergedPolygons = union(
-                polygons: polygons,
-                dbuPerMicron: databaseUnitsPerMicrometer
-            )
+            let mergedPolygons: [LayoutPolygon]
+            do {
+                mergedPolygons = try union(
+                    polygons: polygons,
+                    dbuPerMicron: databaseUnitsPerMicrometer
+                )
+            } catch {
+                handleError(error)
+                return
+            }
             guard !mergedPolygons.isEmpty else { continue }
             let mergedNetID = commonNetID(in: mergeable)
             let mergedProperties = commonProperties(in: mergeable)
@@ -148,13 +154,13 @@ extension LayoutEditorViewModel {
         }
     }
 
-    private func union(polygons: [LayoutPolygon], dbuPerMicron: Double) -> [LayoutPolygon] {
+    private func union(polygons: [LayoutPolygon], dbuPerMicron: Double) throws -> [LayoutPolygon] {
         let boundaries = polygons.compactMap { irBoundary(from: $0, dbuPerMicron: dbuPerMicron) }
         guard let first = boundaries.first else { return [] }
 
         var region = Region(polygons: [first])
         for boundary in boundaries.dropFirst() {
-            region = region.or(Region(polygons: [boundary]))
+            region = try region.union(Region(polygons: [boundary]))
         }
 
         return region.polygons.compactMap { polygon(from: $0, dbuPerMicron: dbuPerMicron) }

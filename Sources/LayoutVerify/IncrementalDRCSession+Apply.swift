@@ -25,17 +25,17 @@ extension IncrementalDRCSession {
         try mutateEditableVias(delta)
 
         let affectedViaKeys = expandAffectedViaKeys(using: &analysis)
-        refreshLayerBuckets(using: analysis)
-        refreshEnclosureBuckets(dirtyLayers: analysis.dirtyLayers)
-        refreshSpacingBucketsIfNeeded(delta)
-        refreshDensityBuckets(using: analysis)
+        try refreshLayerBuckets(using: analysis)
+        try refreshEnclosureBuckets(dirtyLayers: analysis.dirtyLayers)
+        try refreshSpacingBucketsIfNeeded(delta)
+        try refreshDensityBuckets(using: analysis)
         refreshShortBuckets(editedShapeIDs: analysis.editedShapeIDs)
         refreshOpenBuckets(using: analysis)
-        let recomputedViaCount = refreshViaEnclosureBuckets(
+        let recomputedViaCount = try refreshViaEnclosureBuckets(
             affectedViaIDs: analysis.affectedViaIDs,
             affectedViaKeys: affectedViaKeys
         )
-        refreshGlobalBucketsIfNeeded(delta)
+        try refreshGlobalBucketsIfNeeded(delta)
         refreshAntennaStalenessIfNeeded(delta)
 
         return makeApplyUpdate(
@@ -212,11 +212,11 @@ extension IncrementalDRCSession {
         return affectedViaKeys
     }
 
-    private func refreshLayerBuckets(using analysis: IncrementalDRCApplyAnalysis) {
+    private func refreshLayerBuckets(using analysis: IncrementalDRCApplyAnalysis) throws {
         for layer in analysis.dirtyLayers {
             refreshCoverageBucket(layer: layer)
             refreshShapeRuleBuckets(layer: layer)
-            updateLayerClusters(
+            try updateLayerClusters(
                 layer: layer,
                 editedKeys: analysis.editedKeysByLayer[layer] ?? [],
                 dirtyRects: analysis.dirtyRectsByLayer[layer] ?? []
@@ -266,7 +266,7 @@ extension IncrementalDRCSession {
         }
     }
 
-    private func refreshEnclosureBuckets(dirtyLayers: Set<LayoutLayerID>) {
+    private func refreshEnclosureBuckets(dirtyLayers: Set<LayoutLayerID>) throws {
         let affectedRules = tech.enclosureRules.filter {
             dirtyLayers.contains($0.outerLayer) || dirtyLayers.contains($0.innerLayer)
         }
@@ -280,36 +280,36 @@ extension IncrementalDRCSession {
                 .flatMap { shapeKeysByLayer[$0] ?? [] }
                 .sorted { shapeOrder($0) < shapeOrder($1) }
                 .compactMap { shapeByKey[$0] }
-            let fresh = service.checkEnclosureRules(shapes: ruleShapes, tech: tech, rules: rules)
+            let fresh = try service.checkEnclosureRules(shapes: ruleShapes, tech: tech, rules: rules)
             enclosureByRuleID[ruleID] = fresh.isEmpty ? nil : fresh
         }
     }
 
-    private func refreshSpacingBucketsIfNeeded(_ delta: LayoutEditDelta) {
+    private func refreshSpacingBucketsIfNeeded(_ delta: LayoutEditDelta) throws {
         guard !delta.isEmpty, !tech.spacingRules.isEmpty else { return }
         spacingByRuleID = [:]
         for (ruleID, rules) in Dictionary(grouping: tech.spacingRules, by: service.spacingRuleID) {
-            let fresh = service.checkSpacingRules(shapes: topShapes + childShapes, tech: tech, rules: rules)
+            let fresh = try service.checkSpacingRules(shapes: topShapes + childShapes, tech: tech, rules: rules)
             if !fresh.isEmpty { spacingByRuleID[ruleID] = fresh }
         }
     }
 
-    private func refreshDensityBuckets(using analysis: IncrementalDRCApplyAnalysis) {
+    private func refreshDensityBuckets(using analysis: IncrementalDRCApplyAnalysis) throws {
         guard densityIsTracked else { return }
         let newOverall = service.overallBoundingBox(shapes: topShapes + childShapes)
         if newOverall != overallBoundingBox {
-            rebuildAllDensityBuckets(overall: newOverall)
+            try rebuildAllDensityBuckets(overall: newOverall)
         } else if let overall = newOverall {
-            refreshDirtyDensityBuckets(using: analysis, overall: overall)
+            try refreshDirtyDensityBuckets(using: analysis, overall: overall)
         }
     }
 
-    private func rebuildAllDensityBuckets(overall newOverall: LayoutRect?) {
+    private func rebuildAllDensityBuckets(overall newOverall: LayoutRect?) throws {
         overallBoundingBox = newOverall
         densityStateByLayer = [:]
         guard let overall = newOverall else { return }
         for layer in shapeKeysByLayer.keys where layerDensityIsRestrictive(layer) {
-            rebuildLayerDensity(
+            try rebuildLayerDensity(
                 layer: layer,
                 layerPairs: currentLayerPairs(layer: layer),
                 overall: overall
@@ -320,9 +320,9 @@ extension IncrementalDRCSession {
     private func refreshDirtyDensityBuckets(
         using analysis: IncrementalDRCApplyAnalysis,
         overall: LayoutRect
-    ) {
+    ) throws {
         for layer in analysis.dirtyLayers where layerDensityIsRestrictive(layer) {
-            updateLayerDensity(
+            try updateLayerDensity(
                 layer: layer,
                 layerPairs: currentLayerPairs(layer: layer),
                 editedKeys: analysis.editedKeysByLayer[layer] ?? [],
@@ -368,7 +368,7 @@ extension IncrementalDRCSession {
     private func refreshViaEnclosureBuckets(
         affectedViaIDs: Set<UUID>,
         affectedViaKeys: Set<FlatViaKey>
-    ) -> Int {
+    ) throws -> Int {
         viaEnclosureViolations.removeAll {
             $0.viaIDs.first.map(affectedViaIDs.contains) ?? false
         }
@@ -377,16 +377,16 @@ extension IncrementalDRCSession {
             .compactMap { viaByKey[$0] }
         if !recomputeVias.isEmpty {
             viaEnclosureViolations.append(
-                contentsOf: checkViaEnclosure(vias: recomputeVias)
+                contentsOf: try checkViaEnclosure(vias: recomputeVias)
             )
         }
         return recomputeVias.count
     }
 
-    private func refreshGlobalBucketsIfNeeded(_ delta: LayoutEditDelta) {
+    private func refreshGlobalBucketsIfNeeded(_ delta: LayoutEditDelta) throws {
         guard !delta.isEmpty else { return }
         if !tech.minimumCutRules.isEmpty {
-            minimumCutViolations = service.checkMinimumCuts(
+            minimumCutViolations = try service.checkMinimumCuts(
                 shapes: topShapes + childShapes,
                 vias: topVias + childVias,
                 tech: tech

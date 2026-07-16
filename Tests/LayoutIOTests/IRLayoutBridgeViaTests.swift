@@ -34,6 +34,7 @@ struct IRLayoutBridgeViaTests {
     func opaqueIRCellPropertiesArePreservedWithSyntheticKeys() throws {
         let library = IRLibrary(
             name: "opaque-cell-properties",
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(
                     name: "TOP",
@@ -112,6 +113,7 @@ struct IRLayoutBridgeViaTests {
     func importLeavesUnmarkedCutBoundariesAsGeometry() throws {
         let library = IRLibrary(
             name: "unmarked-cut",
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .boundary(IRBoundary(
@@ -140,6 +142,7 @@ struct IRLayoutBridgeViaTests {
     func importRestoresOASISStyleNamedViaProperties() throws {
         let library = IRLibrary(
             name: "oasis-style-via",
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .boundary(IRBoundary(
@@ -174,6 +177,7 @@ struct IRLayoutBridgeViaTests {
     func importLeavesMarkedBoundariesOnNonCutLayersAsGeometry() throws {
         let library = IRLibrary(
             name: "marked-non-cut",
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .boundary(IRBoundary(

@@ -109,7 +109,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             with: document.viaDefs,
             dbuPerMicron: document.dbuPerMicron
         )
-        let library = try DEFIRConverter.toIRLibraryChecked(
+        let library = try DEFIRConverter.toIRLibrary(
             document,
             layerNumbers: try defLayerNumberMapping(from: importTech)
         )
@@ -159,9 +159,9 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             case .oasis:
                 return try OASISLibraryReader.read(data)
             case .cif:
-                return try CIFLibraryReader.read(data)
+                return try CIFLibraryReader.read(data, databaseUnitScale: tech.units.scale)
             case .dxf:
-                return try DXFLibraryReader.read(data)
+                return try DXFLibraryReader.read(data, databaseUnitScale: tech.units.scale)
             case .def:
                 let document = try readDEFDocument(from: data)
                 let importTech = DEFViaDefinitionTechAugmentor().augmenting(
@@ -169,7 +169,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
                     with: document.viaDefs,
                     dbuPerMicron: document.dbuPerMicron
                 )
-                return try DEFIRConverter.toIRLibraryChecked(
+                return try DEFIRConverter.toIRLibrary(
                     document,
                     layerNumbers: try defLayerNumberMapping(from: importTech)
                 )
@@ -239,7 +239,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
         cells.insert(topCell, at: 0)
         return IRLibrary(
             name: library.name,
-            units: library.units,
+            databaseUnitScale: library.databaseUnitScale,
             cells: cells,
             metadata: library.metadata,
             createdAt: library.createdAt,

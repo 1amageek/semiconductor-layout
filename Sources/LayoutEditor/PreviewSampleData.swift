@@ -786,7 +786,7 @@ enum PreviewSampleData {
 
         let irLib = IRLibrary(
             name: "FC_OTA_LIB",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: tech.units.scale,
             cells: [
                 nmosCell(),
                 pmosCell(),

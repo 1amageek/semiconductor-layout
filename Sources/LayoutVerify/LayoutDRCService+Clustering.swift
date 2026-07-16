@@ -91,10 +91,10 @@ extension LayoutDRCService {
         keys: [FlatShapeKey],
         halo: Double,
         tech: LayoutTechDatabase
-    ) -> [LayerShapeCluster] {
+    ) throws -> [LayerShapeCluster] {
         guard !shapes.isEmpty else { return [] }
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
-        let components = mergedRegion(of: shapes, dbu: dbu).connectedComponents()
+        let components = try mergedRegion(of: shapes, dbu: dbu).connectedComponents()
 
         var componentBoxes: [LayoutRect] = []
         componentBoxes.reserveCapacity(components.count)

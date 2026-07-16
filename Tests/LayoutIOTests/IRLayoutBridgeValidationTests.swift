@@ -8,20 +8,16 @@ import LayoutTech
 
 @Suite("IRLayoutBridge Validation")
 struct IRLayoutBridgeValidationTests {
-    @Test func checkedImportRejectsInvalidDatabaseScale() {
-        let library = IRLibrary(
-            name: "invalid-units",
-            units: IRUnits(dbuPerMicron: 0)
-        )
-
+    @Test func databaseUnitScaleRejectsInvalidValue() {
         #expect(throws: DatabaseUnitScaleError.self) {
-            _ = try IRLayoutBridge().checkedImportLibrary(library, tech: .standard())
+            _ = try DatabaseUnitScale(databaseUnitsPerMicrometer: 0)
         }
     }
 
     @Test func checkedImportRejectsDuplicateCellNames() {
         let library = IRLibrary(
             name: "duplicate",
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP"),
                 IRCell(name: "TOP"),
@@ -36,6 +32,7 @@ struct IRLayoutBridgeValidationTests {
     @Test func checkedImportRejectsUnresolvedCellReference() {
         let library = IRLibrary(
             name: "missing-ref",
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .cellRef(IRCellRef(cellName: "MISSING", origin: IRPoint(x: 0, y: 0)))
@@ -51,7 +48,7 @@ struct IRLayoutBridgeValidationTests {
     @Test func checkedImportRejectsUnmappedLayer() {
         let library = IRLibrary(
             name: "unmapped-layer",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .boundary(IRBoundary(
@@ -76,7 +73,7 @@ struct IRLayoutBridgeValidationTests {
     @Test func checkedImportRejectsUnknownDEFRouteLayerName() {
         let library = IRLibrary(
             name: "unknown-def-layer",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .path(IRPath(
@@ -103,7 +100,7 @@ struct IRLayoutBridgeValidationTests {
     @Test func checkedImportRejectsUnknownDEFRouteViaName() {
         let library = IRLibrary(
             name: "unknown-def-via",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .path(IRPath(
@@ -130,7 +127,7 @@ struct IRLayoutBridgeValidationTests {
     @Test func checkedImportRejectsSpecialRouteViaWithoutPlacementPoint() {
         let library = IRLibrary(
             name: "orphan-special-route-via",
-            units: IRUnits(dbuPerMicron: 1000),
+            databaseUnitScale: LayoutTechDatabase.standard().units.scale,
             cells: [
                 IRCell(name: "TOP", elements: [
                     .path(IRPath(

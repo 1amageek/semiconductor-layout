@@ -5,6 +5,7 @@ public enum LayoutDRCServiceError: Error, Equatable, Sendable {
     case invalidHierarchy(messages: [String])
     case unsupportedDerivedGeometry(messages: [String])
     case unsupportedExactGeometry(messages: [String])
+    case geometryOperationFailed(message: String)
 }
 
 extension LayoutDRCServiceError: LocalizedError {
@@ -20,6 +21,8 @@ extension LayoutDRCServiceError: LocalizedError {
             return "Unsupported derived-layer geometry: \(messages.joined(separator: " | "))"
         case .unsupportedExactGeometry(let messages):
             return "Unsupported exact DRC geometry: \(messages.joined(separator: " | "))"
+        case .geometryOperationFailed(let message):
+            return "Exact DRC geometry operation failed: \(message)"
         }
     }
 }

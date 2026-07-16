@@ -9,7 +9,7 @@ extension LayoutDRCService {
         shapes: [LayoutShape],
         vias: [LayoutVia],
         tech: LayoutTechDatabase
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         guard !vias.isEmpty else { return violations }
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
@@ -50,13 +50,13 @@ extension LayoutDRCService {
                     layer: def.bottomLayer,
                     nearHalo: cutRect.expanded(by: def.enclosure.bottom, def.enclosure.bottom)
                 ) + explicitViaLayerShapes(for: via, layer: def.bottomLayer, tech: tech)
-                let topCheck = viaEnclosureCheck(
+                let topCheck = try viaEnclosureCheck(
                     cutRect: cutRect,
                     enclosure: def.enclosure.top,
                     candidates: topCandidates,
                     dbu: dbu
                 )
-                let bottomCheck = viaEnclosureCheck(
+                let bottomCheck = try viaEnclosureCheck(
                     cutRect: cutRect,
                     enclosure: def.enclosure.bottom,
                     candidates: bottomCandidates,
@@ -82,7 +82,7 @@ extension LayoutDRCService {
         topCandidates: [LayoutShape],
         bottomCandidates: [LayoutShape],
         tech: LayoutTechDatabase
-    ) -> LayoutViolation? {
+    ) throws -> LayoutViolation? {
         guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return nil }
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let effectiveTopCandidates = topCandidates
@@ -90,13 +90,13 @@ extension LayoutDRCService {
         let effectiveBottomCandidates = bottomCandidates
             + explicitViaLayerShapes(for: via, layer: def.bottomLayer, tech: tech)
         for cutRect in viaCutRects(for: via, tech: tech) {
-            let topCheck = viaEnclosureCheck(
+            let topCheck = try viaEnclosureCheck(
                 cutRect: cutRect,
                 enclosure: def.enclosure.top,
                 candidates: effectiveTopCandidates,
                 dbu: dbu
             )
-            let bottomCheck = viaEnclosureCheck(
+            let bottomCheck = try viaEnclosureCheck(
                 cutRect: cutRect,
                 enclosure: def.enclosure.bottom,
                 candidates: effectiveBottomCandidates,
@@ -129,7 +129,7 @@ extension LayoutDRCService {
         shapes: [LayoutShape],
         tech: LayoutTechDatabase,
         rules: [LayoutEnclosureRule]? = nil
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
@@ -141,14 +141,14 @@ extension LayoutDRCService {
             let minEncDBU = Int32((rule.minEnclosure * dbu).rounded())
             if minEncDBU <= 0 { continue }
 
-            let outerRegion = mergedRegion(of: outerShapes, dbu: dbu)
-            let innerRegion = mergedRegion(of: innerShapes, dbu: dbu)
+            let outerRegion = try mergedRegion(of: outerShapes, dbu: dbu)
+            let innerRegion = try mergedRegion(of: innerShapes, dbu: dbu)
 
             for component in innerRegion.connectedComponents() {
-                let covered = component.and(outerRegion)
+                let covered = try component.intersection(outerRegion)
                 if covered.isEmpty { continue }
 
-                let protrusion = component.not(outerRegion)
+                let protrusion = try component.subtracting(outerRegion)
                 if !protrusion.isEmpty && !rule.allowsPassThrough {
                     for part in protrusion.connectedComponents() {
                         guard let bb = part.boundingBox else { continue }
@@ -169,9 +169,9 @@ extension LayoutDRCService {
                 // halo so the clip line never reads as a margin of zero, and
                 // margin deficits already implied by a reported protrusion are
                 // not double-counted.
-                var missing = covered.sized(by: minEncDBU).not(outerRegion)
+                var missing = try covered.sized(by: minEncDBU).subtracting(outerRegion)
                 if !protrusion.isEmpty {
-                    missing = missing.not(protrusion.sized(by: minEncDBU))
+                    missing = try missing.subtracting(protrusion.sized(by: minEncDBU))
                 }
                 for deficit in missing.connectedComponents() {
                     guard let bb = deficit.boundingBox else { continue }
@@ -341,7 +341,7 @@ extension LayoutDRCService {
         enclosure: Double,
         candidates: [LayoutShape],
         dbu: Double
-    ) -> ViaEnclosureCheck {
+    ) throws -> ViaEnclosureCheck {
         guard !candidates.isEmpty else {
             return ViaEnclosureCheck(passed: false, measured: 0)
         }
@@ -360,7 +360,7 @@ extension LayoutDRCService {
         // value is kept for reporting only.
         let outerRegion = shapesToRegion(candidates, dbu: dbu)
         let requiredRegion = rectToRegion(requiredRect, dbu: dbu)
-        let missingCoverage = requiredRegion.not(outerRegion)
+        let missingCoverage = try requiredRegion.subtracting(outerRegion)
         let pointCoverage = requiredEnclosurePoints(cutRect: cutRect, enclosure: enclosure).allSatisfy { point in
             candidates.contains { LayoutGeometryAnalysis.contains(point, in: $0.geometry) }
         }

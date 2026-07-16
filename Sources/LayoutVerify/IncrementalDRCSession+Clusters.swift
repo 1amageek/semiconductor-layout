@@ -7,7 +7,7 @@ extension IncrementalDRCSession {
         layer: LayoutLayerID,
         editedKeys: Set<FlatShapeKey>,
         dirtyRects: [LayoutRect]
-    ) {
+    ) throws {
         guard let rules = tech.ruleSet(for: layer),
               shapeKeysByLayer[layer]?.isEmpty == false else {
             clusterStateByLayer[layer] = nil
@@ -26,7 +26,7 @@ extension IncrementalDRCSession {
             let layerPairs = currentLayerPairs(layer: layer)
             var state = LayerClusterState()
             state.isMonolithic = true
-            installClusters(
+            try installClusters(
                 [service.wholeLayerCluster(of: layerPairs.map(\.shape), keys: layerPairs.map(\.key))],
                 analyzedPairs: layerPairs,
                 into: &state
@@ -44,8 +44,8 @@ extension IncrementalDRCSession {
         if state.isMonolithic || state.clusters.isEmpty {
             let layerPairs = currentLayerPairs(layer: layer)
             state = LayerClusterState()
-            installClusters(
-                service.shapeClusters(
+            try installClusters(
+                try service.shapeClusters(
                     of: layerPairs.map(\.shape), keys: layerPairs.map(\.key), halo: halo, tech: tech
                 ),
                 analyzedPairs: layerPairs,
@@ -91,7 +91,7 @@ extension IncrementalDRCSession {
                     guard let shape = shapeByKey[key], shape.layer == layer else { return nil }
                     return (key: key, shape: shape)
                 }
-            newClusters = analyzedPairs.isEmpty ? [] : service.shapeClusters(
+            newClusters = analyzedPairs.isEmpty ? [] : try service.shapeClusters(
                 of: analyzedPairs.map(\.shape),
                 keys: analyzedPairs.map(\.key),
                 halo: halo,
@@ -117,7 +117,7 @@ extension IncrementalDRCSession {
             state.widthAreaByCluster[clusterKey] = nil
             state.spacingByCluster[clusterKey] = nil
         }
-        installClusters(newClusters, analyzedPairs: analyzedPairs, into: &state)
+        try installClusters(newClusters, analyzedPairs: analyzedPairs, into: &state)
         clusterStateByLayer[layer] = state
     }
 
@@ -125,15 +125,15 @@ extension IncrementalDRCSession {
         _ clusters: [LayerShapeCluster],
         analyzedPairs: [(key: FlatShapeKey, shape: LayoutShape)],
         into state: inout LayerClusterState
-    ) {
+    ) throws {
         for cluster in clusters {
             state.clusters[cluster.key] = cluster
             state.clusterGrid?.insert(key: cluster.key, box: cluster.boundingBox)
             for member in cluster.memberKeys { state.clusterOfShape[member] = cluster.key }
             let clusterShapes = cluster.memberIndices.map { analyzedPairs[$0].shape }
-            let widthArea = service.checkWidthAndArea(shapes: clusterShapes, tech: tech)
+            let widthArea = try service.checkWidthAndArea(shapes: clusterShapes, tech: tech)
             if !widthArea.isEmpty { state.widthAreaByCluster[cluster.key] = widthArea }
-            let spacing = service.checkSpacing(shapes: clusterShapes, tech: tech)
+            let spacing = try service.checkSpacing(shapes: clusterShapes, tech: tech)
             if !spacing.isEmpty { state.spacingByCluster[cluster.key] = spacing }
         }
     }

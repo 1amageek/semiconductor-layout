@@ -3,7 +3,7 @@ import LayoutCore
 import LayoutTech
 
 extension IncrementalDRCSession {
-    func checkViaEnclosure(vias: [LayoutVia]) -> [LayoutViolation] {
+    func checkViaEnclosure(vias: [LayoutVia]) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let roundingSlack = 1.0 / tech.units.scale.databaseUnitsPerMicrometer
         for via in vias {
@@ -16,7 +16,7 @@ extension IncrementalDRCSession {
             let bottomHalo = cutBox.expanded(by: def.enclosure.bottom, def.enclosure.bottom)
             let topCandidates = shapeCandidates(layer: def.topLayer, near: topHalo, margin: roundingSlack)
             let bottomCandidates = shapeCandidates(layer: def.bottomLayer, near: bottomHalo, margin: roundingSlack)
-            if let violation = service.viaEnclosureViolation(
+            if let violation = try service.viaEnclosureViolation(
                 for: via,
                 topCandidates: topCandidates,
                 bottomCandidates: bottomCandidates,
@@ -48,7 +48,7 @@ extension IncrementalDRCSession {
         layer: LayoutLayerID,
         layerPairs: [(key: FlatShapeKey, shape: LayoutShape)],
         overall: LayoutRect
-    ) {
+    ) throws {
         guard let rules = tech.ruleSet(for: layer),
               densityRuleIsRestrictive(rules),
               !layerPairs.isEmpty else {
@@ -58,7 +58,7 @@ extension IncrementalDRCSession {
         var state = LayerDensityState()
         state.windows = service.densityWindows(for: overall, rules: rules)
         for windowIndex in state.windows.indices {
-            refreshDensityVerdict(
+            try refreshDensityVerdict(
                 layer: layer, layerPairs: layerPairs, rules: rules,
                 windowIndex: windowIndex, state: &state
             )
@@ -73,7 +73,7 @@ extension IncrementalDRCSession {
         dirtyRects: [LayoutRect],
         idListChanged: Bool,
         overall: LayoutRect
-    ) {
+    ) throws {
         guard let rules = tech.ruleSet(for: layer),
               densityRuleIsRestrictive(rules),
               !layerPairs.isEmpty else {
@@ -81,7 +81,7 @@ extension IncrementalDRCSession {
             return
         }
         guard var state = densityStateByLayer.removeValue(forKey: layer) else {
-            rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
+            try rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
             return
         }
         let slack = 1.0 / tech.units.scale.databaseUnitsPerMicrometer
@@ -92,7 +92,7 @@ extension IncrementalDRCSession {
                 $0.expanded(by: slack, slack).intersects(window)
             }
             guard geometryTouched || idListChanged else { continue }
-            refreshDensityVerdict(
+            try refreshDensityVerdict(
                 layer: layer, layerPairs: layerPairs, rules: rules,
                 windowIndex: windowIndex, state: &state
             )
@@ -110,8 +110,8 @@ extension IncrementalDRCSession {
         rules: LayoutLayerRuleSet,
         windowIndex: Int,
         state: inout LayerDensityState
-    ) {
-        let area = service.mergedClippedArea(
+    ) throws {
+        let area = try service.mergedClippedArea(
             of: layerPairs.map(\.shape),
             in: state.windows[windowIndex],
             dbu: tech.units.scale.databaseUnitsPerMicrometer

@@ -34,7 +34,7 @@ extension IncrementalDRCSession {
     func configure(document: LayoutDocument, cellID: UUID?) throws {
         let configuration = try makeConfiguration(document: document, cellID: cellID)
         install(configuration)
-        rebuildAllBuckets()
+        try rebuildAllBuckets()
     }
 
     private func makeConfiguration(document: LayoutDocument, cellID: UUID?) throws -> SessionConfiguration {
@@ -275,7 +275,7 @@ extension IncrementalDRCSession {
         }
     }
 
-    func rebuildAllBuckets() {
+    func rebuildAllBuckets() throws {
         let shapes = topShapes + childShapes
         let vias = topVias + childVias
         let pins = topPins + childPins
@@ -309,26 +309,26 @@ extension IncrementalDRCSession {
                     )
                 }
             }
-            updateLayerClusters(layer: layer, editedKeys: [], dirtyRects: [])
+            try updateLayerClusters(layer: layer, editedKeys: [], dirtyRects: [])
         }
 
         enclosureByRuleID = [:]
         for (ruleID, rules) in Dictionary(grouping: tech.enclosureRules, by: service.enclosureRuleID) {
-            let fresh = service.checkEnclosureRules(shapes: shapes, tech: tech, rules: rules)
+            let fresh = try service.checkEnclosureRules(shapes: shapes, tech: tech, rules: rules)
             if !fresh.isEmpty { enclosureByRuleID[ruleID] = fresh }
         }
         spacingByRuleID = [:]
         for (ruleID, rules) in Dictionary(grouping: tech.spacingRules, by: service.spacingRuleID) {
-            let fresh = service.checkSpacingRules(shapes: shapes, tech: tech, rules: rules)
+            let fresh = try service.checkSpacingRules(shapes: shapes, tech: tech, rules: rules)
             if !fresh.isEmpty { spacingByRuleID[ruleID] = fresh }
         }
 
         // The session's own per-layer grids already exist, so the per-via
         // candidate path is the same one apply() uses — one grid build
         // instead of two, identical verdicts.
-        viaEnclosureViolations = checkViaEnclosure(vias: vias)
+        viaEnclosureViolations = try checkViaEnclosure(vias: vias)
         forbiddenLayerViolations = service.checkForbiddenLayers(shapes: shapes, tech: tech)
-        minimumCutViolations = service.checkMinimumCuts(shapes: shapes, vias: vias, tech: tech)
+        minimumCutViolations = try service.checkMinimumCuts(shapes: shapes, vias: vias, tech: tech)
         exactOverlapViolations = service.checkExactOverlaps(shapes: shapes, tech: tech)
 
         densityStateByLayer = [:]
@@ -336,7 +336,7 @@ extension IncrementalDRCSession {
             overallBoundingBox = service.overallBoundingBox(shapes: shapes)
             if let overall = overallBoundingBox {
                 for (layer, layerPairs) in pairsByLayer where layerDensityIsRestrictive(layer) {
-                    rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
+                    try rebuildLayerDensity(layer: layer, layerPairs: layerPairs, overall: overall)
                 }
             }
         } else {
@@ -353,7 +353,7 @@ extension IncrementalDRCSession {
             openByNet[netID, default: []].append(violation)
         }
 
-        antennaViolations = service.checkAntenna(shapes: shapes, vias: vias, pins: pins, tech: tech)
+        antennaViolations = try service.checkAntenna(shapes: shapes, vias: vias, pins: pins, tech: tech)
         antennaIsStale = false
     }
 
