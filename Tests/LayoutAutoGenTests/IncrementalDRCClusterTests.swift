@@ -7,8 +7,8 @@ import LayoutVerify
 /// Stress tests for the cluster-granular width/area/spacing maintenance in
 /// `IncrementalDRCSession`: every partition transition an edit can cause —
 /// merge by abutment or overlap, corner contact, halo-coupled gaps, chain
-/// merges across many clusters, the non-Manhattan monolithic fallback in
-/// both directions, degenerate pseudo-node membership, and ID reuse after
+/// merges across many clusters, atomic rejection of unsupported geometry,
+/// degenerate pseudo-node membership, and ID reuse after
 /// removal — must keep the live snapshot equal to a from-scratch full run.
 @Suite("IncrementalDRC Cluster Transitions", .timeLimit(.minutes(5)))
 struct IncrementalDRCClusterTests {
@@ -103,17 +103,16 @@ struct IncrementalDRCClusterTests {
         )
     }
 
-    /// Non-Manhattan geometry forces the layer into the monolithic
-    /// whole-layer cluster; edits during that mode and the recovery back
-    /// to the real partition must all stay equivalent.
-    @Test func nonManhattanLayerFallsBackAndRecovers() throws {
+    /// The canonical exact kernel rejects non-rectilinear geometry. The
+    /// rejection must be typed and atomic so later valid edits still work.
+    @Test func nonManhattanLayerIsRejectedAtomicallyAndSessionRecovers() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let harness = try IncrementalDRCEquivalenceHarness(
             document: fixture.document,
             tech: fixture.tech
         )
 
-        var bender = LayoutShape(
+        let bender = LayoutShape(
             layer: fixture.m1,
             geometry: .polygon(LayoutPolygon(points: [
                 LayoutPoint(x: 5, y: 5),
@@ -121,10 +120,11 @@ struct IncrementalDRCClusterTests {
                 LayoutPoint(x: 6, y: 6),
             ]))
         )
-        try harness.applyAndVerify(
-            LayoutEditDelta(addedShapes: [bender]),
-            context: "45-degree triangle forces M1 monolithic"
-        )
+        let snapshotBeforeRejection = harness.session.currentResult
+        #expect(throws: IncrementalDRCSessionError.unsupportedNonRectilinearGeometry(shapeID: bender.id)) {
+            _ = try harness.session.apply(LayoutEditDelta(addedShapes: [bender]))
+        }
+        #expect(harness.session.currentResult == snapshotBeforeRejection)
 
         var nudgedWire = fixture.wireA
         nudgedWire.geometry = .rect(LayoutRect(
@@ -133,16 +133,7 @@ struct IncrementalDRCClusterTests {
         ))
         try harness.applyAndVerify(
             LayoutEditDelta(updatedShapes: [nudgedWire]),
-            context: "edit while the layer is monolithic"
-        )
-
-        bender.geometry = .rect(LayoutRect(
-            origin: LayoutPoint(x: 5, y: 5),
-            size: LayoutSize(width: 1, height: 1)
-        ))
-        try harness.applyAndVerify(
-            LayoutEditDelta(updatedShapes: [bender]),
-            context: "triangle squared off: partition rebuilt"
+            context: "valid edit after rejected non-rectilinear geometry"
         )
         try harness.applyAndVerify(
             LayoutEditDelta(updatedShapes: [fixture.wireA]),

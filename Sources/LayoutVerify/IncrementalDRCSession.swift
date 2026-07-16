@@ -9,8 +9,7 @@ import LayoutTech
 /// edit can influence:
 ///
 /// - width / area / spacing: per halo-closed cluster of merged-geometry
-///   components within a layer; a layer with non-Manhattan geometry
-///   degrades to one whole-layer cluster
+///   components within a layer
 /// - rect-only / angle rules: per layer
 /// - rule coverage: per layer
 /// - forbidden marker layers: full exact recompute when marker policy exists
@@ -33,6 +32,8 @@ import LayoutTech
 ///
 /// Structural changes (pins, instances, child cells, technology) are not
 /// expressible as deltas; call ``rebuild(document:cellID:)``.
+/// The session uses the exact rectilinear geometry kernel and rejects
+/// unsupported non-rectilinear shapes before changing its current state.
 ///
 /// The session is single-owner mutable state and is not thread-safe.
 public final class IncrementalDRCSession {
@@ -78,16 +79,14 @@ public final class IncrementalDRCSession {
     var antennaIsStale = false
 
     // Current flattened shape occurrences, fully incremental: the shape
-    // table, per-layer key sets, per-layer spatial grids, and the per-layer
-    // non-Manhattan census are all maintained per delta so apply() never
-    // rescans the whole design. Per-layer pair ARRAYS (flatten order) are
+    // table, per-layer key sets, and per-layer spatial grids are all
+    // maintained per delta so apply() never rescans the whole design.
+    // Per-layer pair arrays (flatten order) are
     // materialized on demand only for the rare paths that need them.
     var shapeByKey: [FlatShapeKey: LayoutShape] = [:]
     var shapeKeysByLayer: [LayoutLayerID: Set<FlatShapeKey>] = [:]
     var shapeGridByLayer: [LayoutLayerID: MutableFlatShapeGridIndex] = [:]
     var shapeKeysByNet: [UUID: Set<FlatShapeKey>] = [:]
-    var nonManhattanKeys: Set<FlatShapeKey> = []
-    var nonManhattanCountByLayer: [LayoutLayerID: Int] = [:]
     var viaByKey: [FlatViaKey: LayoutVia] = [:]
     var viaKeysByID: [UUID: Set<FlatViaKey>] = [:]
     var viaKeysByNet: [UUID: Set<FlatViaKey>] = [:]

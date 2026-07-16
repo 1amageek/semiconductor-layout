@@ -47,6 +47,7 @@ extension IncrementalDRCSession {
             cellID: cellID
         )
         try Self.validateConfigurationIDs(flattened)
+        try validateSupportedGeometry(flattened.topShapes + flattened.childShapes)
 
         return SessionConfiguration(
             sourceDocument: document,
@@ -115,6 +116,13 @@ extension IncrementalDRCSession {
         }
         for via in flattened.topVias where flattened.childViaIDs.contains(via.id) {
             throw IncrementalDRCSessionError.hierarchyIdentifierCollision(via.id)
+        }
+    }
+
+    func validateSupportedGeometry(_ shapes: [LayoutShape]) throws {
+        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        for shape in shapes where !service.isManhattanShape(shape, dbu: dbu) {
+            throw IncrementalDRCSessionError.unsupportedNonRectilinearGeometry(shapeID: shape.id)
         }
     }
 
@@ -371,19 +379,12 @@ extension IncrementalDRCSession {
         shapeByKey = [:]
         shapeKeysByLayer = [:]
         shapeGridByLayer = [:]
-        nonManhattanKeys = []
-        nonManhattanCountByLayer = [:]
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         for (layer, layerPairs) in pairsByLayer {
             var keys = Set<FlatShapeKey>()
             keys.reserveCapacity(layerPairs.count)
             for (key, shape) in layerPairs {
                 shapeByKey[key] = shape
                 keys.insert(key)
-                if !service.isManhattanShape(shape, dbu: dbu) {
-                    nonManhattanKeys.insert(key)
-                    nonManhattanCountByLayer[layer, default: 0] += 1
-                }
             }
             shapeKeysByLayer[layer] = keys
             let boxes = layerPairs.map { LayoutGeometryAnalysis.boundingBox(for: $0.shape.geometry) }
@@ -434,10 +435,6 @@ extension IncrementalDRCSession {
     func insertShapeIntoGrid(key: FlatShapeKey, shape: LayoutShape) {
         shapeByKey[key] = shape
         shapeKeysByLayer[shape.layer, default: []].insert(key)
-        if !service.isManhattanShape(shape, dbu: tech.units.scale.databaseUnitsPerMicrometer) {
-            nonManhattanKeys.insert(key)
-            nonManhattanCountByLayer[shape.layer, default: 0] += 1
-        }
         if let netID = shape.netID {
             shapeKeysByNet[netID, default: []].insert(key)
         }
@@ -456,12 +453,6 @@ extension IncrementalDRCSession {
         shapeKeysByLayer[shape.layer]?.remove(key)
         if shapeKeysByLayer[shape.layer]?.isEmpty == true {
             shapeKeysByLayer[shape.layer] = nil
-        }
-        if nonManhattanKeys.remove(key) != nil {
-            nonManhattanCountByLayer[shape.layer, default: 1] -= 1
-            if nonManhattanCountByLayer[shape.layer] == 0 {
-                nonManhattanCountByLayer[shape.layer] = nil
-            }
         }
         if let netID = shape.netID {
             shapeKeysByNet[netID]?.remove(key)

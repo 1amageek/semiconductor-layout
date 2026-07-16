@@ -55,6 +55,10 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect(inspection.status == "failed")
         #expect(inspection.verification?.status == "failed")
         #expect((inspection.verification?.drc.errorCount ?? 0) > 0)
+        #expect((inspection.verification?.drc.diagnosticCount ?? 0) > 0)
+        #expect(inspection.verification?.drc.diagnostics.contains {
+            $0.code == "drc.geometry_operation_failed" && $0.severity == .error
+        } == true)
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionManifestURL.path))
     }
@@ -395,7 +399,6 @@ struct LayoutCommandCLIServiceFormatTests {
         _ result: LayoutDocumentInspectionResult,
         fixture: Fixture
     ) throws {
-        #expect(result.status == "passed")
         #expect(result.inputArtifact.format == .gdsii)
         #expect(result.inputArtifact.digest.hexadecimalValue.count == 64)
         #expect(result.inputArtifact.byteCount > 0)
@@ -405,9 +408,12 @@ struct LayoutCommandCLIServiceFormatTests {
             $0.layer == LayoutLayerID(name: "M1", purpose: "drawing") && $0.elementCount == 3
         })
         let verification = try #require(result.verification)
+        #expect(result.status == verification.status)
+        #expect(verification.status == "failed")
         #expect(verification.topCellID == result.summary.topCellID)
         #expect(verification.drc.violationCount == verification.drc.violations.count)
-        #expect(verification.drc.errorCount + verification.drc.warningCount == verification.drc.violationCount)
+        #expect(verification.drc.diagnosticCount == verification.drc.diagnostics.count)
+        #expect(verification.drc.diagnostics.contains { $0.severity == .error })
         #expect(verification.connectivity.extractedNetCount >= 0)
         #expect(verification.connectivity.openCount >= 0)
         #expect(verification.connectivity.shortCount >= 0)

@@ -19,6 +19,7 @@ extension IncrementalDRCSession {
         }
 
         try validate(delta, shapeIndexByID: shapeIndexByID, viaIndexByID: viaIndexByID)
+        try validateSupportedGeometry(delta.addedShapes + delta.updatedShapes)
 
         var analysis = try analyze(delta)
         try mutateEditableShapes(delta)

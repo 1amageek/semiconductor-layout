@@ -46,35 +46,6 @@ extension LayoutDRCService {
         return PolygonGeometry.isManhattan(boundary.points)
     }
 
-    /// Single cluster covering the whole layer: the exact-by-definition
-    /// fallback when non-Manhattan geometry makes component banding
-    /// unavailable.
-    func wholeLayerCluster(
-        of shapes: [LayoutShape],
-        keys: [FlatShapeKey]
-    ) -> LayerShapeCluster {
-        guard let firstBox = shapes.first.map({ LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }),
-              let clusterKey = keys.min() else {
-            return LayerShapeCluster(
-                key: .child(-1),
-                memberKeys: [],
-                memberIndices: [],
-                boundingBox: .zero
-            )
-        }
-        let boxes = shapes.map { LayoutGeometryAnalysis.boundingBox(for: $0.geometry) }
-        var hull = firstBox
-        for box in boxes.dropFirst() {
-            hull = hull.union(box)
-        }
-        return LayerShapeCluster(
-            key: clusterKey,
-            memberKeys: keys,
-            memberIndices: Array(shapes.indices),
-            boundingBox: hull
-        )
-    }
-
     /// Halo-closed clusters of the shapes (one layer, Manhattan geometry).
     /// `keys[i]` is the stable occurrence identity of `shapes[i]`.
     ///

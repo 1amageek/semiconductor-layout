@@ -672,7 +672,12 @@ struct LayoutCommandRunnerTests {
             EvidenceManifest.self,
             from: Data(contentsOf: manifestURL)
         )
-        #expect(manifest.artifacts.count == 3)
+        #expect(manifest.artifacts.count == 4)
+        let inputArtifact = try #require(manifest.artifacts.first {
+            $0.locator.role.rawValue == "input-layout-document"
+        })
+        #expect(inputArtifact.path == root.appendingPathComponent("input.json").path)
+        #expect(manifest.provenance.inputs == [inputArtifact])
         let repairArtifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "layout-repair-sweep-0" })
         #expect(repairArtifact.kind == .report)
         #expect(repairArtifact.format == .json)

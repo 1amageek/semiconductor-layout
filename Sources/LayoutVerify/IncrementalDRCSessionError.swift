@@ -22,4 +22,7 @@ public enum IncrementalDRCSessionError: Error, Equatable, Sendable {
     /// contributed by an instantiated child cell, so ID-keyed violation
     /// bookkeeping would be ambiguous.
     case hierarchyIdentifierCollision(UUID)
+    /// The exact rectilinear geometry kernel cannot represent this shape.
+    /// Incremental sessions reject it before mutating their current state.
+    case unsupportedNonRectilinearGeometry(shapeID: UUID)
 }

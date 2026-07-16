@@ -2,6 +2,7 @@ import CircuiteFoundation
 import Foundation
 import LayoutCore
 import LayoutIO
+import LayoutVerify
 
 public struct LayoutDocumentInspectionResult: Codable, Sendable, Equatable {
     public let schemaVersion: SchemaVersion
@@ -50,24 +51,30 @@ public struct LayoutDocumentInspectionDRCSummary: Codable, Sendable, Equatable {
     public let violationCount: Int
     public let errorCount: Int
     public let warningCount: Int
+    public let diagnosticCount: Int
     public let ruleViolationCounts: [String: Int]
     public let kindViolationCounts: [String: Int]
     public let violations: [LayoutDocumentInspectionViolationSummary]
+    public let diagnostics: [LayoutDRCDiagnostic]
 
     public init(
         violationCount: Int,
         errorCount: Int,
         warningCount: Int,
+        diagnosticCount: Int,
         ruleViolationCounts: [String: Int],
         kindViolationCounts: [String: Int],
-        violations: [LayoutDocumentInspectionViolationSummary]
+        violations: [LayoutDocumentInspectionViolationSummary],
+        diagnostics: [LayoutDRCDiagnostic]
     ) {
         self.violationCount = violationCount
         self.errorCount = errorCount
         self.warningCount = warningCount
+        self.diagnosticCount = diagnosticCount
         self.ruleViolationCounts = ruleViolationCounts
         self.kindViolationCounts = kindViolationCounts
         self.violations = violations
+        self.diagnostics = diagnostics
     }
 }
 

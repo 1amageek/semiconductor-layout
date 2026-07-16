@@ -5,11 +5,6 @@ import LayoutCore
 /// the halo-closed cluster partition plus the violations each cluster
 /// produced when it was last checked.
 struct LayerClusterState {
-    /// True when non-Manhattan geometry forced the whole layer into a
-    /// single cluster. Tracked so a later edit that restores Manhattan
-    /// geometry rebuilds the real partition.
-    var isMonolithic = false
-
     /// Clusters by their stable key.
     var clusters: [FlatShapeKey: LayerShapeCluster] = [:]
 

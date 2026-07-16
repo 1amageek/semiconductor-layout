@@ -404,8 +404,10 @@ public struct LayoutCommandCLIService: Sendable {
             tech: tech,
             cellID: topCellID
         )
-        let errors = drcResult.violations.filter { $0.severity == .error }
-        let warnings = drcResult.violations.filter { $0.severity == .warning }
+        let violationErrorCount = drcResult.violations.count { $0.severity == .error }
+        let diagnosticErrorCount = drcResult.diagnostics.count { $0.severity == .error }
+        let violationWarningCount = drcResult.violations.count { $0.severity == .warning }
+        let diagnosticWarningCount = drcResult.diagnostics.count { $0.severity == .warning }
         let ruleCounts = Dictionary(
             grouping: drcResult.violations,
             by: { $0.ruleID ?? "unspecified" }
@@ -441,15 +443,17 @@ public struct LayoutCommandCLIService: Sendable {
                 )
             }
         return LayoutDocumentInspectionVerification(
-            status: errors.isEmpty ? "passed" : "failed",
+            status: drcResult.hasErrors ? "failed" : "passed",
             topCellID: topCellID,
             drc: LayoutDocumentInspectionDRCSummary(
                 violationCount: drcResult.violations.count,
-                errorCount: errors.count,
-                warningCount: warnings.count,
+                errorCount: violationErrorCount + diagnosticErrorCount,
+                warningCount: violationWarningCount + diagnosticWarningCount,
+                diagnosticCount: drcResult.diagnostics.count,
                 ruleViolationCounts: ruleCounts,
                 kindViolationCounts: kindCounts,
-                violations: violations
+                violations: violations,
+                diagnostics: drcResult.diagnostics
             ),
             connectivity: LayoutDocumentInspectionConnectivitySummary(
                 extractedNetCount: connectivity.nets.count,

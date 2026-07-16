@@ -14,34 +14,12 @@ extension IncrementalDRCSession {
             return
         }
         let halo = service.clusterHalo(for: rules, tech: tech)
-        // The non-Manhattan census is maintained per shape insert/remove,
-        // so this is the same verdict the full allSatisfy scan would give
-        // without re-evaluating the predicate across the layer.
-        let manhattan = (nonManhattanCountByLayer[layer] ?? 0) == 0
-
-        guard manhattan else {
-            // Non-Manhattan geometry sidesteps the scanline banding the
-            // partition relies on; one whole-layer cluster is exact by
-            // definition, just without locality.
-            let layerPairs = currentLayerPairs(layer: layer)
-            var state = LayerClusterState()
-            state.isMonolithic = true
-            try installClusters(
-                [service.wholeLayerCluster(of: layerPairs.map(\.shape), keys: layerPairs.map(\.key))],
-                analyzedPairs: layerPairs,
-                into: &state
-            )
-            rebuildClusterGrid(in: &state)
-            clusterStateByLayer[layer] = state
-            return
-        }
-
         // Take ownership out of the dictionary: a subscript read would
         // leave a second reference and turn every in-place mutation below
         // into a full copy of the per-cluster dictionaries — at ~83k
         // single-shape clusters that copy IS the apply cost.
         var state = clusterStateByLayer.removeValue(forKey: layer) ?? LayerClusterState()
-        if state.isMonolithic || state.clusters.isEmpty {
+        if state.clusters.isEmpty {
             let layerPairs = currentLayerPairs(layer: layer)
             state = LayerClusterState()
             try installClusters(
