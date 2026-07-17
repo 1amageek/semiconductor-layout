@@ -20,6 +20,12 @@ policy, or the cross-engine workflow.
 | `LayoutEditor` | Interactive command application and live feedback | Persistence workflow |
 | `LayoutCommands` | Replayable commands plus Foundation-native artifact references and evidence manifests | Long-running orchestration |
 
+Production extraction rules cross the package boundary as versioned
+`LayoutExtractionProcessProfile` artifacts. Consumers supply the profile and its
+source deck together; `LayoutExtractionProcessProfileLoading` verifies schema,
+semantic completeness, identity, and digest integrity. Process-specific Swift
+factories are outside this package's responsibility.
+
 ## Shared foundation contract
 
 `CircuiteFoundation` is a dependency floor, not an adapter layer:

@@ -77,6 +77,9 @@ public struct LayoutExtractionMOSRule: Sendable, Hashable, Codable {
 }
 
 public struct LayoutExtractionProcessProfile: Sendable, Hashable, Codable {
+    public static let currentSchemaVersion = 1
+
+    public let schemaVersion: Int
     public let processID: String
     public let processProfileID: String
     public let extractionDeckDigest: String
@@ -87,6 +90,7 @@ public struct LayoutExtractionProcessProfile: Sendable, Hashable, Codable {
     public let mosRules: [LayoutExtractionMOSRule]
 
     public init(
+        schemaVersion: Int = LayoutExtractionProcessProfile.currentSchemaVersion,
         processID: String,
         processProfileID: String,
         extractionDeckDigest: String,
@@ -96,6 +100,7 @@ public struct LayoutExtractionProcessProfile: Sendable, Hashable, Codable {
         connectionRules: [LayoutExtractionConnectionRule],
         mosRules: [LayoutExtractionMOSRule]
     ) {
+        self.schemaVersion = schemaVersion
         self.processID = processID
         self.processProfileID = processProfileID
         self.extractionDeckDigest = extractionDeckDigest

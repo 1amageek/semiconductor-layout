@@ -57,6 +57,12 @@ Artifact creation is injected through `ArtifactReferencing` and defaults to
 | `LayoutIntegration` | Host application and external signoff integration |
 | `layout-command` | CLI for canonical layout edits, conversion, inspection, and connectivity diagnosis |
 
+`LayoutLVSExtraction` treats process knowledge as data. A PDK supplies a
+versioned `LayoutExtractionProcessProfile` JSON artifact and the corresponding
+source deck. `LayoutExtractionProcessProfileLoader` validates profile structure,
+identity, and the deck SHA-256 digest before exposing extraction rules. The
+library contains no process-specific production profile factory.
+
 The `LayoutEditor` NAND Flash preview loads its GDSII artifact and technology
 sidecar from packaged resources through `LayoutPreviewResourceLoader`.
 Missing or invalid resources produce `LayoutPreviewResourceError`; the preview

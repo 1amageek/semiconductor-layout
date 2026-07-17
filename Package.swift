@@ -15,7 +15,7 @@ let circuiteFoundationDependency: Package.Dependency = isLSIWorkspace && FileMan
     ? .package(path: "../CircuiteFoundation")
     : .package(
         url: "https://github.com/1amageek/CircuiteFoundation.git",
-        revision: "2ec6ee13a89ac6885be3c26b41a9ee0ef89948ac"
+        revision: "7abcac83517935c9b9f7553d7016d62cffde259d"
     )
 
 let swiftMaskDataDependency: Package.Dependency = isLSIWorkspace && FileManager.default.fileExists(
@@ -24,7 +24,7 @@ let swiftMaskDataDependency: Package.Dependency = isLSIWorkspace && FileManager.
     ? .package(path: "../swift-mask-data")
     : .package(
         url: "https://github.com/1amageek/swift-mask-data.git",
-        revision: "66a61801607dc8a0f9dd0d3c4a698b89dda0c358"
+        revision: "9f69af0f9ecf50a250bb270da08b8536af9b1790"
     )
 
 let signoffToolSupportDependency: Package.Dependency = isLSIWorkspace && FileManager.default.fileExists(
@@ -33,7 +33,7 @@ let signoffToolSupportDependency: Package.Dependency = isLSIWorkspace && FileMan
     ? .package(path: "../SignoffToolSupport")
     : .package(
         url: "https://github.com/1amageek/SignoffToolSupport.git",
-        revision: "2c8ce00a8f873934e74e3f219e0cbd122a862fe9"
+        revision: "6bf675eecb27e3bd3440c5ce8a85c85c510fc3cb"
     )
 
 let package = Package(
