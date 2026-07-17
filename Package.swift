@@ -5,7 +5,11 @@ import Foundation
 let workspaceRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .deletingLastPathComponent()
-let circuiteFoundationDependency: Package.Dependency = FileManager.default.fileExists(
+let isLSIWorkspace = FileManager.default.fileExists(
+    atPath: workspaceRoot.appendingPathComponent("docs/workspace-packages.json").path
+)
+
+let circuiteFoundationDependency: Package.Dependency = isLSIWorkspace && FileManager.default.fileExists(
     atPath: workspaceRoot.appendingPathComponent("CircuiteFoundation/Package.swift").path
 )
     ? .package(path: "../CircuiteFoundation")
@@ -14,7 +18,7 @@ let circuiteFoundationDependency: Package.Dependency = FileManager.default.fileE
         revision: "2ec6ee13a89ac6885be3c26b41a9ee0ef89948ac"
     )
 
-let swiftMaskDataDependency: Package.Dependency = FileManager.default.fileExists(
+let swiftMaskDataDependency: Package.Dependency = isLSIWorkspace && FileManager.default.fileExists(
     atPath: workspaceRoot.appendingPathComponent("swift-mask-data/Package.swift").path
 )
     ? .package(path: "../swift-mask-data")
@@ -23,7 +27,7 @@ let swiftMaskDataDependency: Package.Dependency = FileManager.default.fileExists
         revision: "69e345fb89b47884bc80fad1c293005a8156e78b"
     )
 
-let signoffToolSupportDependency: Package.Dependency = FileManager.default.fileExists(
+let signoffToolSupportDependency: Package.Dependency = isLSIWorkspace && FileManager.default.fileExists(
     atPath: workspaceRoot.appendingPathComponent("SignoffToolSupport/Package.swift").path
 )
     ? .package(path: "../SignoffToolSupport")
