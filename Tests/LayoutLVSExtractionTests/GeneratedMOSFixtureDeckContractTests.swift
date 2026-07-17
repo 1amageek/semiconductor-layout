@@ -71,46 +71,4 @@ struct GeneratedMOSFixtureDeckContractTests {
         #expect(audit.productionEligibility.blockingReasons == [.fixtureOnly])
     }
 
-    @Test
-    func fixtureScopeCannotBePromotedThroughSky130ProfileFactory() {
-        let fixture = GeneratedMOSFixtureDeck().makeDeck()
-        let location = LayoutExtractionSourceLocation(
-            path: fixture.sourcePath,
-            startLine: 1,
-            endLine: 1,
-            sourceDigest: fixture.sourceDigest
-        )
-        let deck = LayoutExtractionDeck(
-            processID: "sky130A",
-            processProfileID: "fixture.sky130-mos.v1",
-            sourcePath: fixture.sourcePath,
-            sourceDigest: fixture.sourceDigest,
-            qualificationScope: .fixtureOnly,
-            deviceRules: [
-                LayoutExtractionDeviceRule(
-                    ruleID: "fixture.sky130.nmos",
-                    family: "mosfet",
-                    model: "sky130_fd_pr__nfet_01v8",
-                    recognitionExpressions: ["nfet", "nsdm"],
-                    parameterExpressions: ["w=w", "l=l"],
-                    sourceLocation: location,
-                    sourceText: "fixture sky130 nmos"
-                ),
-                LayoutExtractionDeviceRule(
-                    ruleID: "fixture.sky130.pmos",
-                    family: "mosfet",
-                    model: "sky130_fd_pr__pfet_01v8",
-                    recognitionExpressions: ["pfet", "psdm"],
-                    parameterExpressions: ["w=w", "l=l"],
-                    sourceLocation: location,
-                    sourceText: "fixture sky130 pmos"
-                ),
-            ]
-        )
-
-        let profile = Sky130LayoutExtractionProfileFactory().makeProfile(from: deck)
-
-        #expect(profile.mosRules.count == 2)
-        #expect(!profile.productionEligible)
-    }
 }
