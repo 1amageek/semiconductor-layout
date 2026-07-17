@@ -24,7 +24,7 @@ let swiftMaskDataDependency: Package.Dependency = isLSIWorkspace && FileManager.
     ? .package(path: "../swift-mask-data")
     : .package(
         url: "https://github.com/1amageek/swift-mask-data.git",
-        revision: "9f69af0f9ecf50a250bb270da08b8536af9b1790"
+        revision: "9f69af09ed8dbac2bf7e7c7b1e97632f7a52de77"
     )
 
 let signoffToolSupportDependency: Package.Dependency = isLSIWorkspace && FileManager.default.fileExists(
