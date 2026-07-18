@@ -1,0 +1,55 @@
+{
+  "deviceRules": [
+    {
+      "family": "mosfet",
+      "model": "nmos",
+      "parameterExpressions": [
+        "w=channelWidth",
+        "l=channelLength",
+        "m=parallelFingerCount"
+      ],
+      "recognitionExpressions": [
+        "ACTIVE",
+        "POLY",
+        "NIMP"
+      ],
+      "ruleID": "fixture.generated-mos.nmos",
+      "sourceLocation": {
+        "endLine": 1,
+        "path": "fixture://generated-mos/sample-process-v1",
+        "sourceDigest": "54ed7061b7f6630e1961b4e9cd2aacf19f8b18e30a6809bb6861ac24176ad250",
+        "startLine": 1
+      },
+      "sourceText": "device nmos ACTIVE POLY NIMP w=channelWidth l=channelLength m=parallelFingerCount"
+    },
+    {
+      "family": "mosfet",
+      "model": "pmos",
+      "parameterExpressions": [
+        "w=channelWidth",
+        "l=channelLength",
+        "m=parallelFingerCount"
+      ],
+      "recognitionExpressions": [
+        "ACTIVE",
+        "POLY",
+        "PIMP"
+      ],
+      "ruleID": "fixture.generated-mos.pmos",
+      "sourceLocation": {
+        "endLine": 2,
+        "path": "fixture://generated-mos/sample-process-v1",
+        "sourceDigest": "54ed7061b7f6630e1961b4e9cd2aacf19f8b18e30a6809bb6861ac24176ad250",
+        "startLine": 2
+      },
+      "sourceText": "device pmos ACTIVE POLY PIMP w=channelWidth l=channelLength m=parallelFingerCount"
+    }
+  ],
+  "processID": "fixture.sample-process",
+  "processProfileID": "fixture.generated-mos.v1",
+  "schemaVersion": 2,
+  "sourceDigest": "54ed7061b7f6630e1961b4e9cd2aacf19f8b18e30a6809bb6861ac24176ad250",
+  "sourcePath": "fixture://generated-mos/sample-process-v1",
+  "unsupportedDirectives": [],
+  "useScope": "fixtureOnly"
+}

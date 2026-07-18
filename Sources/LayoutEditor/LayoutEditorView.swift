@@ -197,10 +197,23 @@ public struct LayoutEditorView: View {
 }
 
 #Preview("Folded Cascode OTA") {
-    let (document, tech) = PreviewSampleData.buildFCOTALayout()
-    let viewModel = LayoutEditorViewModel(document: document, tech: tech)
-    viewModel.canvasSize = CGSize(width: 1200, height: 800)
-    viewModel.fitAll()
-    return LayoutEditorView(viewModel: viewModel)
-        .frame(width: 1200, height: 800)
+    do {
+        let (document, tech) = try PreviewSampleData.buildFCOTALayout()
+        let viewModel = LayoutEditorViewModel(document: document, tech: tech)
+        viewModel.canvasSize = CGSize(width: 1200, height: 800)
+        viewModel.fitAll()
+        return AnyView(
+            LayoutEditorView(viewModel: viewModel)
+                .frame(width: 1200, height: 800)
+        )
+    } catch {
+        return AnyView(
+            ContentUnavailableView(
+                "Preview unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text(error.localizedDescription)
+            )
+            .frame(width: 1200, height: 800)
+        )
+    }
 }

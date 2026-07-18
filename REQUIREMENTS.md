@@ -21,6 +21,8 @@
 | Evidence contract | `LayoutCommands` returns `ArtifactReference`, persists `EvidenceManifest`, and injects `ArtifactReferencing` directly |
 | Artifact SSOT | Result JSON never duplicates artifact location, digest, or byte count outside `ArtifactReference` |
 | Command execution | Public command execution is expressed by `LayoutCommandRunning`; the native runner conforms directly |
+| Extraction deck semantics | `LayoutExtractionDeckUseScope` and `LayoutExtractionDeckSemanticReadiness` remain independent observations |
+| Qualification ownership | Production eligibility is decided outside this package from independent tool, process, and policy evidence |
 
 ## Explicit non-goals
 

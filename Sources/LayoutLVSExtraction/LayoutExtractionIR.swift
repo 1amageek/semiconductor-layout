@@ -1,11 +1,11 @@
 public struct LayoutExtractionIR: Sendable, Hashable, Codable {
-    public static let currentSchemaVersion = 4
+    public static let currentSchemaVersion = 5
 
     public let schemaVersion: Int
     public let processID: String
     public let processProfileID: String
     public let extractionDeckDigest: String
-    public let productionEligible: Bool
+    public let deckUseScope: LayoutExtractionDeckUseScope
     public let parameterValueConvention: LayoutExtractionParameterValueConvention
     public let topCell: String
     public let devices: [LayoutExtractionDevice]
@@ -21,7 +21,7 @@ public struct LayoutExtractionIR: Sendable, Hashable, Codable {
         processID: String,
         processProfileID: String,
         extractionDeckDigest: String,
-        productionEligible: Bool = false,
+        deckUseScope: LayoutExtractionDeckUseScope,
         parameterValueConvention: LayoutExtractionParameterValueConvention = .spiceSI,
         topCell: String,
         devices: [LayoutExtractionDevice],
@@ -36,7 +36,7 @@ public struct LayoutExtractionIR: Sendable, Hashable, Codable {
         self.processID = processID
         self.processProfileID = processProfileID
         self.extractionDeckDigest = extractionDeckDigest
-        self.productionEligible = productionEligible
+        self.deckUseScope = deckUseScope
         self.parameterValueConvention = parameterValueConvention
         self.topCell = topCell
         self.devices = devices.sorted { $0.id < $1.id }

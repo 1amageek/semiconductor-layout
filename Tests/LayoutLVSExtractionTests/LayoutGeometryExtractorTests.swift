@@ -1,3 +1,4 @@
+import Foundation
 import LayoutCore
 import LayoutLVSExtraction
 import LayoutTech
@@ -72,8 +73,16 @@ struct LayoutGeometryExtractorTests {
         )
 
         #expect(first == second)
-        #expect(first.schemaVersion == 4)
+        #expect(first.schemaVersion == 5)
+        #expect(first.deckUseScope == .fixtureOnly)
         #expect(first.parameterValueConvention == .spiceSI)
+
+        let data = try JSONEncoder().encode(first)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        #expect(object["deckUseScope"] as? String == "fixtureOnly")
+        #expect(object["productionEligible"] == nil)
     }
 
     @Test func childPinsNameLocalNetsWithoutBecomingTopPorts() throws {
@@ -240,7 +249,7 @@ struct LayoutGeometryExtractorTests {
             processID: "fixture",
             processProfileID: "fixture.mos",
             extractionDeckDigest: "fixture-digest",
-            productionEligible: false,
+            deckUseScope: .fixtureOnly,
             conductorLayers: LayoutExtractionLayerReference(names: ["diff", "poly", "met1"]),
             connectionRules: [],
             mosRules: [

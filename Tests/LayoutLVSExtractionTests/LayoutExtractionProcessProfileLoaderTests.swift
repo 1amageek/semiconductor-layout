@@ -16,6 +16,14 @@ import Testing
 
         #expect(profile.processID == "test-process")
         #expect(profile.processProfileID == "test.profile")
+        #expect(profile.deckUseScope == .processProvided)
+
+        let data = try Data(contentsOf: fixture.profileURL)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        #expect(object["deckUseScope"] as? String == "processProvided")
+        #expect(object["productionEligible"] == nil)
     }
 
     @Test func rejectsMissingProfileArtifact() throws {
@@ -77,12 +85,12 @@ import Testing
     }
 
     @Test func rejectsUnsupportedSchemaVersion() throws {
-        let fixture = try makeFixture(schemaVersion: 2)
+        let fixture = try makeFixture(schemaVersion: 3)
         defer { remove(fixture.root) }
 
         #expect(throws: LayoutExtractionProcessProfileError.unsupportedSchemaVersion(
-            actual: 2,
-            supported: 1
+            actual: 3,
+            supported: 2
         )) {
             _ = try LayoutExtractionProcessProfileLoader().load(
                 profileURL: fixture.profileURL,
@@ -92,7 +100,9 @@ import Testing
         }
     }
 
-    private func makeFixture(schemaVersion: Int = 1) throws -> (
+    private func makeFixture(
+        schemaVersion: Int = LayoutExtractionProcessProfile.currentSchemaVersion
+    ) throws -> (
         root: URL,
         profileURL: URL,
         deckURL: URL
@@ -111,7 +121,7 @@ import Testing
             processID: "test-process",
             processProfileID: "test.profile",
             extractionDeckDigest: digest,
-            productionEligible: true,
+            deckUseScope: .processProvided,
             conductorLayers: LayoutExtractionLayerReference(names: ["active", "poly", "metal1"]),
             connectionRules: [],
             mosRules: [

@@ -10,6 +10,8 @@
   `EvidenceManifest`, and has no package-local artifact schema or digest path.
 - Deterministic import, hierarchy safety, and exact-geometry behavior are
   documented and covered by regression tests.
+- Extraction deck use scope and semantic readiness are independent typed
+  observations; this package does not issue production eligibility decisions.
 - Package responsibilities and agent hand-off rules are documented in
   `README.md`, `DESIGN.md`, and `REQUIREMENTS.md`.
 
@@ -39,6 +41,7 @@ signoff qualification remains outside this package's baseline completion.
 
 1. Keep consuming engines aligned with the Foundation artifact/provenance
    contract now emitted directly by `LayoutCommands`.
-2. Add qualified technology-rule fixtures for exact DRC/LVS extraction.
+2. Add process-provided technology-rule fixtures for exact DRC/LVS extraction
+   and qualify them independently through `ToolQualification`.
 3. Extend flow-owned run references without duplicating artifact identity in
    this package or moving orchestration into it.

@@ -8,7 +8,7 @@ public struct GeneratedMOSLayoutExtractionProfileFactory: Sendable {
             processID: deck.processID,
             processProfileID: deck.processProfileID,
             extractionDeckDigest: deck.sourceDigest,
-            productionEligible: false,
+            deckUseScope: deck.useScope,
             conductorLayers: LayoutExtractionLayerReference(names: [
                 "ACTIVE", "POLY", "M1", "M2", "M3", "M4", "M5",
             ]),

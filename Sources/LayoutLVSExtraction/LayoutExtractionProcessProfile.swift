@@ -77,13 +77,13 @@ public struct LayoutExtractionMOSRule: Sendable, Hashable, Codable {
 }
 
 public struct LayoutExtractionProcessProfile: Sendable, Hashable, Codable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
     public let processID: String
     public let processProfileID: String
     public let extractionDeckDigest: String
-    public let productionEligible: Bool
+    public let deckUseScope: LayoutExtractionDeckUseScope
     public let parameterValueConvention: LayoutExtractionParameterValueConvention
     public let conductorLayers: LayoutExtractionLayerReference
     public let connectionRules: [LayoutExtractionConnectionRule]
@@ -94,7 +94,7 @@ public struct LayoutExtractionProcessProfile: Sendable, Hashable, Codable {
         processID: String,
         processProfileID: String,
         extractionDeckDigest: String,
-        productionEligible: Bool,
+        deckUseScope: LayoutExtractionDeckUseScope,
         parameterValueConvention: LayoutExtractionParameterValueConvention = .spiceSI,
         conductorLayers: LayoutExtractionLayerReference,
         connectionRules: [LayoutExtractionConnectionRule],
@@ -104,7 +104,7 @@ public struct LayoutExtractionProcessProfile: Sendable, Hashable, Codable {
         self.processID = processID
         self.processProfileID = processProfileID
         self.extractionDeckDigest = extractionDeckDigest
-        self.productionEligible = productionEligible
+        self.deckUseScope = deckUseScope
         self.parameterValueConvention = parameterValueConvention
         self.conductorLayers = conductorLayers
         self.connectionRules = connectionRules

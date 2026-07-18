@@ -610,7 +610,7 @@ public struct LayoutGeometryExtractor: LayoutGeometryExtracting {
             processID: profile.processID,
             processProfileID: profile.processProfileID,
             extractionDeckDigest: profile.extractionDeckDigest,
-            productionEligible: profile.productionEligible,
+            deckUseScope: profile.deckUseScope,
             parameterValueConvention: profile.parameterValueConvention,
             topCell: flattened.topCellName,
             devices: devices,

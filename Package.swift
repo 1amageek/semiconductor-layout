@@ -162,7 +162,8 @@ let package = Package(
                 "LayoutLVSExtraction",
                 "LayoutCore",
                 "LayoutTech",
-            ]
+            ],
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "LayoutCoreTests",

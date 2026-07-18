@@ -12,7 +12,7 @@ policy, or the cross-engine workflow.
 | Layer | Owns | Does not own |
 |---|---|---|
 | `LayoutCore` | Canonical layout document and geometry | Artifact persistence and process execution |
-| `LayoutTech` | Process layers, vias, rules, and qualification metadata | Foundry rule interpretation outside its schema |
+| `LayoutTech` | Process layers, vias, rules, and rule-program metadata | Foundry rule interpretation outside its schema |
 | `LayoutVerify` | DRC/connectivity/extraction calculations and typed findings | UI presentation or release policy |
 | `LayoutIO` | Serialization and standard-format conversion | Canonical project directory layout |
 | `LayoutLVSExtraction` | Layout extraction deck/IR preparation and audit | Netlist comparison policy owned by verification consumers |
@@ -25,6 +25,17 @@ Production extraction rules cross the package boundary as versioned
 source deck together; `LayoutExtractionProcessProfileLoading` verifies schema,
 semantic completeness, identity, and digest integrity. Process-specific Swift
 factories are outside this package's responsibility.
+
+`LayoutLVSExtraction` exposes source facts, not production eligibility.
+`LayoutExtractionDeckUseScope` distinguishes fixture-only data from
+process-provided data. `LayoutExtractionDeckAuditor` evaluates required device
+families and returns `LayoutExtractionDeckSemanticReadiness`; `isReady` means the
+requested extraction semantics are representable. Neither use scope nor
+semantic readiness is a qualification decision. `ToolQualification` combines
+these observations with independent tool, process, and policy evidence.
+`LayoutExtractionProcessProfile.deckUseScope` is propagated into
+`LayoutExtractionIR` so an independent consumer can evaluate the source scope
+without this package making the decision itself.
 
 ## Shared foundation contract
 

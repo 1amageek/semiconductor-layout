@@ -38,7 +38,7 @@ public struct GeneratedMOSFixtureDeck: Sendable {
             processProfileID: Self.processProfileID,
             sourcePath: sourcePath,
             sourceDigest: digest,
-            qualificationScope: .fixtureOnly,
+            useScope: .fixtureOnly,
             deviceRules: rules
         )
     }

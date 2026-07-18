@@ -13,30 +13,26 @@ public struct LayoutExtractionDeckAuditor: Sendable {
             }
             return family
         }).sorted()
-        var blockingReasons = missing.map(
-            LayoutExtractionDeckProductionBlockReason.missingRequiredFamily
+        var semanticIssues = missing.map(
+            LayoutExtractionDeckSemanticIssue.missingRequiredFamily
         )
-        if deck.qualificationScope == .fixtureOnly {
-            blockingReasons.append(.fixtureOnly)
-        }
         for directive in deck.unsupportedDirectives {
             if let family = directive.family, requiredFamilies.contains(family) {
-                blockingReasons.append(.unsupportedRequiredFamily(
+                semanticIssues.append(.unsupportedRequiredFamily(
                     family: family,
                     reasonCode: directive.reasonCode
                 ))
             }
         }
-        let productionEligibility = LayoutExtractionDeckProductionEligibility(
-            blockingReasons: blockingReasons
+        let semanticReadiness = LayoutExtractionDeckSemanticReadiness(
+            issues: semanticIssues
         )
         return LayoutExtractionDeckAudit(
-            status: productionEligibility.isEligible ? .satisfied : .blocked,
             processID: deck.processID,
             processProfileID: deck.processProfileID,
             sourceDigest: deck.sourceDigest,
-            qualificationScope: deck.qualificationScope,
-            productionEligibility: productionEligibility,
+            useScope: deck.useScope,
+            semanticReadiness: semanticReadiness,
             deviceRuleCount: deck.deviceRules.count,
             deviceRuleCountsByFamily: counts,
             missingRequiredFamilies: missing,

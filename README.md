@@ -47,7 +47,7 @@ Artifact creation is injected through `ArtifactReferencing` and defaults to
 | Product | Responsibility |
 |---|---|
 | `LayoutCore` | Cells, instances, shapes, vias, nets, constraints, transforms, and database units |
-| `LayoutTech` | Layer and process-rule database plus qualified rule-program metadata |
+| `LayoutTech` | Layer and process-rule database plus rule-program metadata |
 | `LayoutVerify` | DRC, connectivity extraction, device extraction, netlist comparison, and verified repair deltas |
 | `LayoutIO` | Layout document serialization and GDSII/OASIS/CIF/DXF/LEF/DEF conversion |
 | `LayoutLVSExtraction` | Layout-to-netlist extraction deck preparation and audit contracts |
@@ -62,6 +62,26 @@ versioned `LayoutExtractionProcessProfile` JSON artifact and the corresponding
 source deck. `LayoutExtractionProcessProfileLoader` validates profile structure,
 identity, and the deck SHA-256 digest before exposing extraction rules. The
 library contains no process-specific production profile factory.
+
+Extraction deck audit reports two independent facts. `LayoutExtractionDeckUseScope`
+records whether a deck is a packaged fixture or was supplied by a process source.
+`LayoutExtractionDeckSemanticReadiness` records whether required device families
+are present and semantically supported. Fixture scope does not make a deck
+semantically incomplete, and process-provided scope does not make it production
+eligible. Tool trust, process qualification, and release policy remain owned by
+`ToolQualification` and the flow layer.
+
+`LayoutExtractionProcessProfile` and `LayoutExtractionIR` carry `deckUseScope`
+forward as provenance. They do not carry a production-eligibility flag.
+
+```mermaid
+flowchart LR
+  Deck["LayoutExtractionDeck"] --> Scope["useScope\nfixtureOnly / processProvided"]
+  Deck --> Audit["LayoutExtractionDeckAudit"]
+  Audit --> Ready["semanticReadiness / isReady"]
+  Scope --> Policy["ToolQualification + flow policy"]
+  Ready --> Policy
+```
 
 The `LayoutEditor` NAND Flash preview loads its GDSII artifact and technology
 sidecar from packaged resources through `LayoutPreviewResourceLoader`.

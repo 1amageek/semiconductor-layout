@@ -780,7 +780,7 @@ enum PreviewSampleData {
     // MARK: - Public Entry Point
 
     @MainActor
-    static func buildFCOTALayout() -> (LayoutDocument, LayoutTechDatabase) {
+    static func buildFCOTALayout() throws -> (LayoutDocument, LayoutTechDatabase) {
         let tech = LayoutTechDatabase.sampleProcess()
         let guardRing = guardRingCell(innerW: 24200, innerH: 18700)
 
@@ -805,11 +805,7 @@ enum PreviewSampleData {
         )
 
         let converter = IRLayoutConverter()
-        do {
-            let document = try converter.checkedImportLibrary(irLib, tech: tech)
-            return (document, tech)
-        } catch {
-            preconditionFailure("Built-in FC OTA preview IR is invalid: \(error)")
-        }
+        let document = try converter.checkedImportLibrary(irLib, tech: tech)
+        return (document, tech)
     }
 }
