@@ -40,7 +40,7 @@ public struct TechFormatConverter: Sendable {
 
         case "lef":
             let doc = try LEFLibraryReader.read(data)
-            return LEFTechIRConverter.toIRTechLibrary(doc)
+            return try LEFTechIRConverter.toIRTechLibrary(doc)
 
         case "json":
             do {

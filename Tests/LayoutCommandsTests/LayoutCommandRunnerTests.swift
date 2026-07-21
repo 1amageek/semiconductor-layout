@@ -257,6 +257,9 @@ struct LayoutCommandRunnerTests {
         #expect(artifact.path == documentURL.path)
         #expect(artifact == result.outputArtifact)
         #expect(artifact.byteCount == UInt64(documentData.count))
+        #expect(artifact.producer == manifest.provenance.producer)
+        #expect(artifact.producer?.identifier == "layout-command")
+        #expect(artifact.producer?.version == "2")
         let savedResult = try JSONDecoder().decode(LayoutCommandResult.self, from: Data(contentsOf: resultURL))
         #expect(savedResult == result)
         let resultData = try Data(contentsOf: resultURL)
@@ -266,6 +269,7 @@ struct LayoutCommandRunnerTests {
         #expect(resultArtifact.path == resultURL.path)
         #expect(resultArtifact.digest == (try SHA256ContentDigester().digest(data: resultData, using: .sha256)))
         #expect(resultArtifact.byteCount == UInt64(resultData.count))
+        #expect(resultArtifact.producer == manifest.provenance.producer)
     }
 
     @Test("Runner creates generic polygon and path shapes")

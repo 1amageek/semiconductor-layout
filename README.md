@@ -40,7 +40,10 @@ repair algorithms remain owned here.
 SHA-256 digests, and byte counts have a single source of truth in
 `CircuiteFoundation`; command result JSON does not duplicate those fields.
 Artifact creation is injected through `ArtifactReferencing` and defaults to
-`LocalArtifactReferencer`.
+`LocalArtifactReferencer`. Every command-produced output reference carries the
+same exact `ProducerIdentity` as the manifest execution provenance, allowing a
+composing runtime to normalize locations without reconstructing or losing
+producer lineage.
 
 ## Products
 
