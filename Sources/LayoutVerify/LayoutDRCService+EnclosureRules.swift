@@ -246,6 +246,13 @@ extension LayoutDRCService {
                 let bestCandidate = extendingShapes
                     .compactMap { extendingShape -> (shape: LayoutShape, box: LayoutRect, measurement: Double)? in
                         let extendingBox = LayoutGeometryAnalysis.boundingBox(for: extendingShape.geometry)
+                        if rule.coveragePolicy == .whenPresent,
+                           !LayoutGeometryAnalysis.intersects(
+                               extendingShape.geometry,
+                               enclosedShape.geometry
+                           ) {
+                            return nil
+                        }
                         guard let measurement = extensionMeasurement(
                             direction: rule.direction,
                             extending: extendingBox,
@@ -257,6 +264,9 @@ extension LayoutDRCService {
                     }
                     .max { $0.measurement < $1.measurement }
 
+                if rule.coveragePolicy == .whenPresent, bestCandidate == nil {
+                    continue
+                }
                 let measured = bestCandidate?.measurement ?? 0
                 guard measured + Self.numericalTolerance < rule.minExtension else { continue }
 

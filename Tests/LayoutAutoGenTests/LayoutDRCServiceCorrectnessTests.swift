@@ -933,6 +933,62 @@ struct LayoutDRCServiceCorrectnessTests {
         #expect(!result.violations.contains { $0.kind == .extension })
     }
 
+    @Test func optionalCoverageExtensionIgnoresAbsentExtendingGeometry() {
+        let activeLayer = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
+        let active = shape(layer: activeLayer, x: 0.0, y: 0.0, width: 1.0, height: 0.5)
+        let result = LayoutDRCService().run(
+            document: document(shapes: [active]),
+            tech: extensionTech(
+                extending: polyLayer,
+                enclosed: activeLayer,
+                minExtension: 0.13,
+                direction: .horizontal,
+                coveragePolicy: .whenPresent
+            )
+        )
+
+        #expect(!result.violations.contains { $0.kind == .extension })
+    }
+
+    @Test func optionalCoverageExtensionChecksIntersectingGeometry() {
+        let activeLayer = LayoutLayerID(name: "ACTIVE", purpose: "drawing")
+        let poly = shape(layer: polyLayer, x: -0.05, y: 0.0, width: 1.1, height: 0.1)
+        let active = shape(layer: activeLayer, x: 0.0, y: -0.2, width: 1.0, height: 0.5)
+        let result = LayoutDRCService().run(
+            document: document(shapes: [poly, active]),
+            tech: extensionTech(
+                extending: polyLayer,
+                enclosed: activeLayer,
+                minExtension: 0.13,
+                direction: .horizontal,
+                coveragePolicy: .whenPresent
+            )
+        )
+
+        let violation = result.violations.first { $0.kind == .extension }
+        #expect(violation?.ruleID == "extension.POLY.drawing.ACTIVE.drawing.horizontal.when-present")
+        #expect(abs((violation?.measured ?? 0) - 0.05) < 1.0e-9)
+        #expect(violation?.required == 0.13)
+    }
+
+    @Test func extensionRuleDecodingDefaultsToRequiredCoverage() throws {
+        let json = """
+        {
+          "extendingLayer": { "name": "POLY", "purpose": "drawing" },
+          "enclosedLayer": { "name": "ACTIVE", "purpose": "drawing" },
+          "minExtension": 0.13,
+          "direction": "horizontal"
+        }
+        """
+
+        let rule = try JSONDecoder().decode(
+            LayoutExtensionRule.self,
+            from: Data(json.utf8)
+        )
+
+        #expect(rule.coveragePolicy == .required)
+    }
+
     // MARK: - Helpers
 
     private func document(shapes: [LayoutShape], vias: [LayoutVia] = []) -> LayoutDocument {
@@ -1202,7 +1258,8 @@ struct LayoutDRCServiceCorrectnessTests {
         extending: LayoutLayerID,
         enclosed: LayoutLayerID,
         minExtension: Double,
-        direction: LayoutExtensionRule.Direction
+        direction: LayoutExtensionRule.Direction,
+        coveragePolicy: LayoutExtensionRule.CoveragePolicy = .required
     ) -> LayoutTechDatabase {
         LayoutTechDatabase(
             units: .defaultUnits,
@@ -1232,7 +1289,8 @@ struct LayoutDRCServiceCorrectnessTests {
                     extendingLayer: extending,
                     enclosedLayer: enclosed,
                     minExtension: minExtension,
-                    direction: direction
+                    direction: direction,
+                    coveragePolicy: coveragePolicy
                 )
             ]
         )

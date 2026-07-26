@@ -101,6 +101,11 @@ substituting unrelated geometry.
 - Hierarchy cycles and missing child cells are blocking verification diagnostics.
 - Interactive DRC may use development geometry, while exact-only verification
   rejects unsupported path and non-rectilinear geometry with typed diagnostics.
+- Extension rules retain their coverage contract: `required` reports missing
+  extending geometry, while `when-present` checks extension only where the two
+  layer geometries intersect. This distinction lets importers preserve source
+  `overhang` and conditional `extend` semantics without changing the DRC
+  kernel's ownership boundary.
 - Seeded placement and routing operate on canonical ordering for reproducible
   results.
 - Standard mask formats and structured JSON artifacts are the interchange

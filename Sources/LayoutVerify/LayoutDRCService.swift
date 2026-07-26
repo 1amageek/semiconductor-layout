@@ -954,7 +954,11 @@ public struct LayoutDRCService {
     }
 
     func extensionRuleID(_ rule: LayoutExtensionRule) -> String {
-        "extension.\(rule.extendingLayer.name).\(rule.extendingLayer.purpose).\(rule.enclosedLayer.name).\(rule.enclosedLayer.purpose).\(rule.direction.rawValue)"
+        let base = "extension.\(rule.extendingLayer.name).\(rule.extendingLayer.purpose).\(rule.enclosedLayer.name).\(rule.enclosedLayer.purpose).\(rule.direction.rawValue)"
+        if rule.coveragePolicy == .whenPresent {
+            return "\(base).when-present"
+        }
+        return base
     }
 
     func minimumCutRuleID(_ rule: LayoutMinimumCutRule) -> String {
