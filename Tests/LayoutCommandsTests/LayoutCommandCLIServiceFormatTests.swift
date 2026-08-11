@@ -1,4 +1,5 @@
 import CircuiteFoundation
+import CircuiteFoundationCrypto
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -366,7 +367,7 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect(result.outputArtifact.byteCount > 0)
         #expect(result.outputArtifact.digest.hexadecimalValue.count == 64)
         #expect(result.inputArtifact.digest.hexadecimalValue.count == 64)
-        #expect(result.outputArtifact.path == fixture.gdsURL.path)
+        #expect(result.outputArtifact.descriptor.role.rawValue == "output-layout-document")
         #expect(result.summary.cellCount == 1)
         #expect(result.summary.shapeCount == 3)
         #expect(FileManager.default.fileExists(atPath: fixture.gdsURL.path))
@@ -380,18 +381,26 @@ struct LayoutCommandCLIServiceFormatTests {
     ) throws {
         let manifest = try decodeFile(EvidenceManifest.self, from: fixture.conversionManifestURL)
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "input-layout-document"
+            $0.descriptor.role.rawValue == "input-layout-document"
                 && $0 == result.inputArtifact
         })
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "output-layout-document"
+            $0.descriptor.role.rawValue == "output-layout-document"
                 && $0 == result.outputArtifact
         })
+        let technologyData = try Data(contentsOf: fixture.techURL)
+        let technologyDigest = try SHA256ContentDigester().digest(data: technologyData, using: .sha256)
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "technology-profile" && $0.path == fixture.techURL.path
+            $0.descriptor.role.rawValue == "technology-profile"
+                && $0.digest == technologyDigest
+                && $0.byteCount == UInt64(technologyData.count)
         })
+        let resultData = try Data(contentsOf: fixture.conversionResultURL)
+        let resultDigest = try SHA256ContentDigester().digest(data: resultData, using: .sha256)
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "layout-conversion-result" && $0.path == fixture.conversionResultURL.path
+            $0.descriptor.role.rawValue == "layout-conversion-result"
+                && $0.digest == resultDigest
+                && $0.byteCount == UInt64(resultData.count)
         })
     }
 
@@ -427,14 +436,22 @@ struct LayoutCommandCLIServiceFormatTests {
     ) throws {
         let manifest = try decodeFile(EvidenceManifest.self, from: fixture.inspectionManifestURL)
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "input-layout-document"
+            $0.descriptor.role.rawValue == "input-layout-document"
                 && $0 == result.inputArtifact
         })
+        let technologyData = try Data(contentsOf: fixture.techURL)
+        let technologyDigest = try SHA256ContentDigester().digest(data: technologyData, using: .sha256)
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "technology-profile" && $0.path == fixture.techURL.path
+            $0.descriptor.role.rawValue == "technology-profile"
+                && $0.digest == technologyDigest
+                && $0.byteCount == UInt64(technologyData.count)
         })
+        let resultData = try Data(contentsOf: fixture.inspectionResultURL)
+        let resultDigest = try SHA256ContentDigester().digest(data: resultData, using: .sha256)
         #expect(manifest.artifacts.contains {
-            $0.locator.role.rawValue == "layout-inspection-result" && $0.path == fixture.inspectionResultURL.path
+            $0.descriptor.role.rawValue == "layout-inspection-result"
+                && $0.digest == resultDigest
+                && $0.byteCount == UInt64(resultData.count)
         })
     }
 

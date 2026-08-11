@@ -1,4 +1,5 @@
 import CircuiteFoundation
+import CircuiteFoundationCrypto
 import Foundation
 import LayoutCommands
 import LayoutCore
@@ -251,25 +252,22 @@ struct LayoutCommandRunnerTests {
         #expect(FileManager.default.fileExists(atPath: resultURL.path))
         let manifest = try JSONDecoder().decode(EvidenceManifest.self, from: Data(contentsOf: manifestURL))
         #expect(manifest.artifacts.count == 2)
-        let artifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "output-layout-document" })
+        let artifact = try #require(manifest.artifacts.first { $0.descriptor.role.rawValue == "output-layout-document" })
         #expect(artifact.kind == .layout)
         #expect(artifact.format == .json)
-        #expect(artifact.path == documentURL.path)
         #expect(artifact == result.outputArtifact)
+        #expect(artifact.digest == (try SHA256ContentDigester().digest(data: documentData, using: .sha256)))
         #expect(artifact.byteCount == UInt64(documentData.count))
-        #expect(artifact.producer == manifest.provenance.producer)
-        #expect(artifact.producer?.identifier == "layout-command")
-        #expect(artifact.producer?.version == "2")
+        #expect(manifest.provenance.producer.identifier == "layout-command")
+        #expect(manifest.provenance.producer.version == "2")
         let savedResult = try JSONDecoder().decode(LayoutCommandResult.self, from: Data(contentsOf: resultURL))
         #expect(savedResult == result)
         let resultData = try Data(contentsOf: resultURL)
-        let resultArtifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "layout-command-result" })
+        let resultArtifact = try #require(manifest.artifacts.first { $0.descriptor.role.rawValue == "layout-command-result" })
         #expect(resultArtifact.kind == .report)
         #expect(resultArtifact.format == .json)
-        #expect(resultArtifact.path == resultURL.path)
         #expect(resultArtifact.digest == (try SHA256ContentDigester().digest(data: resultData, using: .sha256)))
         #expect(resultArtifact.byteCount == UInt64(resultData.count))
-        #expect(resultArtifact.producer == manifest.provenance.producer)
     }
 
     @Test("Runner creates generic polygon and path shapes")
@@ -678,14 +676,15 @@ struct LayoutCommandRunnerTests {
         )
         #expect(manifest.artifacts.count == 4)
         let inputArtifact = try #require(manifest.artifacts.first {
-            $0.locator.role.rawValue == "input-layout-document"
+            $0.descriptor.role.rawValue == "input-layout-document"
         })
-        #expect(inputArtifact.path == root.appendingPathComponent("input.json").path)
+        let inputData = try Data(contentsOf: root.appendingPathComponent("input.json"))
+        #expect(inputArtifact.digest == (try SHA256ContentDigester().digest(data: inputData, using: .sha256)))
+        #expect(inputArtifact.byteCount == UInt64(inputData.count))
         #expect(manifest.provenance.inputs == [inputArtifact])
-        let repairArtifact = try #require(manifest.artifacts.first { $0.locator.role.rawValue == "layout-repair-sweep-0" })
+        let repairArtifact = try #require(manifest.artifacts.first { $0.descriptor.role.rawValue == "layout-repair-sweep-0" })
         #expect(repairArtifact.kind == .report)
         #expect(repairArtifact.format == .json)
-        #expect(repairArtifact.path == reportURL.path)
         #expect(repairArtifact.digest == (try SHA256ContentDigester().digest(data: reportData, using: .sha256)))
         #expect(repairArtifact.byteCount == UInt64(reportData.count))
     }
@@ -1633,7 +1632,7 @@ struct LayoutCommandRunnerTests {
             EvidenceManifest.self,
             from: Data(contentsOf: roots.first.appendingPathComponent("artifacts/manifest.json"))
         )
-        let layoutArtifact = try #require(firstManifest.artifacts.first { $0.locator.role.rawValue == "output-layout-document" })
+        let layoutArtifact = try #require(firstManifest.artifacts.first { $0.descriptor.role.rawValue == "output-layout-document" })
         #expect(layoutArtifact == firstResult.outputArtifact)
         #expect(layoutArtifact.byteCount == UInt64(firstDocumentData.count))
     }

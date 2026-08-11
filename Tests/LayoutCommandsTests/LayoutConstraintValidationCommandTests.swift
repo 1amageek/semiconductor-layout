@@ -48,8 +48,8 @@ struct LayoutConstraintValidationCommandTests {
             EvidenceManifest.self,
             from: Data(contentsOf: fixture.manifestURL)
         )
-        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "input-layout-document" })
-        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "layout-constraint-validation-result" })
+        #expect(manifest.artifacts.contains { $0.descriptor.role.rawValue == "input-layout-document" })
+        #expect(manifest.artifacts.contains { $0.descriptor.role.rawValue == "layout-constraint-validation-result" })
     }
 
     @Test("CLI service returns zero when constraint errors are absent")

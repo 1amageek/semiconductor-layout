@@ -72,7 +72,7 @@ struct LayoutGuardRingCommandTests {
             EvidenceManifest.self,
             from: Data(contentsOf: rootURL.appendingPathComponent("artifacts/manifest.json"))
         )
-        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "layout-guard-ring-2" })
+        #expect(manifest.artifacts.contains { $0.descriptor.role.rawValue == "layout-guard-ring-2" })
     }
 
     private func makeRootURL() throws -> URL {

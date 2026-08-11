@@ -1,4 +1,7 @@
 import CircuiteFoundation
+import CircuiteFoundationCrypto
+import CircuiteFoundationFileSystem
+import CircuiteFoundationFoundation
 import Foundation
 import LayoutCore
 import LayoutIO
@@ -66,7 +69,7 @@ public struct LayoutCommandCLIService: Sendable {
         }
 
         return (
-            "layout-command \(result.status): \(result.commandCount) commands, \(result.shapeCount) shapes, \(result.outputArtifact.path)",
+            "layout-command \(result.status): \(result.commandCount) commands, \(result.shapeCount) shapes, content \(result.outputArtifact.id.description)",
             result.status
         )
     }
@@ -103,8 +106,7 @@ public struct LayoutCommandCLIService: Sendable {
             at: outputURL,
             role: "output-layout-document",
             kind: .layout,
-            format: try Self.artifactFormat(for: request.outputFormat),
-            producer: try producerIdentity()
+            format: try Self.artifactFormat(for: request.outputFormat)
         )
         let technologyArtifact = try technologyArtifact(path: request.technologyPath)
         let result = makeConversionResult(
@@ -382,7 +384,7 @@ public struct LayoutCommandCLIService: Sendable {
             return jsonString(from: resultData)
         }
         return """
-        layout-command convert-document passed: \(result.inputArtifact.format.rawValue) -> \(result.outputArtifact.format.rawValue), \(result.summary.cellCount) cells, \(result.summary.shapeCount) shapes, \(result.outputArtifact.path)
+        layout-command convert-document passed: \(result.inputArtifact.descriptor.format.rawValue) -> \(result.outputArtifact.descriptor.format.rawValue), \(result.summary.cellCount) cells, \(result.summary.shapeCount) shapes, content \(result.outputArtifact.id.description)
         """
     }
 
@@ -635,8 +637,7 @@ public struct LayoutCommandCLIService: Sendable {
             at: url,
             role: role,
             kind: kind,
-            format: format,
-            producer: try producerIdentity()
+            format: format
         )
     }
 
@@ -662,7 +663,12 @@ public struct LayoutCommandCLIService: Sendable {
             startedAt: startedAt,
             completedAt: Date()
         )
-        let data = try encoder.encode(EvidenceManifest(provenance: provenance, artifacts: artifacts))
+        let manifest = try EvidenceManifest.contentAddressed(
+            provenance: provenance,
+            artifacts: artifacts,
+            digester: SHA256ContentDigester()
+        )
+        let data = try encoder.encode(manifest)
         try data.write(to: url, options: .atomic)
     }
 
@@ -670,8 +676,7 @@ public struct LayoutCommandCLIService: Sendable {
         at url: URL,
         role: String,
         kind: ArtifactKind,
-        format: ArtifactFormat,
-        producer: ProducerIdentity? = nil
+        format: ArtifactFormat
     ) throws -> ArtifactReference {
         let locator = ArtifactLocator(
             location: try ArtifactLocation(fileURL: url),
@@ -679,7 +684,7 @@ public struct LayoutCommandCLIService: Sendable {
             kind: kind,
             format: format
         )
-        return try artifactReferencer.reference(locator, relativeTo: nil, producer: producer)
+        return try artifactReferencer.reference(locator, relativeTo: nil)
     }
 
     private func producerIdentity() throws -> ProducerIdentity {

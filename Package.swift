@@ -62,6 +62,7 @@ let package = Package(
             name: "LayoutCore",
             dependencies: [
                 .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
+                .product(name: "CircuiteFoundationFoundation", package: "CircuiteFoundation"),
             ]
         ),
         .target(
@@ -138,6 +139,9 @@ let package = Package(
                 "LayoutVerify",
                 "LayoutAutoGen",
                 .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
+                .product(name: "CircuiteFoundationCrypto", package: "CircuiteFoundation"),
+                .product(name: "CircuiteFoundationFoundation", package: "CircuiteFoundation"),
+                .product(name: "CircuiteFoundationFileSystem", package: "CircuiteFoundation"),
             ]
         ),
         .executableTarget(
@@ -214,6 +218,7 @@ let package = Package(
                 "LayoutTech",
                 "LayoutVerify",
                 .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
+                .product(name: "CircuiteFoundationCrypto", package: "CircuiteFoundation"),
             ],
             resources: [
                 .process("Fixtures"),

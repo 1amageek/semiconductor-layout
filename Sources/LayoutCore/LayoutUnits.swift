@@ -1,5 +1,5 @@
 import Foundation
-import CircuiteFoundation
+import CircuiteFoundationFoundation
 
 public struct LayoutUnits: Hashable, Sendable, Codable {
     public let scale: DatabaseUnitScale

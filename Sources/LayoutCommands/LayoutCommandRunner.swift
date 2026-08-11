@@ -1,4 +1,7 @@
 import CircuiteFoundation
+import CircuiteFoundationCrypto
+import CircuiteFoundationFileSystem
+import CircuiteFoundationFoundation
 import Foundation
 import LayoutAutoGen
 import LayoutCore
@@ -120,8 +123,7 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             at: output.url,
             role: "output-layout-document",
             kind: .layout,
-            format: .json,
-            producer: try producerIdentity()
+            format: .json
         )
         let result = makeResult(
             request: request,
@@ -206,8 +208,7 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             at: pending.url,
             role: pending.role,
             kind: .report,
-            format: .json,
-            producer: try producerIdentity()
+            format: .json
         )
     }
 
@@ -225,8 +226,7 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             at: resultURL,
             role: "layout-command-result",
             kind: .report,
-            format: .json,
-            producer: try producerIdentity()
+            format: .json
         )
     }
 
@@ -244,7 +244,11 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             startedAt: startedAt,
             completedAt: Date()
         )
-        let manifest = EvidenceManifest(provenance: provenance, artifacts: artifacts)
+        let manifest = try EvidenceManifest.contentAddressed(
+            provenance: provenance,
+            artifacts: artifacts,
+            digester: SHA256ContentDigester()
+        )
         try FileManager.default.createDirectory(
             at: manifestURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -257,8 +261,7 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
         at url: URL,
         role: String,
         kind: ArtifactKind,
-        format: ArtifactFormat,
-        producer: ProducerIdentity? = nil
+        format: ArtifactFormat
     ) throws -> ArtifactReference {
         let locator = ArtifactLocator(
             location: try ArtifactLocation(fileURL: url),
@@ -266,7 +269,7 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             kind: kind,
             format: format
         )
-        return try artifactReferencer.reference(locator, relativeTo: nil, producer: producer)
+        return try artifactReferencer.reference(locator, relativeTo: nil)
     }
 
     private func producerIdentity() throws -> ProducerIdentity {

@@ -97,7 +97,7 @@ struct LayoutAnalogArrayCommandTests {
             EvidenceManifest.self,
             from: Data(contentsOf: rootURL.appendingPathComponent("artifacts/manifest.json"))
         )
-        #expect(manifest.artifacts.contains { $0.locator.role.rawValue == "layout-analog-array-7" })
+        #expect(manifest.artifacts.contains { $0.descriptor.role.rawValue == "layout-analog-array-7" })
     }
 
     private func makeRootURL() throws -> URL {
