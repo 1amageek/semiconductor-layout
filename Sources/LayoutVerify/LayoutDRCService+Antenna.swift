@@ -78,6 +78,7 @@ extension LayoutDRCService {
             var shapeIndex: Int?
             var viaIndex: Int?
             var pinIndex: Int?
+            var viaContacts: [LayoutLayerID: [LayoutRect]] = [:]
         }
         var nodes: [Node] = []
 
@@ -113,17 +114,12 @@ extension LayoutDRCService {
                 unknownViaDefinitionIDs.insert(via.viaDefinitionID)
                 continue
             }
-            let rect = LayoutRect(
-                origin: LayoutPoint(
-                    x: via.position.x - cut.cutSize.width / 2,
-                    y: via.position.y - cut.cutSize.height / 2
-                ),
-                size: cut.cutSize
-            )
+            let bounds = union(rects: viaConductorRects(for: via, tech: tech)) ?? viaCutBoundingBox(for: via, tech: tech)
             nodes.append(Node(
-                geometry: .rect(rect), box: rect, layer: nil,
+                geometry: .rect(bounds), box: bounds, layer: nil,
                 bridgeLayers: [cut.bottom, cut.top], activationRank: topRank,
-                shapeIndex: nil, viaIndex: index, pinIndex: nil
+                shapeIndex: nil, viaIndex: index, pinIndex: nil,
+                viaContacts: viaContactRectsByLayer(for: via, tech: tech)
             ))
         }
         for definitionID in unknownViaDefinitionIDs.sorted() {
@@ -194,6 +190,11 @@ extension LayoutDRCService {
                 let conductor = aIsBridge ? nodeB : nodeA
                 guard let layer = conductor.layer, bridge.bridgeLayers.contains(layer) else {
                     return false
+                }
+                if bridge.viaIndex != nil {
+                    return (bridge.viaContacts[layer] ?? []).contains {
+                        LayoutGeometryAnalysis.intersects(.rect($0), conductor.geometry)
+                    }
                 }
             } else {
                 guard nodeA.layer == nodeB.layer else { return false }

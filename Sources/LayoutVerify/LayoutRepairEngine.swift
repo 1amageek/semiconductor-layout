@@ -269,8 +269,7 @@ public struct LayoutRepairEngine {
         let margin = tech.grid > 0 ? tech.grid : 1e-3
         func pad(layer: LayoutLayerID, enclosure: Double) -> LayoutShape {
             let total = enclosure + margin
-            let width = definition.cutSize.width + 2 * total
-            let height = definition.cutSize.height + 2 * total
+            let cutBounds = LayoutDRCService().viaCutBoundingBox(for: via, tech: tech)
             return LayoutShape(
                 id: deterministicUUID(
                     kind: "enclosure-pad",
@@ -283,13 +282,7 @@ public struct LayoutRepairEngine {
                 ),
                 layer: layer,
                 netID: via.netID,
-                geometry: .rect(LayoutRect(
-                    origin: LayoutPoint(
-                        x: via.position.x - width / 2,
-                        y: via.position.y - height / 2
-                    ),
-                    size: LayoutSize(width: width, height: height)
-                ))
+                geometry: .rect(cutBounds.expanded(by: total, total))
             )
         }
         let delta = LayoutEditDelta(addedShapes: [

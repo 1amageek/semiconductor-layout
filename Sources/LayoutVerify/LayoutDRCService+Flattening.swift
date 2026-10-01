@@ -39,20 +39,18 @@ extension LayoutDRCService {
         }
 
         for via in cell.vias {
-            var transformed = via
+            var transformed = via.transformed(by: transforms)
             if transformed.netID == nil {
                 transformed.netID = terminalConnectivity.viaNetIDs[via.id]
             }
-            transformed.position = applyTransforms(to: via.position, transforms: transforms)
             vias.append(transformed)
         }
 
         for pin in cell.pins {
-            var transformed = pin
+            var transformed = pin.transformed(by: transforms)
             if transformed.netID == nil {
                 transformed.netID = terminalNetIDs[pin.name]
             }
-            transformed.position = applyTransforms(to: pin.position, transforms: transforms)
             pins.append(transformed)
         }
 

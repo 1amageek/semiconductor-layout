@@ -513,6 +513,30 @@ struct LayoutHierarchyCommandTests {
         }
     }
 
+    @Test func flattenCommandPersistsViaFootprintsAndPinExtents() throws {
+        let root = try temporaryRoot("posed-via")
+        let transform = LayoutTransform(translation: LayoutPoint(x: 10, y: 20), rotation: .deg90,
+                                        magnification: 2, mirrorX: true)
+        let via = LayoutVia(viaDefinitionID: "VIA1", position: LayoutPoint(x: 1, y: 2))
+        let pin = LayoutPin(name: "P", position: via.position, size: LayoutSize(width: 2, height: 0.5),
+                            layer: LayoutLayerID(name: "M1", purpose: "drawing"))
+        let child = LayoutCell(name: "CHILD", vias: [via], pins: [pin])
+        let instance = LayoutInstance(cellID: child.id, name: "X", transform: transform)
+        let top = LayoutCell(name: "TOP", instances: [instance])
+        let document = LayoutDocument(name: "posed", cells: [top, child], topCellID: top.id)
+        try serializer.encodeDocument(document).write(to: root.appendingPathComponent("input.json"))
+        let request = LayoutCommandRequest(inputDocumentPath: "input.json", outputDocumentPath: "layout.json",
+                                           commands: [.flattenInstance(FlattenInstanceCommand(cellID: top.id, instanceID: instance.id))])
+        let result = try run(request, root: root)
+        let flat = try #require(result.cell(withID: top.id))
+        let outputVia = try #require(flat.vias.first)
+        let localRect = LayoutRect(origin: LayoutPoint(x: 2, y: -0.1), size: LayoutSize(width: 0.6, height: 0.2))
+        #expect(outputVia.geometry(forLocalRect: localRect) == via.transformed(by: [transform]).geometry(forLocalRect: localRect))
+        #expect(outputVia.id != via.id)
+        let outputPin = try #require(flat.pins.first)
+        #expect(outputPin.size == LayoutSize(width: 1, height: 4))
+    }
+
     private func flattenRequest(ids: TestIDs, outputDocumentPath: String) -> LayoutCommandRequest {
         LayoutCommandRequest(
             documentID: ids.document,

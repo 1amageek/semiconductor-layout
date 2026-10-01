@@ -165,7 +165,7 @@ extension LayoutDRCService {
         guard !explicitRects.isEmpty else {
             return [defaultViaCutRect(for: via, definition: def)]
         }
-        return explicitRects.map { translated($0, by: via.position) }
+        return explicitRects.map { LayoutGeometryAnalysis.boundingBox(for: via.geometry(forLocalRect: $0)) }
     }
 
     func viaLayerRects(for via: LayoutVia, layer: LayoutLayerID, tech: LayoutTechDatabase) -> [LayoutRect] {
@@ -194,7 +194,7 @@ extension LayoutDRCService {
             .filter { $0.layer == layer }
             .flatMap(\.rects)
             .filter { $0.size.width > 0 && $0.size.height > 0 }
-            .map { translated($0, by: via.position) }
+            .map { LayoutGeometryAnalysis.boundingBox(for: via.geometry(forLocalRect: $0)) }
     }
 
     func viaConductorRects(for via: LayoutVia, tech: LayoutTechDatabase) -> [LayoutRect] {
@@ -205,7 +205,7 @@ extension LayoutDRCService {
             .flatMap(\.rects)
             .filter { $0.size.width > 0 && $0.size.height > 0 }
         if !explicitRects.isEmpty {
-            return explicitRects.map { translated($0, by: via.position) }
+            return explicitRects.map { LayoutGeometryAnalysis.boundingBox(for: via.geometry(forLocalRect: $0)) }
         }
         return viaCutRects(for: via, tech: tech)
     }
@@ -256,27 +256,17 @@ extension LayoutDRCService {
     }
 
     private func defaultViaCutRect(for via: LayoutVia, definition: LayoutViaDefinition) -> LayoutRect {
-        return LayoutRect(
-            origin: LayoutPoint(
-                x: via.position.x - definition.cutSize.width / 2,
-                y: via.position.y - definition.cutSize.height / 2
-            ),
+        LayoutGeometryAnalysis.boundingBox(for: via.geometry(forLocalRect: LayoutRect(
+            origin: LayoutPoint(x: -definition.cutSize.width / 2, y: -definition.cutSize.height / 2),
             size: definition.cutSize
-        )
+        )))
     }
 
     private func fallbackViaCutRect(for via: LayoutVia) -> LayoutRect {
-        LayoutRect(
-            origin: LayoutPoint(x: via.position.x - 0.5, y: via.position.y - 0.5),
+        LayoutGeometryAnalysis.boundingBox(for: via.geometry(forLocalRect: LayoutRect(
+            origin: LayoutPoint(x: -0.5, y: -0.5),
             size: LayoutSize(width: 1, height: 1)
-        )
-    }
-
-    private func translated(_ rect: LayoutRect, by point: LayoutPoint) -> LayoutRect {
-        LayoutRect(
-            origin: LayoutPoint(x: rect.origin.x + point.x, y: rect.origin.y + point.y),
-            size: rect.size
-        )
+        )))
     }
 
     func shouldConnect(

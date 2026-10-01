@@ -6,6 +6,36 @@ import Testing
 
 @Suite("Deck-driven layout geometry extraction")
 struct LayoutGeometryExtractorTests {
+    @Test func hierarchicalViaCutsConnectTransformedMetalWithoutCenterOnlyApproximation() throws {
+        let lower = LayoutLayerID(name: "M1", purpose: "drawing")
+        let upper = LayoutLayerID(name: "M2", purpose: "drawing")
+        let cut = LayoutLayerID(name: "V1", purpose: "cut")
+        let technology = LayoutTechDatabase(layers: [], vias: [LayoutViaDefinition(
+            id: "fixed", cutLayer: cut, topLayer: upper, bottomLayer: lower,
+            cutSize: LayoutSize(width: 0.6, height: 0.2), enclosure: LayoutViaEnclosure(top: 0.1, bottom: 0.1),
+            cutSpacing: 1, layerGeometries: [LayoutViaLayerGeometry(layer: cut, rects: [LayoutRect(
+                origin: LayoutPoint(x: 2, y: -0.1), size: LayoutSize(width: 0.6, height: 0.2))])])], layerRules: [])
+        let profile = LayoutExtractionProcessProfile(processID: "fixture", processProfileID: "fixture.via",
+            extractionDeckDigest: "fixture-digest", deckUseScope: .fixtureOnly,
+            conductorLayers: LayoutExtractionLayerReference(names: ["M1", "M2"]), connectionRules: [], mosRules: [])
+        let child = LayoutCell(name: "CHILD", shapes: [lower, upper].map { layer in
+            LayoutShape(layer: layer, geometry: .rect(LayoutRect(origin: LayoutPoint(x: 2.9, y: 1.8),
+                         size: LayoutSize(width: 0.8, height: 0.4))))
+        }, vias: [LayoutVia(viaDefinitionID: "fixed", position: LayoutPoint(x: 1, y: 2))])
+        let transform = LayoutTransform(translation: LayoutPoint(x: 10, y: 20), rotation: .deg90,
+                                        magnification: 2, mirrorX: true)
+        let top = LayoutCell(name: "TOP", pins: [LayoutPin(name: "A", position: transform.apply(to: LayoutPoint(x: 3.3, y: 2)),
+            size: LayoutSize(width: 0.1, height: 0.1), layer: upper)],
+            instances: [LayoutInstance(cellID: child.id, name: "X", transform: transform)])
+        let document = LayoutDocument(name: "via", cells: [top, child], topCellID: top.id)
+        let result = try LayoutGeometryExtractor().extract(document: document, technology: technology, profile: profile)
+        #expect(result.isReady)
+        let net = try #require(result.nets.first)
+        #expect(result.nets.count == 1)
+        #expect(Set(net.geometryReferences.map(\.layer)) == [lower, upper])
+        #expect(result.ports.map(\.name) == ["A"])
+    }
+
     @Test func extractsMOSConnectivityParametersAndPorts() throws {
         let fixture = makeFixture(includeSelector: true)
         let result = try LayoutGeometryExtractor().extract(

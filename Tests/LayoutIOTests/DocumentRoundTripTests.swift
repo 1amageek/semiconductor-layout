@@ -121,7 +121,7 @@ struct DocumentRoundTripTests {
         #expect(instance.name == "u1")
         #expect(abs(instance.transform.translation.x - 1.25) < 0.0001)
         #expect(abs(instance.transform.translation.y - 2.5) < 0.0001)
-        #expect(instance.transform.mirrorX == true)
+        #expect(instance.transform.apply(to: LayoutPoint(x: 0.25, y: 0.5)) == LayoutPoint(x: 1, y: 3))
     }
 
     @Test func defRoundTripsRoutedNetsAsNettedShapes() throws {

@@ -1467,11 +1467,13 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             ))
         }
         for via in cell.vias {
+            let transformed = via.transformed(by: transforms)
             content.vias.append(LayoutVia(
                 id: try deterministicUUID(kind: "via", parts: idPath + [cell.id.uuidString, via.id.uuidString]),
                 viaDefinitionID: via.viaDefinitionID,
-                position: transformedPoint(via.position, transforms: transforms),
-                netID: mappedNetID(via.netID, bindings: netBindings)
+                position: transformed.position,
+                netID: mappedNetID(via.netID, bindings: netBindings),
+                geometryTransforms: transformed.geometryTransforms
             ))
         }
         for label in cell.labels {
@@ -1484,11 +1486,12 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             ))
         }
         for pin in cell.pins {
+            let transformed = pin.transformed(by: transforms)
             content.pins.append(LayoutPin(
                 id: try deterministicUUID(kind: "pin", parts: idPath + [cell.id.uuidString, pin.id.uuidString]),
                 name: pin.name,
-                position: transformedPoint(pin.position, transforms: transforms),
-                size: pin.size,
+                position: transformed.position,
+                size: transformed.size,
                 layer: pin.layer,
                 netID: terminalNetIDs[pin.name] ?? mappedNetID(pin.netID, bindings: netBindings),
                 role: pin.role

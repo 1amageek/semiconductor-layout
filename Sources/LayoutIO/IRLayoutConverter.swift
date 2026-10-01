@@ -519,7 +519,7 @@ public struct IRLayoutConverter: Sendable {
             translation: origin,
             rotationDegrees: r.transform.angle,
             magnification: r.transform.magnification,
-            mirrorX: r.transform.mirrorX
+            mirrorY: r.transform.mirrorX
         )
         let instanceName = propertyValue(r.properties, for: Self.defComponentNamePropertyName) ?? r.cellName
         return LayoutInstance(id: id, cellID: cellID, name: instanceName, transform: transform)
@@ -550,7 +550,7 @@ public struct IRLayoutConverter: Sendable {
             translation: dbuToMicron(origin, dbu: dbu),
             rotationDegrees: a.transform.angle,
             magnification: a.transform.magnification,
-            mirrorX: a.transform.mirrorX
+            mirrorY: a.transform.mirrorX
         )
         return LayoutInstance(
             id: id,
@@ -662,6 +662,12 @@ public struct IRLayoutConverter: Sendable {
         }
 
         for via in cell.vias {
+            // FIXME(INCOMPLETE_IMPLEMENTATION): Standard via interchange does not preserve local poses.
+            // Production GDS/OASIS export must reject transformed vias until every layer footprint
+            // and the complete local transform round-trip through the standard via bridge.
+            guard via.geometryTransforms.isEmpty else {
+                throw LayoutIOError.conversionFailed("Via '\(via.id)' has local geometry transforms unsupported by standard via interchange")
+            }
             guard let viaDefinition = reverseLayerMap.tech.viaDefinition(for: via.viaDefinitionID) else {
                 throw LayoutIOError.conversionFailed(
                     "Via '\(via.id)' in cell '\(cell.name)' references unknown via definition '\(via.viaDefinitionID)'"
@@ -716,9 +722,9 @@ public struct IRLayoutConverter: Sendable {
                 context: "instance '\(instance.name)' in cell '\(cell.name)'"
             )
             let transform = IRTransform(
-                mirrorX: instance.transform.mirrorX,
+                mirrorX: instance.transform.mirrorX != instance.transform.mirrorY,
                 magnification: instance.transform.magnification,
-                angle: instance.transform.rotationDegrees
+                angle: instance.transform.rotationDegrees + (instance.transform.mirrorX ? 180 : 0)
             )
             if let repetition = instance.repetition,
                repetition.columns > 1 || repetition.rows > 1 {

@@ -92,3 +92,26 @@ preserve `LayoutDocument` as the canonical state, expose typed errors and
 structured diagnostics, and add a focused Swift Testing suite. A new engine
 should depend on `CircuiteFoundation` directly when it implements the shared
 `Engine` protocol; it should not add a package-level adapter or project model.
+
+## Hierarchical via geometry composition
+
+The canonical placement contract is owned by [LayoutCore](Sources/LayoutCore/DESIGN.md)
+and [ViaGeometry](Sources/LayoutCore/ViaGeometry/DESIGN.md). The standard affine boundary is owned by [LayoutIO](Sources/LayoutIO/DESIGN.md).
+The shared footprint
+and contact contract is owned by [LayoutVerify](Sources/LayoutVerify/DESIGN.md).
+Command/editor materialization, antenna checks and deck-driven LVS consume those
+value operations; local geometry semantics must not be inferred from the anchor.
+
+| Consumer | Required composition | Behavioral test owner |
+|---|---|---|
+| DRC and batch/live connectivity | Use transformed world footprints and exact-mode admission | `LayoutAutoGenTests/HierarchicalViaGeometryTests` |
+| CLI flatten | Persist via geometry and pin extents with fresh IDs | `LayoutCommandsTests/LayoutHierarchyCommandTests` |
+| Editor flatten | Same value operations, fresh IDs | `LayoutEditorTests/LayoutFlattenGeometryTests` |
+| LVS extraction | Transformed explicit cuts, blocking unrepresentable geometry | `LayoutLVSExtractionTests/LayoutGeometryExtractorTests` |
+| Canonical persistence | Complete pose round trip and trust-boundary validation | `LayoutCoreTests/LayoutViaGeometryTests` |
+| Standard export | Reject unrepresented local poses before producing output | `LayoutIOTests/IRLayoutConverterViaTests` |
+
+The marked LayoutIO standard via bridge still needs complete layer/pose round
+trips before its unsupported-pose rejection can be removed. Native exact
+extraction must consume the later bounded snapshot contract before claiming RC
+completion. Native macOS evidence does not qualify WASM or Embedded execution.

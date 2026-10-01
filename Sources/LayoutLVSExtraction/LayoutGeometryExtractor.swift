@@ -58,8 +58,7 @@ public struct LayoutGeometryExtractor: LayoutGeometryExtracting {
         let objectID: LayoutExtractionObjectID
         let sourceViaID: String
         let occurrenceID: LayoutExtractionObjectID
-        let definitionID: String
-        let point: LayoutPoint
+        let via: LayoutVia
     }
 
     private struct FlatPin: Sendable {
@@ -134,8 +133,7 @@ public struct LayoutGeometryExtractor: LayoutGeometryExtracting {
                 ),
                 sourceViaID: stableSourceID,
                 occurrenceID: occurrenceID,
-                definitionID: via.viaDefinitionID,
-                point: transformed(via.position, by: transforms)
+                via: via.transformed(by: Array(transforms.reversed()))
             ))
         }
         for label in cell.labels.sorted(by: labelOrder) {
@@ -206,7 +204,7 @@ public struct LayoutGeometryExtractor: LayoutGeometryExtracting {
     }
 
     private func viaOrderKey(_ via: LayoutVia) -> String {
-        "\(via.viaDefinitionID)|\(pointOrderKey(via.position))"
+        "\(via.viaDefinitionID)|\(pointOrderKey(via.position))|\(transformDescription(via.geometryTransforms))"
     }
 
     private func labelOrder(_ lhs: LayoutLabel, _ rhs: LayoutLabel) -> Bool {
@@ -291,29 +289,38 @@ public struct LayoutGeometryExtractor: LayoutGeometryExtracting {
                 )
             }
         }
-        let viaRectangles = flattened.vias.compactMap { via -> RectShape? in
-            guard let definition = technology.viaDefinition(for: via.definitionID) else {
+        let viaRectangles = flattened.vias.flatMap { entry -> [RectShape] in
+            let via = entry.via
+            guard let definition = technology.viaDefinition(for: via.viaDefinitionID) else {
                 issues.append(LayoutExtractionIssue(
-                    code: "via-definition-missing",
-                    severity: .blocking,
-                    message: "Via '\(via.definitionID)' has no technology definition.",
-                    affectedObjectIDs: [via.objectID]
+                    code: "via-definition-missing", severity: .blocking,
+                    message: "Via '\(via.viaDefinitionID)' has no technology definition.",
+                    affectedObjectIDs: [entry.objectID]
                 ))
-                return nil
+                return []
             }
-            return RectShape(
-                objectID: via.objectID,
-                sourceShapeID: via.sourceViaID,
-                occurrenceID: via.occurrenceID,
-                layer: definition.cutLayer,
-                rect: LayoutRect(
-                    origin: LayoutPoint(
-                        x: via.point.x - definition.cutSize.width / 2,
-                        y: via.point.y - definition.cutSize.height / 2
-                    ),
-                    size: definition.cutSize
-                )
-            )
+            let cuts = definition.layerGeometries.filter { $0.layer == definition.cutLayer }.flatMap(\.rects)
+            let localRects = cuts.isEmpty ? [LayoutRect(
+                origin: LayoutPoint(x: -definition.cutSize.width / 2, y: -definition.cutSize.height / 2),
+                size: definition.cutSize
+            )] : cuts
+            return localRects.enumerated().flatMap { cutIndex, localRect -> [RectShape] in
+                let rects = rectangles(for: via.geometry(forLocalRect: localRect))
+                if rects.isEmpty {
+                    issues.append(LayoutExtractionIssue(
+                        code: "unsupported-geometry", severity: .blocking,
+                        message: "Via extraction requires representable rectilinear cut geometry.",
+                        affectedObjectIDs: [entry.objectID]
+                    ))
+                }
+                return rects.enumerated().map { rectIndex, rect in
+                    RectShape(
+                        objectID: LayoutExtractionObjectID(rawValue: "\(entry.objectID.rawValue):cut:\(cutIndex):rect:\(rectIndex)"),
+                        sourceShapeID: entry.sourceViaID, occurrenceID: entry.occurrenceID,
+                        layer: definition.cutLayer, rect: rect
+                    )
+                }
+            }
         }
         let rectShapes = shapeRectangles + viaRectangles
         var channels: [Channel] = []

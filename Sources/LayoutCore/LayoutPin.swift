@@ -26,4 +26,20 @@ public struct LayoutPin: Identifiable, Hashable, Sendable, Codable {
         self.netID = netID
         self.role = role
     }
+
+    /// Returns world extents; arbitrary-angle pins remain axis-aligned envelopes.
+    public func transformed(by transforms: [LayoutTransform]) -> LayoutPin {
+        guard !transforms.isEmpty else { return self }
+        var result = self
+        var geometry = LayoutGeometry.rect(LayoutRect(
+            origin: LayoutPoint(x: position.x - size.width / 2, y: position.y - size.height / 2),
+            size: size
+        ))
+        for transform in transforms.reversed() {
+            result.position = transform.apply(to: result.position)
+            geometry = geometry.transformed(by: transform)
+        }
+        result.size = LayoutGeometryAnalysis.boundingBox(for: geometry).size
+        return result
+    }
 }

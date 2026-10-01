@@ -43,7 +43,8 @@ let package = Package(
             dependencies: [
                 .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
                 .product(name: "CircuiteFoundationFoundation", package: "CircuiteFoundation"),
-            ]
+            ],
+            exclude: ["DESIGN.md", "ViaGeometry/DESIGN.md"]
         ),
         .target(
             name: "LayoutTech",
@@ -64,7 +65,8 @@ let package = Package(
                 "LayoutTech",
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
-            ]
+            ],
+            exclude: ["DESIGN.md"]
         ),
         .target(
             name: "LayoutIO",
@@ -81,7 +83,8 @@ let package = Package(
                 .product(name: "FormatDetector", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
-            ]
+            ],
+            exclude: ["DESIGN.md"]
         ),
         .target(
             name: "LayoutIntegration",

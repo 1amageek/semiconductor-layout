@@ -8,6 +8,14 @@ import LayoutIR
 @Suite("IRLayoutConverter Vias")
 struct IRLayoutConverterViaTests {
 
+    @Test func standardViaExportRejectsUnrepresentedLocalTransforms() throws {
+        let via = LayoutVia(viaDefinitionID: "VIA1", position: .zero,
+                            geometryTransforms: [LayoutTransform(rotation: .deg90, magnification: 2)])
+        let cell = LayoutCell(name: "TOP", vias: [via])
+        let document = LayoutDocument(name: "posed", cells: [cell], topCellID: cell.id)
+        #expect(throws: LayoutIOError.self) { try IRLayoutConverter().exportLibrary(document, tech: .standard()) }
+    }
+
     @Test("Cell properties round trip through IR cells")
     func cellPropertiesRoundTripThroughIRCells() throws {
         let cell = LayoutCell(

@@ -125,7 +125,7 @@ public struct LayoutDRCService {
             terminalConflicts: &conflicts
         )
 
-        return shapes.compactMap { shape in
+        var diagnostics = shapes.compactMap { shape -> LayoutDRCDiagnostic? in
             switch shape.geometry {
             case .rect:
                 return nil
@@ -142,6 +142,27 @@ public struct LayoutDRCService {
                 )
             }
         }
+        for via in vias {
+            guard let definition = tech.viaDefinition(for: via.viaDefinitionID) else { continue }
+            let explicit = definition.layerGeometries.flatMap(\.rects)
+            let rects = explicit.isEmpty ? [LayoutRect(
+                origin: LayoutPoint(x: -definition.cutSize.width / 2, y: -definition.cutSize.height / 2),
+                size: definition.cutSize
+            )] : explicit
+            if rects.contains(where: { rect in
+                if case .polygon(let polygon) = via.geometry(forLocalRect: rect) {
+                    return !polygonEdgesAreRectilinear(polygon.points)
+                }
+                return false
+            }) {
+                diagnostics.append(LayoutDRCDiagnostic(
+                    code: "drc.unsupported_exact_geometry", severity: .error,
+                    message: "Via \(via.id.uuidString) has nonrectilinear geometry unsupported by the exact-only kernel.",
+                    suggestedActions: ["inspect_via_geometry", "run_with_an_exact_geometry_kernel"]
+                ))
+            }
+        }
+        return diagnostics
     }
 
     private func invalidHierarchyDiagnostics(

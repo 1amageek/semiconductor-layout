@@ -280,6 +280,31 @@ struct StagedAntennaCheckTests {
         #expect(violations.first?.pinIDs == [strandedGate.id])
     }
 
+    @Test func transformedOffsetViaCarriesUpperMetalAntennaExposure() throws {
+        let cutRect = LayoutRect(origin: LayoutPoint(x: 4.975, y: -0.025), size: LayoutSize(width: 0.05, height: 0.05))
+        let pad = LayoutRect(origin: LayoutPoint(x: 4.9, y: -0.1), size: LayoutSize(width: 0.2, height: 0.2))
+        let viaDefinition = LayoutViaDefinition(id: "offset", cutLayer: via1, topLayer: m2, bottomLayer: m1,
+            cutSize: cutRect.size, enclosure: LayoutViaEnclosure(top: 0, bottom: 0), cutSpacing: 0.05,
+            layerGeometries: [LayoutViaLayerGeometry(layer: via1, rects: [cutRect]),
+                             LayoutViaLayerGeometry(layer: m1, rects: [pad]),
+                             LayoutViaLayerGeometry(layer: m2, rects: [pad])])
+        let gate = LayoutPin(name: "gate", position: LayoutPoint(x: 5, y: 0),
+                             size: LayoutSize(width: 0.1, height: 0.1), layer: m1, role: .gate)
+        let lowerMetal = m1Rect(x: 4.95, y: -0.05, width: 0.1, height: 0.1)
+        let upperMetal = LayoutShape(layer: m2, geometry: .rect(LayoutRect(origin: LayoutPoint(x: 4.9, y: -0.1),
+                                       size: LayoutSize(width: 1, height: 1))))
+        let child = LayoutCell(name: "CHILD", shapes: [lowerMetal, upperMetal],
+                               vias: [LayoutVia(viaDefinitionID: "offset", position: .zero)], pins: [gate])
+        let top = LayoutCell(name: "TOP", instances: [LayoutInstance(cellID: child.id, name: "X",
+            transform: LayoutTransform(rotation: .deg90, magnification: 2, mirrorX: true))])
+        let result = LayoutDRCService().run(document: LayoutDocument(name: "antenna", cells: [top, child], topCellID: top.id),
+            tech: antennaTech(rules: [LayoutAntennaRule(layerID: m2, maxRatio: 10)], viaDefinitions: [viaDefinition]))
+        let violation = try #require(result.violations.first { $0.ruleID == "antenna.M2.drawing.maxRatio" })
+        #expect(abs((violation.measured ?? 0) - 100) < 1e-9)
+        #expect(violation.viaIDs == child.vias.map(\.id))
+        #expect(violation.pinIDs == [gate.id])
+    }
+
     // MARK: - Fixtures
 
     /// 0.1 x 0.1 gate pin (0.01 um^2) centered at the origin on M1.

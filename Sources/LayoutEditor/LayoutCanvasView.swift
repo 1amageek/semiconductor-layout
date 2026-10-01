@@ -961,15 +961,18 @@ public struct LayoutCanvasView: View {
         }
         for via in viewModel.documentVias() where viaIDs.contains(via.id) {
             guard let def = viewModel.tech.viaDefinition(for: via.viaDefinitionID) else { continue }
-            let rect = CGRect(
-                x: via.position.x - def.cutSize.width / 2,
-                y: via.position.y - def.cutSize.height / 2,
-                width: def.cutSize.width,
-                height: def.cutSize.height
-            )
-            let path = Path(rect)
-            context.stroke(path, with: .color(.cyan.opacity(0.35)), lineWidth: glowWidth)
-            context.stroke(path, with: .color(.cyan), lineWidth: coreWidth)
+            let explicitCuts = def.layerGeometries.filter { $0.layer == def.cutLayer }.flatMap(\.rects)
+            let localRects = explicitCuts.isEmpty ? [LayoutRect(
+                origin: LayoutPoint(x: -def.cutSize.width / 2, y: -def.cutSize.height / 2),
+                size: def.cutSize
+            )] : explicitCuts
+            for localRect in localRects {
+                let path = pathForShape(LayoutShape(
+                    id: via.id, layer: def.cutLayer, geometry: via.geometry(forLocalRect: localRect)
+                ))
+                context.stroke(path, with: .color(.cyan.opacity(0.35)), lineWidth: glowWidth)
+                context.stroke(path, with: .color(.cyan), lineWidth: coreWidth)
+            }
         }
     }
 

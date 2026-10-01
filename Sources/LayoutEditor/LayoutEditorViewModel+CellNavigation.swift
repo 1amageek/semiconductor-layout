@@ -207,9 +207,7 @@ extension LayoutEditorViewModel {
 
     /// Deep flatten of one cell subtree with fresh identities. Transform
     /// composition matches the verification flatten: geometry through the
-    /// chain innermost-first; via/label/pin positions point-transformed
-    /// (a via's cut is its definition's, so only its anchor moves — the
-    /// same convention every verification flatten in this package uses).
+    /// chain innermost-first, including via footprints and pin extents.
     static func collectFlattenedContent(
         of cell: LayoutCell,
         in document: LayoutDocument,
@@ -239,10 +237,12 @@ extension LayoutEditorViewModel {
             ))
         }
         for via in cell.vias {
+            let transformed = via.transformed(by: transforms)
             content.vias.append(LayoutVia(
                 viaDefinitionID: via.viaDefinitionID,
-                position: mapPoint(via.position),
-                netID: via.netID
+                position: transformed.position,
+                netID: via.netID,
+                geometryTransforms: transformed.geometryTransforms
             ))
         }
         for label in cell.labels {
@@ -253,10 +253,11 @@ extension LayoutEditorViewModel {
             ))
         }
         for pin in cell.pins {
+            let transformed = pin.transformed(by: transforms)
             content.pins.append(LayoutPin(
                 name: pin.name,
-                position: mapPoint(pin.position),
-                size: pin.size,
+                position: transformed.position,
+                size: transformed.size,
                 layer: pin.layer,
                 // The instance terminal binding overrides the child
                 // pin's own net at this occurrence — same semantics as

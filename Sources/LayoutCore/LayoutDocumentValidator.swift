@@ -133,6 +133,9 @@ public struct LayoutDocumentValidator: Sendable {
                 ))
             }
             validate(via.position, entityID: via.id, findings: &findings)
+            for transform in via.geometryTransforms {
+                validate(transform, entityID: via.id, code: "layout.via.transform-invalid", findings: &findings)
+            }
             validate(
                 via.netID,
                 knownNetIDs: netIDs,
@@ -338,6 +341,7 @@ public struct LayoutDocumentValidator: Sendable {
     private func validate(
         _ transform: LayoutTransform,
         entityID: UUID,
+        code: String = "layout.instance.transform-invalid",
         findings: inout [LayoutDocumentValidationFinding]
     ) {
         validate(transform.translation, entityID: entityID, findings: &findings)
@@ -345,8 +349,8 @@ public struct LayoutDocumentValidator: Sendable {
             || !transform.magnification.isFinite
             || transform.magnification <= 0 {
             findings.append(error(
-                "layout.instance.transform-invalid",
-                "Instance rotation and positive magnification must be finite.",
+                code,
+                "Layout rotation and positive magnification must be finite.",
                 entityID
             ))
         }

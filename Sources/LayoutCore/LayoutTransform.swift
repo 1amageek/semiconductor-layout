@@ -36,11 +36,19 @@ public struct LayoutTransform: Hashable, Sendable, Codable {
         x *= magnification
         y *= magnification
 
-        let radians = rotationDegrees * .pi / 180
-        let rotated = LayoutPoint(
-            x: normalized(x * cos(radians) - y * sin(radians)),
-            y: normalized(x * sin(radians) + y * cos(radians))
-        )
+        let rotated: LayoutPoint
+        switch rotationDegrees.truncatingRemainder(dividingBy: 360) {
+        case 0: rotated = LayoutPoint(x: x, y: y)
+        case 90, -270: rotated = LayoutPoint(x: -y, y: x)
+        case 180, -180: rotated = LayoutPoint(x: -x, y: -y)
+        case 270, -90: rotated = LayoutPoint(x: y, y: -x)
+        default:
+            let radians = rotationDegrees * .pi / 180
+            rotated = LayoutPoint(
+                x: normalized(x * cos(radians) - y * sin(radians)),
+                y: normalized(x * sin(radians) + y * cos(radians))
+            )
+        }
 
         return rotated.translated(by: translation)
     }
