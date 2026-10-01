@@ -194,7 +194,7 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
         case .dxf:
             return try DXFLibraryWriter.write(library)
         case .def:
-            let document = DEFIRConverter.toDEFDocument(library)
+            let document = try DEFIRConverter.toDEFDocument(library)
             return try DEFLibraryWriter.write(document)
         default:
             throw LayoutIOError.unsupportedFormat(format)

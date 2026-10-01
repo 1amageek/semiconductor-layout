@@ -71,6 +71,12 @@ flowchart TD
   Foundation --> Higher
 ```
 
+LayoutIO DEF export propagates the standard converter's representability failure
+through its existing `LayoutIOError.conversionFailed` boundary before writing any
+output bytes. Arbitrary angles and non-unit magnification cannot be silently
+mapped to a legal DEF orientation; supported quarter-turn/mirror transforms use
+the common standard mapping.
+
 ## Determinism and signoff boundary
 
 Imported identities are derived from stable source identity and element order.

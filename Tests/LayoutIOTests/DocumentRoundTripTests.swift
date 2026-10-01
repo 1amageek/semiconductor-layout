@@ -20,6 +20,33 @@ struct DocumentRoundTripTests {
     private static let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
     private static let m2 = LayoutLayerID(name: "M2", purpose: "drawing")
 
+    @Test("DEF transform failure preserves existing output", arguments: ["angle", "scale", "quarter-turn"])
+    func defTransformFailureIsAtomic(mode: String) throws {
+        let child = LayoutCell(name: "CHILD")
+        let instance = LayoutInstance(cellID: child.id, name: "I", transform: .init(
+            rotationDegrees: mode == "angle" ? 33 : 90, magnification: mode == "scale" ? 1.5 : 1))
+        let top = LayoutCell(name: "TOP", instances: [instance])
+        let document = LayoutDocument(name: "transform", cells: [child, top], topCellID: top.id)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("def-transform-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { Self.removeTemporaryDirectory(directory) }
+        let url = directory.appendingPathComponent("output.def")
+        let original = Data("existing output".utf8)
+        try original.write(to: url)
+        let converter = MaskDataFormatConverter(tech: .standard())
+        if mode == "quarter-turn" {
+            try converter.exportDocument(document, to: url, format: .def)
+            #expect(try Data(contentsOf: url) != original)
+        } else {
+            do {
+                try converter.exportDocument(document, to: url, format: .def)
+                Issue.record("Unrepresentable DEF transform must fail.")
+            } catch LayoutIOError.conversionFailed(let message) { #expect(!message.isEmpty) }
+            catch { Issue.record("Expected conversionFailed, received \(error)") }
+            #expect(try Data(contentsOf: url) == original)
+        }
+    }
+
     @Test func nativeFormatRoundTripsEveryModelField() throws {
         let document = Self.richDocument()
         let serializer = LayoutDocumentSerializer()
