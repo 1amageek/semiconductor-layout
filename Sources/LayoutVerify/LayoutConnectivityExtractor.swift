@@ -38,12 +38,10 @@ public struct LayoutConnectivityExtractor {
         var vias: [LayoutVia] = []
         var pins: [LayoutPin] = []
         var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        service.flatten(
+        try service.flatten(
             cell: targetCell,
             document: document,
             tech: tech,
-            transforms: [],
-            terminalNetIDs: [:],
             shapes: &shapes,
             vias: &vias,
             pins: &pins,
@@ -67,12 +65,10 @@ public struct LayoutConnectivityExtractor {
         var vias: [LayoutVia] = []
         var pins: [LayoutPin] = []
         var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        service.flatten(
+        try service.flatten(
             cell: targetCell,
             document: document,
             tech: tech,
-            transforms: [],
-            terminalNetIDs: [:],
             shapes: &shapes,
             vias: &vias,
             pins: &pins,

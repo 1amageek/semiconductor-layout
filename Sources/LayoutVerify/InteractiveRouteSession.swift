@@ -108,12 +108,10 @@ public struct InteractiveRouteSession {
         var vias: [LayoutVia] = []
         var pins: [LayoutPin] = []
         var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        LayoutDRCService().flatten(
+        try LayoutDRCService().flatten(
             cell: cell,
             document: document,
             tech: tech,
-            transforms: [],
-            terminalNetIDs: [:],
             shapes: &shapes,
             vias: &vias,
             pins: &pins,

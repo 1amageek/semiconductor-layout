@@ -51,7 +51,7 @@ struct IncrementalDRCSessionValidationTests {
         ))
         document.cells[topIndex].shapes.append(duplicate)
 
-        #expect(throws: IncrementalDRCSessionError.duplicateShapeID(fixture.wireA.id)) {
+        #expect(throws: LayoutHierarchyCaptureError.duplicateObjectID(cellID: document.cells[topIndex].id, objectID: fixture.wireA.id)) {
             _ = try IncrementalDRCSession(document: document, tech: fixture.tech)
         }
     }
@@ -64,7 +64,7 @@ struct IncrementalDRCSessionValidationTests {
         duplicate.position = LayoutPoint(x: 12, y: 12)
         document.cells[topIndex].vias.append(duplicate)
 
-        #expect(throws: IncrementalDRCSessionError.duplicateViaID(fixture.viaB.id)) {
+        #expect(throws: LayoutHierarchyCaptureError.duplicateObjectID(cellID: document.cells[topIndex].id, objectID: fixture.viaB.id)) {
             _ = try IncrementalDRCSession(document: document, tech: fixture.tech)
         }
     }

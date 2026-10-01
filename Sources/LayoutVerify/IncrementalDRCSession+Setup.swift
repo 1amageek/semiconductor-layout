@@ -78,12 +78,10 @@ extension IncrementalDRCSession {
         var vias: [LayoutVia] = []
         var pins: [LayoutPin] = []
         var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        service.flatten(
+        try service.flatten(
             cell: targetCell,
             document: checkedDocument,
             tech: tech,
-            transforms: [],
-            terminalNetIDs: [:],
             shapes: &shapes,
             vias: &vias,
             pins: &pins,

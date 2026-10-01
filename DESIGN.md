@@ -115,3 +115,8 @@ The marked LayoutIO standard via bridge still needs complete layer/pose round
 trips before its unsupported-pose rejection can be removed. Native exact
 extraction must consume the later bounded snapshot contract before claiming RC
 completion. Native macOS evidence does not qualify WASM or Embedded execution.
+
+The bounded source/world hierarchy contract is owned by
+[HierarchyCapture](Sources/LayoutVerify/HierarchyCapture/DESIGN.md). It is the
+shared traversal for DRC, batch/live connectivity, routing and device extraction;
+native contact topology and electrical qualification remain separate contracts.

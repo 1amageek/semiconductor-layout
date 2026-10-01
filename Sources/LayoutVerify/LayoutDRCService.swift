@@ -15,36 +15,29 @@ public struct LayoutDRCService {
         cellID: UUID? = nil,
         geometryMode: LayoutDRCGeometryMode = .development
     ) -> LayoutDRCResult {
-        guard resolveCell(document: document, cellID: cellID) != nil else {
-            return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
-        }
-        let hierarchyDiagnostics = invalidHierarchyDiagnostics(document: document, cellID: cellID)
-        if !hierarchyDiagnostics.isEmpty {
-            return LayoutDRCResult(diagnostics: hierarchyDiagnostics)
-        }
-        let geometryDiagnostics = LayoutDerivedLayerMaterializer().unsupportedGeometryDiagnostics(
-            document: document,
-            tech: tech,
-            cellID: cellID
-        )
-        if !geometryDiagnostics.isEmpty {
-            return LayoutDRCResult(diagnostics: geometryDiagnostics)
-        }
-        if geometryMode == .exactOnly {
-            let exactGeometryDiagnostics = unsupportedExactGeometryDiagnostics(
-                document: document,
-                tech: tech,
-                cellID: cellID
-            )
-            if !exactGeometryDiagnostics.isEmpty {
-                return LayoutDRCResult(diagnostics: exactGeometryDiagnostics)
-            }
-        }
-        guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
-            return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
-        }
         do {
-            return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech))
+            return try runChecked(document: document, tech: tech, cellID: cellID, geometryMode: geometryMode)
+        } catch let error as LayoutDRCServiceError {
+            switch error {
+            case .targetCellNotFound:
+                return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
+            case .hierarchyCaptureFailed(let cause):
+                let code: String
+                switch cause {
+                case .missingChildCell: code = "drc.missing_child_cell"
+                case .hierarchyCycle: code = "drc.hierarchy_cycle"
+                case .limitExceeded: code = "drc.hierarchy_limit_exceeded"
+                case .cancelled: code = "drc.cancelled"
+                default: code = "drc.geometry_operation_failed"
+                }
+                return LayoutDRCResult(diagnostics: [LayoutDRCDiagnostic(
+                    code: code, severity: .error, message: String(describing: cause),
+                    suggestedActions: ["inspect_layout_hierarchy", "inspect_capture_limits"])])
+            case .unsupportedDerivedGeometry(let diagnostics), .unsupportedExactGeometry(let diagnostics):
+                return LayoutDRCResult(diagnostics: diagnostics)
+            case .geometryOperationFailed:
+                return LayoutDRCResult(diagnostics: [geometryOperationDiagnostic(error)])
+            }
         } catch {
             return LayoutDRCResult(diagnostics: [geometryOperationDiagnostic(error)])
         }
@@ -62,11 +55,11 @@ public struct LayoutDRCService {
                 topCellID: document.topCellID
             )
         }
-        let hierarchyDiagnostics = invalidHierarchyDiagnostics(document: document, cellID: cellID)
-        if !hierarchyDiagnostics.isEmpty {
-            throw LayoutDRCServiceError.invalidHierarchy(
-                messages: hierarchyDiagnostics.map(\.message)
-            )
+        let captured: LayoutHierarchySnapshot
+        do {
+            captured = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
+        } catch let error as LayoutHierarchyCaptureError {
+            throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
         let geometryDiagnostics = LayoutDerivedLayerMaterializer().unsupportedGeometryDiagnostics(
             document: document,
@@ -75,26 +68,20 @@ public struct LayoutDRCService {
         )
         if !geometryDiagnostics.isEmpty {
             throw LayoutDRCServiceError.unsupportedDerivedGeometry(
-                messages: geometryDiagnostics.map(\.message)
+                diagnostics: geometryDiagnostics
             )
+        }
+        let context: LayoutDRCRunContext
+        do {
+            context = try makeRunContext(document: document, tech: tech, cellID: cellID, captured: captured)
+        } catch let error as LayoutHierarchyCaptureError {
+            throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
         if geometryMode == .exactOnly {
-            let exactGeometryDiagnostics = unsupportedExactGeometryDiagnostics(
-                document: document,
-                tech: tech,
-                cellID: cellID
-            )
-            if !exactGeometryDiagnostics.isEmpty {
-                throw LayoutDRCServiceError.unsupportedExactGeometry(
-                    messages: exactGeometryDiagnostics.map(\.message)
-                )
+            let diagnostics = unsupportedExactGeometryDiagnostics(context: context, tech: tech)
+            if !diagnostics.isEmpty {
+                throw LayoutDRCServiceError.unsupportedExactGeometry(diagnostics: diagnostics)
             }
-        }
-        guard let context = makeRunContext(document: document, tech: tech, cellID: cellID) else {
-            throw LayoutDRCServiceError.targetCellNotFound(
-                requestedCellID: cellID,
-                topCellID: document.topCellID
-            )
         }
         do {
             return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech))
@@ -104,27 +91,11 @@ public struct LayoutDRCService {
     }
 
     private func unsupportedExactGeometryDiagnostics(
-        document: LayoutDocument,
-        tech: LayoutTechDatabase,
-        cellID: UUID?
+        context: LayoutDRCRunContext,
+        tech: LayoutTechDatabase
     ) -> [LayoutDRCDiagnostic] {
-        guard let targetCell = resolveCell(document: document, cellID: cellID) else { return [] }
-        var shapes: [LayoutShape] = []
-        var vias: [LayoutVia] = []
-        var pins: [LayoutPin] = []
-        var conflicts: [TerminalConnectivityConflict] = []
-        flatten(
-            cell: targetCell,
-            document: document,
-            tech: tech,
-            transforms: [],
-            terminalNetIDs: [:],
-            shapes: &shapes,
-            vias: &vias,
-            pins: &pins,
-            terminalConflicts: &conflicts
-        )
-
+        let shapes = context.shapes
+        let vias = context.vias
         var diagnostics = shapes.compactMap { shape -> LayoutDRCDiagnostic? in
             switch shape.geometry {
             case .rect:
@@ -165,54 +136,6 @@ public struct LayoutDRCService {
         return diagnostics
     }
 
-    private func invalidHierarchyDiagnostics(
-        document: LayoutDocument,
-        cellID: UUID?
-    ) -> [LayoutDRCDiagnostic] {
-        guard let root = resolveCell(document: document, cellID: cellID) else { return [] }
-        var visiting: Set<UUID> = []
-        var visited: Set<UUID> = []
-        var diagnostics: [LayoutDRCDiagnostic] = []
-        var emittedMissingChildIDs: Set<UUID> = []
-        var emittedCycleIDs: Set<UUID> = []
-
-        func visit(_ cell: LayoutCell) {
-            guard visited.insert(cell.id).inserted else { return }
-            visiting.insert(cell.id)
-            for instance in cell.instances {
-                guard let child = document.cell(withID: instance.cellID) else {
-                    if emittedMissingChildIDs.insert(instance.cellID).inserted {
-                        diagnostics.append(LayoutDRCDiagnostic(
-                            code: "drc.missing_child_cell",
-                            severity: .error,
-                            message: "Cell '\(cell.name)' references missing child cell '\(instance.cellID.uuidString)'.",
-                            cellID: cell.id,
-                            suggestedActions: ["repair_hierarchy_reference", "inspect_layout_cells"]
-                        ))
-                    }
-                    continue
-                }
-                if visiting.contains(child.id) {
-                    if emittedCycleIDs.insert(child.id).inserted {
-                        diagnostics.append(LayoutDRCDiagnostic(
-                            code: "drc.hierarchy_cycle",
-                            severity: .error,
-                            message: "Cell hierarchy contains a cycle through '\(child.name)'.",
-                            cellID: child.id,
-                            suggestedActions: ["remove_hierarchy_cycle", "inspect_layout_instances"]
-                        ))
-                    }
-                    continue
-                }
-                visit(child)
-            }
-            visiting.remove(cell.id)
-        }
-
-        visit(root)
-        return diagnostics
-    }
-
     private func exactGeometryDiagnostic(shape: LayoutShape, reason: String) -> LayoutDRCDiagnostic {
         LayoutDRCDiagnostic(
             code: "drc.unsupported_exact_geometry",
@@ -241,27 +164,28 @@ public struct LayoutDRCService {
     private func makeRunContext(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
-        cellID: UUID?
-    ) -> LayoutDRCRunContext? {
-        let checkedDocument = LayoutDerivedLayerMaterializer.materialize(document: document, tech: tech)
+        cellID: UUID?,
+        captured: LayoutHierarchySnapshot
+    ) throws -> LayoutDRCRunContext {
+        let checkedDocument = tech.derivedLayerRules.isEmpty
+            ? document : LayoutDerivedLayerMaterializer.materialize(document: document, tech: tech)
         guard let targetCell = resolveCell(document: checkedDocument, cellID: cellID) else {
-            return nil
+            throw LayoutDRCServiceError.targetCellNotFound(requestedCellID: cellID, topCellID: document.topCellID)
         }
 
         var flattenedShapes: [LayoutShape] = []
         var flattenedVias: [LayoutVia] = []
         var flattenedPins: [LayoutPin] = []
         var terminalConflicts: [TerminalConnectivityConflict] = []
-        flatten(
+        try flatten(
             cell: targetCell,
             document: checkedDocument,
             tech: tech,
-            transforms: [],
-            terminalNetIDs: [:],
             shapes: &flattenedShapes,
             vias: &flattenedVias,
             pins: &flattenedPins,
-            terminalConflicts: &terminalConflicts
+            terminalConflicts: &terminalConflicts,
+            capturedHierarchy: tech.derivedLayerRules.isEmpty ? captured : nil
         )
 
         return LayoutDRCRunContext(

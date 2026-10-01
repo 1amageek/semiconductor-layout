@@ -37,3 +37,8 @@ axis-aligned envelopes, not exact pin polygons.
 contracts; [LayoutAutoGenTests](../../Tests/LayoutAutoGenTests) owns the shared
 contact-path behavioral evidence. Geometry schema changes affect LayoutIO,
 LayoutTech and LayoutVerify consumers.
+
+Path transforms scale width by the magnitude of uniform magnification, as well
+as transforming centerline points; reflection does not make width negative.
+Hierarchy capture retains full transformed pin rectangles separately from UI
+envelopes. The behavioral owner is `LayoutAutoGenTests/HierarchyCaptureTests`.

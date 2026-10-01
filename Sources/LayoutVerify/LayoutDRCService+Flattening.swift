@@ -17,59 +17,44 @@ extension LayoutDRCService {
         cell: LayoutCell,
         document: LayoutDocument,
         tech: LayoutTechDatabase,
-        transforms: [LayoutTransform],
-        terminalNetIDs: [String: UUID],
         shapes: inout [LayoutShape],
         vias: inout [LayoutVia],
         pins: inout [LayoutPin],
-        terminalConflicts: inout [TerminalConnectivityConflict]
-    ) {
-        let terminalConnectivity = terminalConnectivity(cell: cell, terminalNetIDs: terminalNetIDs, tech: tech)
-        terminalConflicts.append(contentsOf: terminalConnectivity.conflicts.map {
-            $0.transformed(by: transforms)
-        })
-
-        for shape in cell.shapes {
-            var transformed = shape
-            if transformed.netID == nil {
-                transformed.netID = terminalConnectivity.shapeNetIDs[shape.id]
+        terminalConflicts: inout [TerminalConnectivityConflict],
+        capturedHierarchy: LayoutHierarchySnapshot? = nil
+    ) throws {
+        let capture = try capturedHierarchy ?? LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cell.id)
+        var capturedShapes = capture.shapes
+        var capturedVias = capture.vias
+        var capturedPins = capture.pins
+        var capturedConflicts: [TerminalConnectivityConflict] = []
+        let cellsByID = Dictionary(uniqueKeysWithValues: document.cells.map { ($0.id, $0) })
+        for occurrence in capture.occurrences where !occurrence.terminalNetIDs.isEmpty {
+            guard let source = cellsByID[occurrence.sourceCellID] else {
+                throw LayoutHierarchyCaptureError.missingChildCell(occurrence.sourceCellID)
             }
-            transformed.geometry = applyTransforms(to: shape.geometry, transforms: transforms)
-            shapes.append(transformed)
-        }
-
-        for via in cell.vias {
-            var transformed = via.transformed(by: transforms)
-            if transformed.netID == nil {
-                transformed.netID = terminalConnectivity.viaNetIDs[via.id]
+            let connectivity = try terminalConnectivity(cell: source, terminalNetIDs: occurrence.terminalNetIDs, tech: tech)
+            capturedConflicts.append(contentsOf: connectivity.conflicts.map { $0.transformed(by: occurrence.transforms) })
+            for index in occurrence.shapeRange where capturedShapes[index].netID == nil {
+                if let netID = connectivity.shapeNetIDs[capturedShapes[index].id] {
+                    capturedShapes[index].netID = netID
+                }
             }
-            vias.append(transformed)
-        }
-
-        for pin in cell.pins {
-            var transformed = pin.transformed(by: transforms)
-            if transformed.netID == nil {
-                transformed.netID = terminalNetIDs[pin.name]
+            for index in occurrence.viaRange where capturedVias[index].netID == nil {
+                if let netID = connectivity.viaNetIDs[capturedVias[index].id] {
+                    capturedVias[index].netID = netID
+                }
             }
-            pins.append(transformed)
-        }
-
-        for instance in cell.instances {
-            guard let child = document.cell(withID: instance.cellID) else { continue }
-            for occurrenceTransform in instance.occurrenceTransforms() {
-                flatten(
-                    cell: child,
-                    document: document,
-                    tech: tech,
-                    transforms: transforms + [occurrenceTransform],
-                    terminalNetIDs: instance.terminalNetIDs,
-                    shapes: &shapes,
-                    vias: &vias,
-                    pins: &pins,
-                    terminalConflicts: &terminalConflicts
-                )
+            for index in occurrence.pinRange where capturedPins[index].netID == nil {
+                if let netID = occurrence.terminalNetIDs[capturedPins[index].name] {
+                    capturedPins[index].netID = netID
+                }
             }
         }
+        shapes = capturedShapes
+        vias = capturedVias
+        pins = capturedPins
+        terminalConflicts = capturedConflicts
     }
 
     private struct TerminalConnectivity: Sendable {
@@ -105,11 +90,16 @@ extension LayoutDRCService {
         }
     }
 
+    // FIXME(INCOMPLETE_IMPLEMENTATION): Legacy terminal resolution groups each via
+    // as one node and does not establish independent cut-array components. Batch
+    // DRC, connectivity, device extraction and live sessions call it through flatten.
+    // Native contact signoff requires explicit per-layer/cut topology and bounded
+    // contact work before these inferred labels can qualify electrical evidence.
     private func terminalConnectivity(
         cell: LayoutCell,
         terminalNetIDs: [String: UUID],
         tech: LayoutTechDatabase
-    ) -> TerminalConnectivity {
+    ) throws -> TerminalConnectivity {
         guard !terminalNetIDs.isEmpty else {
             return TerminalConnectivity(shapeNetIDs: [:], viaNetIDs: [:], conflicts: [])
         }
@@ -156,10 +146,15 @@ extension LayoutDRCService {
         // so one spatial index serves the pair scan and the pin probes; the
         // union-find result is independent of pair visiting order.
         let boxes = geometries.map { LayoutGeometryAnalysis.boundingBox(for: $0) }
-        let grid = ShapeGridIndex(
-            boundingBoxes: boxes,
-            cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
-        )
+        let cellSize = ShapeGridIndex.defaultCellSize(for: boxes)
+        for box in boxes {
+            for coordinate in [box.minX, box.minY, box.maxX, box.maxY] {
+                guard Int64(exactly: (coordinate / cellSize).rounded(.down)) != nil else {
+                    throw LayoutHierarchyCaptureError.invalidGeometry(cell.id)
+                }
+            }
+        }
+        let grid = ShapeGridIndex(boundingBoxes: boxes, cellSize: cellSize)
         var unionFind = LayoutUnionFind(count: geometries.count)
         if geometries.count > 1 {
             for i in 0..<(geometries.count - 1) {
@@ -294,22 +289,6 @@ extension LayoutDRCService {
             netIDs: conflict.netIDs,
             suggestedFix: "Separate the connected geometry or map the instance terminals to the same net intentionally."
         )
-    }
-
-    private func applyTransforms(to point: LayoutPoint, transforms: [LayoutTransform]) -> LayoutPoint {
-        var current = point
-        for transform in transforms.reversed() {
-            current = transform.apply(to: current)
-        }
-        return current
-    }
-
-    private func applyTransforms(to geometry: LayoutGeometry, transforms: [LayoutTransform]) -> LayoutGeometry {
-        var current = geometry
-        for transform in transforms.reversed() {
-            current = current.transformed(by: transform)
-        }
-        return current
     }
 
 }

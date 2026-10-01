@@ -56,12 +56,14 @@ struct LayoutDerivedLayerMaterializerSafetyTests {
             )
             Issue.record("Expected unsupported derived geometry failure")
         } catch let error as LayoutDRCServiceError {
-            guard case .unsupportedDerivedGeometry(let messages) = error else {
+            guard case .unsupportedDerivedGeometry(let diagnostics) = error else {
                 Issue.record("Unexpected LayoutDRCServiceError: \(error)")
                 return
             }
-            #expect(messages.count == 1)
-            #expect(messages[0].contains("non-rectilinear polygon"))
+            #expect(diagnostics.count == 1)
+            #expect(diagnostics[0].message.contains("non-rectilinear polygon"))
+            #expect(diagnostics[0].code == "drc.unsupported_derived_geometry")
+            #expect(diagnostics[0].severity == .error)
         } catch {
             Issue.record("Unexpected error: \(error)")
         }

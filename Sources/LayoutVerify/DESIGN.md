@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 DRC and shared physical contact calculations. Parent: [package](../../DESIGN.md).
-No new verification component is introduced in this change.
+Child: [HierarchyCapture](HierarchyCapture/DESIGN.md).
 
 ## Responsibilities and Boundaries
 Own world-space via footprints, hierarchy flattening and contact predicates.
@@ -12,6 +12,7 @@ Electrical RC models and tool qualification are outside this module.
 ## Related Designs
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
+| [HierarchyCapture](HierarchyCapture/DESIGN.md) | child | Bounded occurrence geometry | Shared traversal | Electrical contacts remain separately owned |
 | [Package](../../DESIGN.md) | parent | Physical verification facts | Package composition | Development bounds are not exact proof |
 | [LayoutCore](../LayoutCore/DESIGN.md) | depends on | Canonical geometry and hierarchy | Read physical values | Preserve each occurrence's transform |
 | [ViaGeometry](../LayoutCore/ViaGeometry/DESIGN.md) | depends on | Definition-local world transformation | Via cut and metal footprints | Preserve full source geometry for exact extraction |

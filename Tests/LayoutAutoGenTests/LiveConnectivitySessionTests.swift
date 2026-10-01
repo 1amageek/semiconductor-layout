@@ -347,7 +347,7 @@ struct LiveConnectivitySessionTests {
         ))
         duplicate.cells[topIndex].shapes.append(second)
 
-        #expect(throws: LiveConnectivitySessionError.duplicateShapeID(fixture.wireA.id)) {
+        #expect(throws: LayoutHierarchyCaptureError.duplicateObjectID(cellID: duplicate.cells[topIndex].id, objectID: fixture.wireA.id)) {
             try LiveConnectivitySession(document: duplicate, tech: fixture.tech)
         }
     }
@@ -360,7 +360,7 @@ struct LiveConnectivitySessionTests {
         second.position = LayoutPoint(x: 10, y: 10)
         duplicate.cells[topIndex].vias.append(second)
 
-        #expect(throws: LiveConnectivitySessionError.duplicateViaID(fixture.viaB.id)) {
+        #expect(throws: LayoutHierarchyCaptureError.duplicateObjectID(cellID: duplicate.cells[topIndex].id, objectID: fixture.viaB.id)) {
             try LiveConnectivitySession(document: duplicate, tech: fixture.tech)
         }
     }
