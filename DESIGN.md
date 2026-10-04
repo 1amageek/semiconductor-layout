@@ -120,3 +120,8 @@ The bounded source/world hierarchy contract is owned by
 [HierarchyCapture](Sources/LayoutVerify/HierarchyCapture/DESIGN.md). It is the
 shared traversal for DRC, batch/live connectivity, routing and device extraction;
 native contact topology and electrical qualification remain separate contracts.
+
+Native occurrence-exact contact facts are owned by
+[ConductorCapture](Sources/LayoutVerify/ConductorCapture/DESIGN.md). Legacy
+aggregate-via identities require migration before their electrical results can
+inherit this topology guarantee.
