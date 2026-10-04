@@ -158,6 +158,8 @@ public struct IRLayoutConverter: Sendable {
                         layerMap: layerMap,
                         context: "path in cell '\(cell.name)'"
                     )
+                case .via(let via):
+                    try validateTypedVia(via, tech: layerMap.tech, context: "via in cell '\(cell.name)'")
                 case .text(let text):
                     try requireMappedLayer(
                         gdsLayer: Int(text.layer),
@@ -183,6 +185,48 @@ public struct IRLayoutConverter: Sendable {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    private func validateTypedVia(_ via: IRVia, tech: LayoutTechDatabase, context: String) throws {
+        guard !via.viaName.isEmpty else {
+            throw LayoutIOError.conversionFailed("Blank named via master for \(context)")
+        }
+        let masterCount = tech.vias.filter { $0.id == via.viaName }.count
+            + tech.contacts.filter { $0.id == via.viaName }.count
+        guard masterCount == 1, let definition = tech.viaDefinition(for: via.viaName) else {
+            throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) requires exactly one technology master (found \(masterCount))")
+        }
+        guard via.transform.angle.isFinite,
+              via.transform.angle.truncatingRemainder(dividingBy: 90) == 0,
+              via.transform.magnification == 1 else {
+            throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) requires a finite orthogonal unit transform")
+        }
+        for key in [Self.defRouteNetNamePropertyName, Self.defRouteLayerNamePropertyName] {
+            guard via.properties.filter({ propertyValue($0.value, for: key) != nil }).count <= 1 else {
+                throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) has ambiguous route property '\(key)'")
+            }
+        }
+        let properties = layoutProperties(from: via.properties)
+        if let netName = properties[Self.defRouteNetNamePropertyName],
+           netName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) declares a blank net")
+        }
+        let routeLayers = tech.layers.filter { layer in
+            guard layer.gdsLayer == Int(via.routeLayer),
+                  layer.id == definition.bottomLayer || layer.id == definition.topLayer else { return false }
+            guard let name = properties[Self.defRouteLayerNamePropertyName] else { return true }
+            // DEF's explicit layer-number mapping admits case-insensitive ID/display aliases.
+            return layer.id.name.caseInsensitiveCompare(name) == .orderedSame
+                || layer.displayName.caseInsensitiveCompare(name) == .orderedSame
+        }
+        guard routeLayers.count == 1 else {
+            throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) has an unresolved or conflicting route layer")
+        }
+        for layer in [definition.bottomLayer, definition.cutLayer, definition.topLayer] {
+            guard tech.layers.filter({ $0.id == layer }).count == 1 else {
+                throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) has an unknown or ambiguous master layer '\(layer.name)'")
             }
         }
     }
@@ -303,6 +347,17 @@ public struct IRLayoutConverter: Sendable {
                     dbu: dbu,
                     layerMap: layerMap,
                     netIDByName: netIDByName
+                ))
+            case .via(let via):
+                let properties = layoutProperties(from: via.properties)
+                let transform = LayoutTransform(rotationDegrees: via.transform.angle,
+                    magnification: via.transform.magnification, mirrorY: via.transform.mirrorX)
+                vias.append(LayoutVia(
+                    id: stableUUID(namespace: "typed-via", payload: "\(irCell.name)|\(elementIndex)"),
+                    viaDefinitionID: via.viaName,
+                    position: dbuToMicron(via.origin, dbu: dbu),
+                    netID: routeNetID(from: properties, netIDByName: netIDByName),
+                    geometryTransforms: via.transform == .identity ? [] : [transform]
                 ))
             case .text(let t):
                 if let label = convertText(
@@ -885,8 +940,13 @@ public struct IRLayoutConverter: Sendable {
             names: &names
         )
         for element in elements {
-            if case .path(let path) = element,
-               let netName = propertyValue(path.properties, for: Self.defRouteNetNamePropertyName),
+            let routeProperties: [IRProperty]
+            switch element {
+            case .path(let path): routeProperties = path.properties
+            case .via(let via): routeProperties = via.properties
+            default: continue
+            }
+            if let netName = propertyValue(routeProperties, for: Self.defRouteNetNamePropertyName),
                !names.contains(netName) {
                 names.append(netName)
             }
