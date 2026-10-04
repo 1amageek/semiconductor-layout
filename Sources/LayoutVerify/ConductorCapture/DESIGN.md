@@ -48,8 +48,27 @@ construct its three-layer template; this is defined geometry, not a fallback.
 Source/world coordinates must be finite and representable on the document's
 integer database grid within four floating-point ulps of multiplication error.
 Int32 conversion is checked. Rectangles and rectilinear even-odd polygons use
-the exact MaskGeometry kernel; empty conducting coverage, paths and non-Manhattan
+the exact MaskGeometry kernel; empty conducting coverage and non-Manhattan
 geometry fail explicitly under the current exact-kernel capability.
+
+Admitted canonical paths use orthogonal, nonzero centerline segments and square
+miter joins. A stroke is the union of segment rectangles and right-angle join
+squares; flush caps stop at the spine endpoint and extended caps add half the
+width. Circular caps, diagonals and immediate reversals fail rather than being
+approximated. Generated pieces retain the same occurrence and source-shape
+reference. Overlap is intentional source coverage, not additional physical area.
+Input and generated rectangle work consume the existing decomposition budget;
+the emitter does not build an unbounded intermediate outline.
+
+`LayoutConductorSnapshot.coordinateUnits` owns the integer footprint coordinate
+scale. It equals the captured document scale for polygon/rectangle-only input.
+Selected paths refine that scale by two to represent half-width boundaries
+without rounding an odd database-unit width. Source hierarchy units remain
+unchanged. All footprints and pin bands use the one admitted output scale; its
+finite scale and Int32 endpoint constraints are checked before publication.
+Consumers convert numeric bands through `coordinateUnits`, never through the
+raw hierarchy scale. Standard custom extension preservation is a subsequent
+interchange contract and is not inferred from canonical half-width caps.
 
 Each band is one physical node. On the same layer, positive-area overlap or a
 shared edge of positive length connects; a corner does not. Across cut/metal
@@ -88,3 +107,7 @@ cancellation. The dependency revision must include the verified bounded band API
 Native macOS evidence does not qualify WASM/Embedded or process/corner RC.
 Legacy batch/live/device consumers must migrate their aggregate-via identity
 before their electrical results can inherit this snapshot's topology guarantee.
+[ConductorPathCaptureTests](../../../Tests/LayoutAutoGenTests/ConductorPathCaptureTests.swift) additionally owns analytical stroke coverage,
+caps/joins, half-grid output units, hierarchy, contacts and resource/cancel failure.
+Changing coordinate units invalidates PEXNative conversion assumptions and
+requires native RC consumer verification before composition.

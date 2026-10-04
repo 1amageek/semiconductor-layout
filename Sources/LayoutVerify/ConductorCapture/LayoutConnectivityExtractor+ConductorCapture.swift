@@ -95,7 +95,22 @@ extension LayoutConnectivityExtractor {
         var records: [GeometryRecord] = []
         var polygons: [IRBoundary] = []
         var inputEntries = 0
-        let dbu = document.units.scale.databaseUnitsPerMicrometer
+        var requiresHalfGrid = false
+        for shape in hierarchy.shapes {
+            try checkCancellation()
+            guard conductiveLayers.contains(shape.layer) || adjacency[shape.layer] != nil else { continue }
+            if case .path = shape.geometry { requiresHalfGrid = true }
+        }
+        let coordinateUnits: LayoutUnits
+        if requiresHalfGrid {
+            do {
+                coordinateUnits = LayoutUnits(scale: try .init(
+                    databaseUnitsPerMicrometer: hierarchy.units.scale.databaseUnitsPerMicrometer * 2))
+            } catch {
+                throw Failure.invalidCoordinateUnits
+            }
+        } else { coordinateUnits = hierarchy.units }
+        let dbu = coordinateUnits.scale.databaseUnitsPerMicrometer
         func coordinate(_ value: Double, id: UUID) throws -> Int32 {
             let scaled = value * dbu
             let rounded = scaled.rounded()
@@ -105,14 +120,16 @@ extension LayoutConnectivityExtractor {
         }
         func appendGeometry(_ geometry: LayoutGeometry, record: GeometryRecord) throws {
             try checkCancellation()
+            if case .path(let path) = geometry {
+                try RectilinearPathFootprint.emit(path, sourceID: record.sourceID, isCancelled: isCancelled) { rect in
+                    try appendGeometry(.rect(rect), record: record)
+                }
+                return
+            }
             let count: Int
             switch geometry {
             case .rect: count = 4
             case .polygon(let polygon): count = polygon.points.count
-            // FIXME(INCOMPLETE_IMPLEMENTATION): Native contact capture cannot yet
-            // represent path caps/joins exactly. Direct captureConductors callers
-            // receive typed failure; admit paths only after exact decomposition
-            // and success/failure contact tests establish their footprint.
             case .path: throw Failure.unsupportedGeometry(record.sourceID)
             }
             let available = limits.decomposition.maximumInputEntries - inputEntries
@@ -323,7 +340,7 @@ extension LayoutConnectivityExtractor {
             return components.count > 1 || !unconnected.isEmpty ? Snapshot.Open(net: net, componentIndices: components, unconnectedPinIndices: unconnected) : nil
         }
         try checkCancellation()
-        return Snapshot(hierarchy: hierarchy, conductiveLayers: conductiveLayers, footprints: footprints,
+        return Snapshot(hierarchy: hierarchy, coordinateUnits: coordinateUnits, conductiveLayers: conductiveLayers, footprints: footprints,
             contacts: contacts, components: components, pins: pins, opens: opens,
             shortComponentIndices: components.indices.filter { components[$0].declaredNets.count > 1 })
     }

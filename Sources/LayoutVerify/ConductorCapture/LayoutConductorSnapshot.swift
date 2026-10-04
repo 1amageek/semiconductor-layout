@@ -48,6 +48,8 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
     }
 
     public let hierarchy: LayoutHierarchySnapshot
+    /// Coordinate scale of all footprint and pin bands, independently of raw source units.
+    public let coordinateUnits: LayoutUnits
     public let conductiveLayers: Set<LayoutLayerID>
     public let footprints: [Footprint]
     public let contacts: [Contact]

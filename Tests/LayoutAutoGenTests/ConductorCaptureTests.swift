@@ -147,10 +147,10 @@ struct ConductorCaptureTests {
             try capture(LayoutCell(name: "EXTRA", vias: [via]), tech: tech)
         }
     }
-    @Test func offGridPathsAndNonManhattanGeometryFailExplicitly() {
+    @Test func offGridCircularAndNonManhattanGeometryFailExplicitly() {
         let offGrid = shape(0.0004)
         #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(offGrid.id)) { try capture(LayoutCell(name: "GRID", shapes: [offGrid])) }
-        let path = LayoutShape(layer: m1, geometry: .path(.init(points: [.zero, .init(x: 1, y: 0)], width: 0.1)))
+        let path = LayoutShape(layer: m1, geometry: .path(.init(points: [.zero, .init(x: 1, y: 0)], width: 0.1, endCap: .round)))
         #expect(throws: LayoutConductorCaptureError.unsupportedGeometry(path.id)) { try capture(LayoutCell(name: "PATH", shapes: [path])) }
         let diagonal = LayoutShape(layer: m1, geometry: .polygon(.init(points: [.zero, .init(x: 1, y: 0), .init(x: 0, y: 1)])))
         #expect(throws: LayoutConductorCaptureError.decompositionFailed(.unsupportedNonManhattanGeometry(polygonIndex: 0))) {

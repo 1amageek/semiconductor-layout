@@ -7,6 +7,7 @@ public enum LayoutConductorCaptureError: Error, Equatable, Sendable {
         case technologyRecords, footprints, contactProbes
     }
     case invalidLimits
+    case invalidCoordinateUnits
     case limitExceeded(Resource)
     case unknownLayer(LayoutLayerID)
     case ambiguousLayerRole(LayoutLayerID)
