@@ -14,6 +14,8 @@ extension LayoutEditorViewModel {
         /// Instance terminals bound through `terminalNetIDs` because the
         /// labeled island lives inside an instance.
         public var terminalsBound: Int = 0
+        /// Root pins named through actual native contact incidence.
+        public var pinsAnnotated: Int = 0
         /// Labels whose position touches no conductor on their layer.
         public var unmatchedLabels: [String]
         /// Child-occurrence conductors in annotated islands that a
@@ -22,142 +24,143 @@ extension LayoutEditorViewModel {
         public var unreachableChildElements: Int
     }
 
-    /// Derives net assignments from text labels — the bridge that makes
-    /// an imported GDS (where every netID is nil) engage connectivity,
-    /// opens/shorts and LVS. Each label names a net; the whole connected
-    /// island under the label takes it. One undo unit.
+    /// Names the edit-target label candidates using Device-owned contacts.
+    /// Strict goal requests admit every candidate before one undoable mutation.
     @discardableResult
-    public func annotateNetsFromLabels() -> NetAnnotationSummary? {
+    public func annotateNetsFromLabels(
+        requireAllLabels: Bool = false,
+        limits: LayoutConductorCaptureLimits = .default
+    ) -> NetAnnotationSummary? {
         guard let cellID = editTargetCellID,
-              let cell = editor.document.cell(withID: cellID) else { return nil }
-        guard !cell.labels.isEmpty else {
-            return NetAnnotationSummary(
-                netsCreated: 0,
-                shapesAnnotated: 0,
-                viasAnnotated: 0,
-                unmatchedLabels: [],
-                unreachableChildElements: 0
-            )
-        }
+              let original = editor.document.cell(withID: cellID) else { return nil }
+        var summary = NetAnnotationSummary(netsCreated: 0, shapesAnnotated: 0,
+            viasAnnotated: 0, unmatchedLabels: [], unreachableChildElements: 0)
+        guard !original.labels.isEmpty else { return summary }
         do {
-            let analysis = try LayoutConnectivityExtractor().extract(
-                document: editor.document,
-                tech: tech,
-                cellID: cellID
-            )
-            var summary = NetAnnotationSummary(
-                netsCreated: 0,
-                shapesAnnotated: 0,
-                viasAnnotated: 0,
-                unmatchedLabels: [],
-                unreachableChildElements: 0
-            )
-            try editor.perform { doc in
-                guard var cell = doc.cell(withID: cellID) else {
-                    throw LayoutCoreError.cellNotFound(cellID)
+            let snapshot = try DeviceExtractor().captureConductors(
+                document: editor.document, tech: tech, cellID: cellID, limits: limits)
+            guard let root = snapshot.hierarchy.occurrences.firstIndex(where: {
+                $0.parentIndex == nil && $0.sourceCellID == cellID
+            }) else { throw SDLNetAnnotationError.invalidCapturedSource }
+            let queryWork = original.labels.count.multipliedReportingOverflow(by: snapshot.footprints.count)
+            guard !queryWork.overflow, queryWork.partialValue <= limits.maximumContactProbes else {
+                throw SDLNetAnnotationError.pointProbeLimitExceeded
+            }
+            var nameByComponent: [Int: String] = [:]
+            for label in original.labels.sorted(by: { $0.text < $1.text }) {
+                let components = try snapshot.componentIndices(containing: label.position, on: label.layer)
+                guard components.count == 1, let component = components.first else {
+                    summary.unmatchedLabels.append(label.text)
+                    continue
                 }
-                var netIDByName = Dictionary(
-                    cell.nets.map { ($0.name, $0.id) },
-                    uniquingKeysWith: { first, _ in first }
-                )
-                let topShapeIDs = Set(cell.shapes.map(\.id))
-                let topViaIDs = Set(cell.vias.map(\.id))
-
-                // Labels may sit on FLATTENED geometry — a terminal bar
-                // inside an instance — so candidates come from the same
-                // flatten the connectivity analysis used. A child shape's
-                // UUID repeats across occurrences; the label's position
-                // against the island's bounding box disambiguates which
-                // occurrence it names (far-apart occurrences in practice;
-                // a genuinely ambiguous label is reported, not guessed).
-                let flatShapes = try LayoutConnectivityExtractor()
-                    .flattenedConductors(document: doc, tech: tech, cellID: cellID)
-                    .shapes
-
-                for label in cell.labels.sorted(by: { $0.text < $1.text }) {
-                    let touchedIDs = Set(
-                        flatShapes
-                            .filter {
-                                $0.layer == label.layer
-                                    && LayoutGeometryAnalysis.contains(label.position, in: $0.geometry)
-                            }
-                            .map(\.id)
-                    )
-                    let candidates = analysis.nets.filter { net in
-                        !touchedIDs.isDisjoint(with: net.shapeIDs)
-                            && net.boundingBox.contains(label.position)
-                    }
-                    guard candidates.count == 1, let island = candidates.first else {
-                        summary.unmatchedLabels.append(label.text)
-                        continue
-                    }
-                    let netID: UUID
-                    if let existing = netIDByName[label.text] {
-                        netID = existing
-                    } else {
-                        let net = LayoutNet(name: label.text)
-                        cell.nets.append(net)
-                        netIDByName[label.text] = net.id
-                        netID = net.id
-                        summary.netsCreated += 1
-                    }
-                    var childShapeCount = 0
-                    for shapeID in island.shapeIDs {
-                        if topShapeIDs.contains(shapeID),
-                           let index = cell.shapes.firstIndex(where: { $0.id == shapeID }) {
-                            if cell.shapes[index].netID != netID {
-                                cell.shapes[index].netID = netID
-                                summary.shapesAnnotated += 1
-                            }
-                        } else {
-                            childShapeCount += 1
-                        }
-                    }
-                    for viaID in island.viaIDs {
-                        if topViaIDs.contains(viaID),
-                           let index = cell.vias.firstIndex(where: { $0.id == viaID }) {
-                            if cell.vias[index].netID != netID {
-                                cell.vias[index].netID = netID
-                                summary.viasAnnotated += 1
-                            }
-                        } else {
-                            childShapeCount += 1
-                        }
-                    }
-                    // An island inside an instance has no editable shape;
-                    // its net flows through the instance TERMINAL binding:
-                    // every child pin sitting on the island gets bound, so
-                    // flatten republishes the net on the pin and the
-                    // connectivity tagging sees it. Child members count as
-                    // unreachable only when no terminal carries their net.
-                    var boundForIsland = 0
-                    let islandShapeIDs = Set(island.shapeIDs)
-                    for instanceIndex in cell.instances.indices {
-                        let instance = cell.instances[instanceIndex]
-                        guard let child = doc.cell(withID: instance.cellID) else { continue }
-                        for occurrence in instance.occurrenceTransforms() {
-                            for pin in child.pins {
-                                let position = occurrence.apply(to: pin.position)
-                                guard island.boundingBox.contains(position) else { continue }
-                                let sitsOnIsland = flatShapes.contains { shape in
-                                    islandShapeIDs.contains(shape.id)
-                                        && shape.layer == pin.layer
-                                        && LayoutGeometryAnalysis.contains(position, in: shape.geometry)
-                                }
-                                guard sitsOnIsland else { continue }
-                                if cell.instances[instanceIndex].terminalNetIDs[pin.name] != netID {
-                                    cell.instances[instanceIndex].terminalNetIDs[pin.name] = netID
-                                    summary.terminalsBound += 1
-                                }
-                                boundForIsland += 1
-                            }
-                        }
-                    }
-                    if boundForIsland == 0 {
-                        summary.unreachableChildElements += childShapeCount
+                if let previous = nameByComponent[component], previous != label.text {
+                    throw SDLNetAnnotationError.conflictingComponentNames([previous, label.text].sorted())
+                }
+                nameByComponent[component] = label.text
+            }
+            guard !requireAllLabels || summary.unmatchedLabels.isEmpty else {
+                throw SDLNetAnnotationError.unmatchedLabels(summary.unmatchedLabels)
+            }
+            var componentsBySource: [LayoutConductorSnapshot.Source: Set<Int>] = [:]
+            for (componentIndex, component) in snapshot.components.enumerated() {
+                for footprint in component.footprintIndices {
+                    componentsBySource[snapshot.footprints[footprint].source, default: []].insert(componentIndex)
+                }
+            }
+            let rootOccurrence = snapshot.hierarchy.occurrences[root]
+            var shapeNames: [Int: String] = [:]
+            var viaNames: [Int: String] = [:]
+            for (source, components) in componentsBySource where components.count == 1 {
+                guard let component = components.first, let name = nameByComponent[component] else { continue }
+                switch source {
+                case .shape(let index) where rootOccurrence.shapeRange.contains(index):
+                    shapeNames[index - rootOccurrence.shapeRange.lowerBound] = name
+                case .via(let index) where rootOccurrence.viaRange.contains(index):
+                    viaNames[index - rootOccurrence.viaRange.lowerBound] = name
+                default: break
+                }
+            }
+            var rootPinNames: [Int: String] = [:]
+            var terminalNames: [AnnotationTerminalKey: String] = [:]
+            var incidenceByTerminal: [AnnotationTerminalKey: [[Int]]] = [:]
+            var boundComponents: Set<Int> = []
+            for pin in snapshot.pins {
+                let sourcePin = snapshot.hierarchy.pins[pin.sourcePinIndex]
+                let occurrence = snapshot.hierarchy.occurrences[pin.occurrenceIndex]
+                let selected = Set(pin.componentIndices.compactMap { nameByComponent[$0] })
+                let name = selected.first
+                if name != nil {
+                    guard selected.count == 1, pin.componentIndices.allSatisfy({ nameByComponent[$0] == name }) else {
+                        throw SDLNetAnnotationError.ambiguousPin(sourcePin.name)
                     }
                 }
-                doc.updateCell(cell)
+                if pin.occurrenceIndex == root {
+                    if let name { rootPinNames[pin.sourcePinIndex - rootOccurrence.pinRange.lowerBound] = name }
+                    continue
+                }
+                guard occurrence.path.count == 1, let step = occurrence.path.first,
+                      let instanceIndex = original.instances.firstIndex(where: { $0.id == step.instanceID }),
+                      original.instances[instanceIndex].cellID == occurrence.sourceCellID else {
+                    if name != nil {
+                        // FIXME(INCOMPLETE_IMPLEMENTATION): Label annotation cannot persist a
+                        // nested occurrence binding without a canonical root-terminal correspondence.
+                        // This production editor command must refuse until that authority exists.
+                        throw SDLNetAnnotationError.unavailableTerminalBinding(pin: sourcePin.name,
+                            instancePath: occurrence.path.map(\.instanceID))
+                    }
+                    continue
+                }
+                let key = AnnotationTerminalKey(instanceIndex: instanceIndex, pin: sourcePin.name)
+                incidenceByTerminal[key, default: []].append(pin.componentIndices)
+                if let name {
+                    if let previous = terminalNames[key], previous != name {
+                        throw SDLNetAnnotationError.conflictingTerminalBinding(instance: step.instanceID, pin: sourcePin.name)
+                    }
+                    terminalNames[key] = name
+                    boundComponents.formUnion(pin.componentIndices)
+                }
+            }
+            for (key, name) in terminalNames {
+                guard incidenceByTerminal[key, default: []].allSatisfy({ components in
+                    !components.isEmpty && components.allSatisfy { nameByComponent[$0] == name }
+                }) else {
+                    throw SDLNetAnnotationError.conflictingTerminalBinding(
+                        instance: original.instances[key.instanceIndex].id, pin: key.pin)
+                }
+            }
+            for (source, components) in componentsBySource {
+                let child: Bool
+                switch source {
+                case .shape(let index): child = !rootOccurrence.shapeRange.contains(index)
+                case .via(let index): child = !rootOccurrence.viaRange.contains(index)
+                case .pin: child = false
+                }
+                if child && components.contains(where: { nameByComponent[$0] != nil && !boundComponents.contains($0) }) {
+                    summary.unreachableChildElements += 1
+                }
+            }
+            try editor.perform { document in
+                guard var cell = document.cell(withID: cellID), cell == original else {
+                    throw SDLNetAnnotationError.invalidCapturedSource
+                }
+                var netIDs = Dictionary(cell.nets.map { ($0.name, $0.id) }, uniquingKeysWith: { first, _ in first })
+                for name in Set(nameByComponent.values).sorted() where netIDs[name] == nil {
+                    let net = LayoutNet(name: name)
+                    cell.nets.append(net); netIDs[name] = net.id; summary.netsCreated += 1
+                }
+                for (index, name) in shapeNames where cell.shapes[index].netID != netIDs[name] {
+                    cell.shapes[index].netID = netIDs[name]; summary.shapesAnnotated += 1
+                }
+                for (index, name) in viaNames where cell.vias[index].netID != netIDs[name] {
+                    cell.vias[index].netID = netIDs[name]; summary.viasAnnotated += 1
+                }
+                for (index, name) in rootPinNames where cell.pins[index].netID != netIDs[name] {
+                    cell.pins[index].netID = netIDs[name]; summary.pinsAnnotated += 1
+                }
+                for (key, name) in terminalNames where cell.instances[key.instanceIndex].terminalNetIDs[key.pin] != netIDs[name] {
+                    cell.instances[key.instanceIndex].terminalNetIDs[key.pin] = netIDs[name]; summary.terminalsBound += 1
+                }
+                document.updateCell(cell)
             }
             resyncAfterInstanceEdit()
             return summary
@@ -165,6 +168,11 @@ extension LayoutEditorViewModel {
             handleError(error)
             return nil
         }
+    }
+
+    private struct AnnotationTerminalKey: Hashable {
+        let instanceIndex: Int
+        let pin: String
     }
 
     /// The intent device armed for ghost placement; the next canvas click

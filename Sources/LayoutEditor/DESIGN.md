@@ -4,6 +4,7 @@
 Own interactive document commands and live verification. Parent:
 [package](../../DESIGN.md). This contract covers electrical annotation and
 verification consumers; renderer geometry and file persistence remain separate.
+Child: [SDLIntent](SDLIntent/DESIGN.md).
 
 ## Responsibilities and Boundaries
 MainActor owns editor state and synchronous live sessions. LayoutVerify owns
@@ -14,6 +15,7 @@ select highlights; native pin/source occurrence facts authorize net mutations.
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
 | [Package](../../DESIGN.md) | parent | Document command composition | Interactive entry point | Persist canonical document separately |
+| [SDLIntent](SDLIntent/DESIGN.md) | child | Exact annotation preflight and canonical binding | Intent consumer | Strict goals require complete requested label admission |
 | [LayoutVerify](../LayoutVerify/DESIGN.md) | depends on | Explicit Device electrical context | Same producer for annotation and verification | Raw geometric capture is not a MOS net graph |
 
 ## Architecture

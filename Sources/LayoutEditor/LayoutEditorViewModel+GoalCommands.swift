@@ -21,7 +21,7 @@ extension LayoutEditorViewModel {
         case .finishAllNets:
             succeeded = finishAllNets() > 0 || connectivityAnalysis?.opens.isEmpty == true
         case .annotateNetsFromLabels:
-            succeeded = annotateNetsFromLabels() != nil
+            succeeded = annotateNetsFromLabels(requireAllLabels: true) != nil
         case .placeIntentDevice(let deviceID, let point):
             if let device = unplacedIntentDevices.first(where: { $0.id == deviceID }) {
                 armIntentPlacement(device)

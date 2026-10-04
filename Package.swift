@@ -103,7 +103,7 @@ let package = Package(
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
             ],
-            exclude: ["DESIGN.md"],
+            exclude: ["DESIGN.md", "SDLIntent/DESIGN.md"],
             resources: [.copy("Resources")]
         ),
         .target(
