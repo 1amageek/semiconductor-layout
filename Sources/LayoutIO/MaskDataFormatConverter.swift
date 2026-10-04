@@ -7,6 +7,7 @@ import OASIS
 import CIF
 import DXF
 import DEF
+import LEF
 import FormatDetector
 
 /// Unified format converter that supports all swift-mask-data formats
@@ -14,10 +15,12 @@ import FormatDetector
 public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
     private let converter: IRLayoutConverter
     private let tech: LayoutTechDatabase
+    private let standardCellLibrary: LEFDocument?
 
-    public init(tech: LayoutTechDatabase) {
+    public init(tech: LayoutTechDatabase, standardCellLibrary: LEFDocument? = nil) {
         self.converter = IRLayoutConverter()
         self.tech = tech
+        self.standardCellLibrary = standardCellLibrary
     }
 
     /// Import from raw data with automatic format detection.
@@ -44,13 +47,17 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             throw LayoutIOError.readFailed("Failed to read file: \(error)")
         }
 
+        return try importFromData(data, format: format)
+    }
+
+    /// Decodes exact caller-captured bytes using the declared standard format.
+    public func importFromData(_ data: Data, format: LayoutFileFormat) throws -> LayoutDocument {
         let detectedFormat = mapFileFormat(format)
         if detectedFormat == .def {
-            let document = try readDEFDocument(from: data)
-            return try importDEFDocument(document)
+            return try importDEFDocument(readDEFDocument(from: data))
         }
-        let irLibrary = try readIRLibrary(from: data, format: detectedFormat)
-        return try converter.checkedImportLibrary(irLibrary, tech: tech)
+        let library = try readIRLibrary(from: data, format: detectedFormat)
+        return try converter.checkedImportLibrary(library, tech: tech)
     }
 
     public func exportDocument(_ document: LayoutDocument, to url: URL, format: LayoutFileFormat) throws {
@@ -65,7 +72,15 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             : exportedLibrary
         let data: Data
         do {
-            data = try writeIRLibrary(irLibrary, format: format)
+            if format == .def {
+                var source = try DEFIRConverter.toDEFDocument(irLibrary)
+                try DEFCellPinResolver(tech: exportTech, library: standardCellLibrary).prepareExport(&source, canonical: document)
+                data = try DEFLibraryWriter.write(source)
+            } else {
+                data = try writeIRLibrary(irLibrary, format: format)
+            }
+        } catch let error as LayoutIOError {
+            throw error
         } catch {
             throw LayoutIOError.conversionFailed("Failed to write \(format.rawValue): \(error)")
         }
@@ -109,11 +124,15 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
             with: document.viaDefs,
             dbuPerMicron: document.dbuPerMicron
         )
+        var geometryDocument = document
+        geometryDocument.pins = []
+        geometryDocument.dieArea = nil
         let library = try DEFIRConverter.toIRLibrary(
-            document,
+            geometryDocument,
             layerNumbers: try defLayerNumberMapping(from: importTech)
         )
-        return try converter.checkedImportLibrary(library, tech: importTech)
+        let canonical = try converter.checkedImportLibrary(library, tech: importTech)
+        return try DEFCellPinResolver(tech: importTech, library: standardCellLibrary).resolve(canonical, source: document)
     }
 
     private func effectiveExportTechnology(

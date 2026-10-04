@@ -8,6 +8,8 @@ public struct LayoutPin: Identifiable, Hashable, Sendable, Codable {
     public var layer: LayoutLayerID
     public var netID: UUID?
     public var role: LayoutPinRole
+    /// Declared source direction, independent of device role; unspecified native pins remain nil.
+    public var direction: LayoutPinDirection?
 
     public init(
         id: UUID = UUID(),
@@ -16,7 +18,8 @@ public struct LayoutPin: Identifiable, Hashable, Sendable, Codable {
         size: LayoutSize,
         layer: LayoutLayerID,
         netID: UUID? = nil,
-        role: LayoutPinRole = .signal
+        role: LayoutPinRole = .signal,
+        direction: LayoutPinDirection? = nil
     ) {
         self.id = id
         self.name = name
@@ -25,6 +28,7 @@ public struct LayoutPin: Identifiable, Hashable, Sendable, Codable {
         self.layer = layer
         self.netID = netID
         self.role = role
+        self.direction = direction
     }
 
     /// Returns world extents; arbitrary-angle pins remain axis-aligned envelopes.

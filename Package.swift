@@ -8,7 +8,7 @@ let circuiteFoundationDependency: Package.Dependency = .package(
 
 let swiftMaskDataDependency: Package.Dependency = .package(
     url: "https://github.com/1amageek/swift-mask-data.git",
-    revision: "1494a4250647750ac88c73ff5147692cc37c6ab6"
+    revision: "41f72fe3ca7a35b1cda53f59e780b029faf1b718"
 )
 
 let signoffToolSupportDependency: Package.Dependency = .package(
@@ -117,6 +117,7 @@ let package = Package(
         .target(
             name: "LayoutCommands",
             dependencies: [
+                .product(name: "LEF", package: "swift-mask-data"),
                 "LayoutCore",
                 "LayoutIO",
                 "LayoutTech",
@@ -144,7 +145,8 @@ let package = Package(
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
-            ]
+            ],
+            exclude: ["Fixtures"]
         ),
         .testTarget(
             name: "LayoutLVSExtractionTests",
@@ -198,6 +200,7 @@ let package = Package(
         .testTarget(
             name: "LayoutCommandsTests",
             dependencies: [
+                .product(name: "LEF", package: "swift-mask-data"),
                 "LayoutCommands",
                 "LayoutCore",
                 "LayoutIO",

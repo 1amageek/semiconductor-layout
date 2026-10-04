@@ -56,3 +56,21 @@ Inspection and diagnosis explicitly select the shared Device electrical context
 when representing MOS electrical nets. Reports retain that context and scoped
 hierarchy evidence. Unsupported capture/preparation is a structured failed
 inspection; it must not become empty connectivity counts.
+
+
+## Bound standard-cell source input
+
+Conversion and inspection accept `standardCellLibraryPath` (`--standard-cell-library`). The CLI
+reads that selected LEF source once, parses the captured bytes, and passes the resulting public
+LEFDocument to the [LayoutIO contract](../LayoutIO/DESIGN.md). The exact same captured bytes own
+the `standard-cell-library` input ArtifactReference in results and execution manifests. Input
+source paths cannot overlap output/report/manifest paths. Missing source for DEF components
+propagates the typed LayoutIO failure before output publication; technology is not a cell library.
+
+```text
+selected LEF bytes -> parsed LEFDocument -> LayoutIO checked DEF boundary
+                  -> content identity -> result / manifest input
+```
+
+`LayoutCommandCLIServiceFormatTests` owns actual option conversion/inspection and source digest
+proof. Source pin/master geometry is verified by LayoutIO, rather than duplicated in the CLI.

@@ -1,4 +1,5 @@
 import Foundation
+import LayoutIO
 
 public struct LayoutCommandFailureRenderer: Sendable {
     public init() {}
@@ -21,6 +22,15 @@ public struct LayoutCommandFailureRenderer: Sendable {
     }
 
     private func errorCode(for error: any Error) -> String {
+        if let error = error as? LayoutIOError {
+            switch error {
+            case .missingStandardCellLibrary: return "missing_standard_cell_library"
+            case .unresolvedCellMaster: return "unresolved_cell_master"
+            case .unresolvedTerminal: return "unresolved_terminal"
+            case .unsupportedSourcePin: return "unsupported_source_pin"
+            default: return "layout_io_failed"
+            }
+        }
         guard let error = error as? LayoutCommandError else {
             return "layout_command_failed"
         }
@@ -103,6 +113,7 @@ public struct LayoutCommandFailureRenderer: Sendable {
     }
 
     private func reason(for error: any Error) -> String {
+        if error is LayoutIOError { return "standard_layout_admission_failed" }
         guard let error = error as? LayoutCommandError else {
             return "layout_command_execution_failed"
         }
@@ -162,6 +173,7 @@ public struct LayoutCommandFailureRenderer: Sendable {
     }
 
     private func suggestedActions(for error: any Error) -> [String] {
+        if error is LayoutIOError { return ["provide-selected-standard-cell-lef", "resolve-source-master-pin-and-net", "inspect-source-geometry-profile"] }
         guard let error = error as? LayoutCommandError else {
             return [
                 "inspect-layout-command-input",

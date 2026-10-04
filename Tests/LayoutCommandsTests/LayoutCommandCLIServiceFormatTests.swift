@@ -4,6 +4,7 @@ import Foundation
 import LayoutCommands
 import LayoutCore
 import LayoutIO
+import LEF
 import LayoutTech
 import Testing
 
@@ -87,6 +88,13 @@ struct LayoutCommandCLIServiceFormatTests {
 
         let inspection = try Self.inspectPlacementDEF(fixture: fixture, service: service)
         Self.expectPlacementDEFInspection(inspection, fixture: fixture)
+        let digest = try SHA256ContentDigester().digest(data: Data(Self.placementLEF.utf8), using: .sha256)
+        #expect(conversion.standardCellLibraryArtifact?.digest == digest)
+        #expect(inspection.standardCellLibraryArtifact == conversion.standardCellLibraryArtifact)
+        let manifest = try Self.decodeFile(EvidenceManifest.self, from: fixture.inspectionManifestURL)
+        #expect(manifest.artifacts.contains { $0 == inspection.standardCellLibraryArtifact })
+        #expect(manifest.provenance.inputs.contains { $0 == inspection.standardCellLibraryArtifact })
+
     }
 
     @Test("CLI service inspects DEF routed nets as developer-visible layout state")
@@ -116,13 +124,13 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect(inspection.status == "passed")
         #expect(inspection.inputArtifact.format == .def)
         #expect(inspection.summary.netCount == 2)
-        #expect(inspection.summary.shapeCount == 4)
+        #expect(inspection.summary.shapeCount == 6)
         #expect(inspection.summary.viaCount == 2)
         #expect(inspection.summary.layerUsage.contains {
-            $0.layer == LayoutLayerID(name: "M1", purpose: "drawing") && $0.elementCount == 2
+            $0.layer == LayoutLayerID(name: "M1", purpose: "drawing") && $0.elementCount == 4
         })
         #expect(inspection.summary.layerUsage.contains {
-            $0.layer == LayoutLayerID(name: "M2", purpose: "drawing") && $0.elementCount == 2
+            $0.layer == LayoutLayerID(name: "M2", purpose: "drawing") && $0.elementCount == 4
         })
         #expect(inspection.summary.layerUsage.contains {
             $0.layer == LayoutLayerID(name: "VIA1", purpose: "cut") && $0.elementCount == 2
@@ -284,6 +292,31 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))
     }
 
+    @Test func selectedLibraryAdmissionPreservesSourcesAndPreviousOutput() throws {
+        let fixture = try Self.makePlacementFixtureDirectory()
+        defer { Self.removeTemporaryItem(fixture.directory) }
+        let previous = Data("previous complete output".utf8)
+        try previous.write(to: fixture.defURL)
+        let base = ["--convert-document", "--input", fixture.documentURL.path, "--input-format", "json",
+            "--output", fixture.defURL.path, "--output-format", "def", "--tech", fixture.techURL.path]
+        do {
+            _ = try LayoutCommandCLIService().run(options: .init(arguments: base))
+            Issue.record("Selected master source is mandatory")
+        } catch LayoutIOError.missingStandardCellLibrary {
+            #expect(LayoutCommandFailureRenderer().output(for: LayoutIOError.missingStandardCellLibrary).errorCode == "missing_standard_cell_library")
+        }
+        #expect(try Data(contentsOf: fixture.defURL) == previous)
+        let cells = try Data(contentsOf: fixture.cellsURL)
+        #expect(throws: LayoutCommandError.self) {
+            try LayoutCommandCLIService().run(options: .init(arguments: base + ["--standard-cell-library", fixture.cellsURL.path, "--result", fixture.cellsURL.path]))
+        }
+        #expect(try Data(contentsOf: fixture.cellsURL) == cells)
+        #expect(throws: LayoutCommandError.self) {
+            try LayoutCommandCLIOptions(arguments: ["--action-domain", "--standard-cell-library", fixture.cellsURL.path])
+        }
+        #expect(LayoutCommandCLIOptions.usage.contains("--standard-cell-library"))
+    }
+
     private static func convertJSONToGDS(
         fixture: Fixture,
         service: LayoutCommandCLIService
@@ -345,6 +378,7 @@ struct LayoutCommandCLIServiceFormatTests {
             "--output", fixture.defURL.path,
             "--output-format", "def",
             "--tech", fixture.techURL.path,
+            "--standard-cell-library", fixture.cellsURL.path,
             "--result", fixture.conversionResultURL.path,
             "--artifact-manifest", fixture.conversionManifestURL.path,
             "--json",
@@ -361,6 +395,7 @@ struct LayoutCommandCLIServiceFormatTests {
             "--input", fixture.defURL.path,
             "--input-format", "def",
             "--tech", fixture.techURL.path,
+            "--standard-cell-library", fixture.cellsURL.path,
             "--result", fixture.inspectionResultURL.path,
             "--artifact-manifest", fixture.inspectionManifestURL.path,
             "--json",
@@ -510,6 +545,7 @@ struct LayoutCommandCLIServiceFormatTests {
         let documentURL: URL
         let techURL: URL
         let defURL: URL
+        let cellsURL: URL
         let conversionResultURL: URL
         let conversionManifestURL: URL
         let inspectionResultURL: URL
@@ -561,14 +597,19 @@ struct LayoutCommandCLIServiceFormatTests {
         let conversionManifestURL = directory.appendingPathComponent("reports/convert-manifest.json")
         let inspectionResultURL = directory.appendingPathComponent("reports/inspect-result.json")
         let inspectionManifestURL = directory.appendingPathComponent("reports/inspect-manifest.json")
+        let cellsURL = directory.appendingPathComponent("cells.lef")
+        try placementLEF.write(to: cellsURL, atomically: true, encoding: .utf8)
+        let selected = try LEFLibraryReader.read(Data(placementLEF.utf8))
+        let document = try MaskDataFormatConverter(tech: .standard(), standardCellLibrary: selected).importFromData(Data(placementDEF.utf8), format: .def)
         let serializer = LayoutDocumentSerializer()
-        try serializer.encodeDocument(placementDocument()).write(to: documentURL, options: .atomic)
+        try serializer.encodeDocument(document).write(to: documentURL, options: .atomic)
         try serializer.encodeTech(LayoutTechDatabase.standard()).write(to: techURL, options: .atomic)
         return PlacementFixture(
             directory: directory,
             documentURL: documentURL,
             techURL: techURL,
             defURL: defURL,
+            cellsURL: cellsURL,
             conversionResultURL: conversionResultURL,
             conversionManifestURL: conversionManifestURL,
             inspectionResultURL: inspectionResultURL,
@@ -666,20 +707,16 @@ struct LayoutCommandCLIServiceFormatTests {
         return tech
     }
 
-    private static func placementDocument() -> LayoutDocument {
-        let child = LayoutCell(name: "INV")
-        let instance = LayoutInstance(
-            cellID: child.id,
-            name: "u1",
-            transform: LayoutTransform(
-                translation: LayoutPoint(x: 1.25, y: 2.5),
-                rotation: .deg0,
-                mirrorX: true
-            )
-        )
-        let top = LayoutCell(name: "TOP", instances: [instance])
-        return LayoutDocument(name: "placement", cells: [child, top], topCellID: top.id)
-    }
+    private static let placementLEF = """
+    VERSION 5.8 ; UNITS DATABASE MICRONS 1000 ; END UNITS
+    MACRO INV SIZE 2 BY 1 ; PIN Y DIRECTION OUTPUT ; USE SIGNAL ;
+    PORT LAYER metal1 ; RECT 0.1 0.1 0.7 0.7 ; END END Y END INV END LIBRARY
+    """
+    private static let placementDEF = """
+    VERSION 5.8 ; DESIGN TOP ; UNITS DISTANCE MICRONS 1000 ;
+    COMPONENTS 1 ; - u1 INV + PLACED ( 1250 2500 ) FN ; END COMPONENTS
+    NETS 1 ; - N ( u1 Y ) ; END NETS END DESIGN
+    """
 
     private static let routedDEF = """
     VERSION 5.8 ;
@@ -688,11 +725,15 @@ struct LayoutCommandCLIServiceFormatTests {
     VIAS 1 ;
       - VIA1 + CUTSIZE 50 50 + CUTSPACING 100 100 + ENCLOSURE 10 10 10 10 + RECT metal1 ( -35 -35 ) ( 35 35 ) + RECT via1 ( -25 -25 ) ( 25 25 ) + RECT metal2 ( -35 -35 ) ( 35 35 ) ;
     END VIAS
+    PINS 2 ;
+      - clk + NET clk + DIRECTION INPUT + USE SIGNAL + LAYER metal1 ( -50 -50 ) ( 50 50 ) + PLACED ( 100 200 ) N ;
+      - VDD + NET VDD + DIRECTION INOUT + USE POWER + LAYER metal2 ( -150 -150 ) ( 150 150 ) + PLACED ( 0 1000 ) N ;
+    END PINS
     NETS 1 ;
       - clk ( PIN clk ) + USE CLOCK + ROUTED metal1 ( 100 200 ) ( 900 200 ) VIA1 + NEW metal2 ( 900 200 ) ( 1200 200 ) ;
     END NETS
     SPECIALNETS 1 ;
-      - VDD ( * VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE ( 0 1000 ) ( 1000 * ) VIA1 + NEW metal1 300 + SHAPE STRIPE ( 1000 1000 ) ( 1200 1000 ) ;
+      - VDD ( PIN VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE ( 0 1000 ) ( 1000 * ) VIA1 + NEW metal1 300 + SHAPE STRIPE ( 1000 1000 ) ( 1200 1000 ) ;
     END SPECIALNETS
     END DESIGN
     """
@@ -704,6 +745,9 @@ struct LayoutCommandCLIServiceFormatTests {
     VIAS 1 ;
       - DEFVIA + CUTSIZE 50 50 + CUTSPACING 100 120 + ENCLOSURE 35 25 45 40 + RECT metal1 ( -60 -50 ) ( 60 50 ) + RECT via1 ( -25 -25 ) ( 25 25 ) + RECT metal2 ( -70 -65 ) ( 70 65 ) ;
     END VIAS
+    PINS 1 ;
+      - sig + NET sig + DIRECTION INPUT + USE SIGNAL + LAYER metal1 ( -50 -50 ) ( 50 50 ) + PLACED ( 100 200 ) N ;
+    END PINS
     NETS 1 ;
       - sig ( PIN sig ) + ROUTED metal1 ( 100 200 ) ( 900 200 ) DEFVIA ;
     END NETS

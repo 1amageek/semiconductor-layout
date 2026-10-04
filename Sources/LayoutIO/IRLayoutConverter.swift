@@ -473,7 +473,7 @@ public struct IRLayoutConverter: Sendable {
         )
     }
 
-    private func stableUUID(namespace: String, payload: String) -> UUID {
+    func stableUUID(namespace: String, payload: String) -> UUID {
         var bytes = Array(SHA256.hash(data: Data("lsi.ir-layout|\(namespace)|\(payload)".utf8)).prefix(16))
         bytes[6] = (bytes[6] & 0x0F) | 0x50
         bytes[8] = (bytes[8] & 0x3F) | 0x80

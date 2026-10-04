@@ -8,6 +8,7 @@ public struct LayoutDocumentInspectionResult: Codable, Sendable, Equatable {
     public let schemaVersion: SchemaVersion
     public let status: String
     public let inputArtifact: ArtifactReference
+    public let standardCellLibraryArtifact: ArtifactReference?
     public let technologyArtifact: ArtifactReference?
     public let summary: LayoutDocumentSummary
     public let verification: LayoutDocumentInspectionVerification?
@@ -15,6 +16,7 @@ public struct LayoutDocumentInspectionResult: Codable, Sendable, Equatable {
     public init(
         status: String? = nil,
         inputArtifact: ArtifactReference,
+        standardCellLibraryArtifact: ArtifactReference? = nil,
         technologyArtifact: ArtifactReference? = nil,
         summary: LayoutDocumentSummary,
         verification: LayoutDocumentInspectionVerification? = nil
@@ -23,6 +25,7 @@ public struct LayoutDocumentInspectionResult: Codable, Sendable, Equatable {
         self.status = status ?? verification?.status ?? "unverified"
         self.inputArtifact = inputArtifact
         self.technologyArtifact = technologyArtifact
+        self.standardCellLibraryArtifact = standardCellLibraryArtifact
         self.summary = summary
         self.verification = verification
     }

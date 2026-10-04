@@ -130,3 +130,77 @@ Normal and special routes retain their wire paths and produce exactly one via.
 footprints, source normal/special intent, native serialization policy and atomic
 failed-export preservation. `LayoutViaGeometryTests` owns generic property
 transform and JSON retention.
+
+### Bound DEF component and terminal admission
+
+`MaskDataFormatConverter(tech:standardCellLibrary:)` consumes a caller-retained
+LEFDocument. The explicit `importFromData(_:format:)` boundary decodes those exact
+captured DEF bytes; file import reads once and delegates. Raw mask interchange can
+represent black boxes, but canonical DEF import requires all component masters and
+net terminal references to bind actual source definitions before publishing.
+
+The admitted profile is a uniquely named LEF master with positive explicit SIZE,
+zero ORIGIN, and each connected pin represented by one single-layer RECT PORT.
+Finite ordered coordinates must be exact on both source LEF and DEF grids; the
+centered canonical pin must be representable on the native capture grid. Multi-RECT,
+multilayer, polygon, via or missing port geometry and nonzero ORIGIN are typed
+unsupported, with incomplete implementation markers at the rejected branches.
+Directions retain actual source meanings. Admitted pin uses SIGNAL/POWER/GROUND
+map to canonical roles; unsupported CLOCK/ANALOG use is rejected, not coerced.
+
+Each admitted port produces its actual metal rectangle as a LayoutShape and a
+LayoutPin with the same unique local net. Master SIZE is metadata only:
+`lef.macro.widthMicrometers` and `lef.macro.heightMicrometers`, finite positive
+micrometer decimal values. It is never emitted as a conductor. Component poses
+normalize all eight standard orientations against the transformed declared SIZE
+bounds; canonical instance names/IDs and terminalNetIDs retain source incidence.
+
+Top DEF PINS require actual layer rectangles, placement, direction and net authority;
+labels cannot substitute for them. Net connections must resolve declared top pins
+or exact component/master pin names. Conflicting bindings fail atomically.
+Wildcard component connections resolve only existing declared source ports; a
+wildcard without any resolved source terminal fails. Unconnected pins do not
+invent root nets. Imported top pins emit their real metal rectangle and canonical
+terminal. Export emits real standard PINS from canonical rectangle/direction/net
+facts, or rejects missing/unrepresentable state before the atomic write.
+
+```mermaid
+flowchart LR
+  LEF[Retained selected LEF masters and PORT rectangles] --> Binding[Exact source admission]
+  DEF[DEF components / PINS / NETS] --> Binding
+  Binding --> Master[Canonical master metal / pins / local nets]
+  Binding --> Instance[SIZE-normalized instances and terminal bindings]
+  Master --> Capture[Existing native hierarchy and contact capture]
+  Instance --> Capture
+  Capture --> Incidence[Scoped pin geometry and positive conductor incidence]
+```
+
+Public capture pinGeometries and Pin.footprintIndices own the actual surface contact
+proof. A host may choose a unique existing route terminal endpoint only when exact
+net and instance:pin identity, transformed source rectangle and positive contact
+incidence agree. Pin centers, nearest geometry and macro outlines are not access
+node authority. Host artifact byte identity and endpoint selection are outside
+LayoutIO ownership.
+
+`DEFBoundPinTests` verifies the actual selected native source master and route
+endpoints, all eight SIZE-normalized poses, top PINS, exact JSON direction,
+source-derived contact incidence and rejected incomplete/ambiguous bindings.
+Existing route/via fixtures migrate dangling terminal references to real declared
+PINS while retaining route geometry assertions.
+
+Top PIN source metal carries `def.pin.name`, `def.pin.status`, `def.pin.special`, and
+JSON `def.pin.properties` annotations. These retain source placement status and nongeometry
+properties through native persistence and DEF export. Canonical net bindings own emitted
+connections; source net class and routing intent remain preserved. A changed master port that
+no longer matches the selected LEF cannot be exported as that external master.
+
+The DEF geometry projection sends ROUTES and named vias through existing LayoutIR conversion.
+PINS are handled once by the source resolver, rather than raw layer-zero text. DIEAREA is a
+placement domain, not a conductor: exact typed source points are retained as JSON `def.dieArea`
+cell metadata and restored by DEF export. No die boundary or macro SIZE is stamped as metal.
+Standard imports mint document-local net IDs; preservation compares resolved declared net names
+and instance:pin incidence, not UUID identity across independently imported documents.
+
+Top PINS transforms apply the eight standard discrete matrices to source DBU rectangle corners
+before placement addition. Integer overflow and centered-grid admission precede native values;
+no floating cancellation or widened epsilon changes an admitted source port.

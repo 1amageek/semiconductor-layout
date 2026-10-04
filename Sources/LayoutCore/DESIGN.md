@@ -44,3 +44,9 @@ Path transforms scale width by the magnitude of uniform magnification, as well
 as transforming centerline points; reflection does not make width negative.
 Hierarchy capture retains full transformed pin rectangles separately from UI
 envelopes. The behavioral owner is `LayoutAutoGenTests/HierarchyCaptureTests`.
+
+Canonical pins represent one exact single-layer rectangle and an optional typed
+`LayoutPinDirection` (`input`, `output`, `inout`, `feedthrough`). Direction is a
+source fact independent of the electrical role; missing direction is not coerced.
+Pin transforms and JSON retain direction. More complex port geometry is not
+represented by a bounding box; source adapters must reject it before publication.

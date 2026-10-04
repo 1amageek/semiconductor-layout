@@ -5,6 +5,10 @@ import LayoutCommands
 struct LayoutCommandCLI {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments == ["--help"] {
+            print(LayoutCommandCLIOptions.usage)
+            return
+        }
         do {
             let options = try LayoutCommandCLIOptions(arguments: arguments)
             let result = try LayoutCommandCLIService().runWithExitStatus(options: options)

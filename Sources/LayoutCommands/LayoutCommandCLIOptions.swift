@@ -5,6 +5,13 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
     public let mode: LayoutCommandCLIMode
     public let emitsJSON: Bool
 
+    public static let usage = """
+    layout-command --convert-document --input PATH --input-format FORMAT --output PATH --output-format FORMAT --tech PATH [--standard-cell-library CELLS.lef] [--result PATH] [--artifact-manifest PATH] [--json]
+    layout-command --inspect-document --input PATH --input-format FORMAT --tech PATH [--standard-cell-library CELLS.lef] [--result PATH] [--artifact-manifest PATH] [--json]
+    DEF components require a selected source LEF library with declared SIZE, direction and rectangular ports.
+    Technology defines layers and vias; --standard-cell-library defines actual cell masters and pins.
+    """
+
     public var requestPath: String? {
         if case .runRequest(let path) = mode {
             return path
@@ -29,6 +36,7 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
         var inputFormat: LayoutFileFormat?
         var outputPath: String?
         var outputFormat: LayoutFileFormat?
+        var standardCellLibraryPath: String?
         var technologyPath: String?
         var cellID: UUID?
         var tolerance: Double?
@@ -82,6 +90,8 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
                 parsed.outputPath = try cursor.requireValue(for: argument)
             case "--output-format":
                 parsed.outputFormat = try parseFormat(cursor.requireValue(for: argument))
+            case "--standard-cell-library":
+                parsed.standardCellLibraryPath = try cursor.requireValue(for: argument)
             case "--tech":
                 parsed.technologyPath = try cursor.requireValue(for: argument)
             case "--cell-id":
@@ -104,6 +114,9 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
     private static func makeMode(from parsed: ParsedArguments) throws -> LayoutCommandCLIMode {
         if parsed.selectedModes.count > 1 {
             throw LayoutCommandError.conflictingArguments(parsed.selectedModes[0], parsed.selectedModes[1])
+        }
+        if parsed.standardCellLibraryPath != nil && !parsed.convertsDocument && !parsed.inspectsDocument {
+            throw LayoutCommandError.conflictingArguments("--standard-cell-library", "selected command mode")
         }
         if let requestPath = parsed.requestPath {
             return .runRequest(requestPath)
@@ -145,6 +158,7 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
             outputPath: outputPath,
             outputFormat: outputFormat,
             technologyPath: parsed.technologyPath,
+            standardCellLibraryPath: parsed.standardCellLibraryPath,
             resultPath: parsed.resultPath,
             artifactManifestPath: parsed.artifactManifestPath
         ))
@@ -161,6 +175,7 @@ public struct LayoutCommandCLIOptions: Sendable, Equatable {
             inputPath: inputPath,
             inputFormat: inputFormat,
             technologyPath: parsed.technologyPath,
+            standardCellLibraryPath: parsed.standardCellLibraryPath,
             resultPath: parsed.resultPath,
             artifactManifestPath: parsed.artifactManifestPath
         ))

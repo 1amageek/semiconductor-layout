@@ -5,6 +5,7 @@ import LayoutIO
 import LayoutTech
 import LayoutVerify
 import DEF
+import LEF
 
 /// Whole-document round-trip contracts, in one place:
 ///
@@ -24,7 +25,7 @@ struct DocumentRoundTripTests {
 
     @Test("DEF transform failure preserves existing output", arguments: ["angle", "scale", "quarter-turn"])
     func defTransformFailureIsAtomic(mode: String) throws {
-        let child = LayoutCell(name: "CHILD")
+        let child = LayoutCell(name: "CHILD", properties: ["lef.macro.widthMicrometers": "2.0", "lef.macro.heightMicrometers": "1.0"])
         let instance = LayoutInstance(cellID: child.id, name: "I", transform: .init(
             rotationDegrees: mode == "angle" ? 33 : 90, magnification: mode == "scale" ? 1.5 : 1))
         let top = LayoutCell(name: "TOP", instances: [instance])
@@ -35,7 +36,7 @@ struct DocumentRoundTripTests {
         let url = directory.appendingPathComponent("output.def")
         let original = Data("existing output".utf8)
         try original.write(to: url)
-        let converter = MaskDataFormatConverter(tech: .standard())
+        let converter = MaskDataFormatConverter(tech: .standard(), standardCellLibrary: .init(macros: [.init(name: "CHILD", width: 2, height: 1)]))
         if mode == "quarter-turn" {
             try converter.exportDocument(document, to: url, format: .def)
             #expect(try Data(contentsOf: url) != original)
@@ -102,7 +103,9 @@ struct DocumentRoundTripTests {
     }
 
     @Test func defRoundTripsPlacedComponentsAsInstances() throws {
-        let document = Self.placementDocument()
+        let library = try LEFLibraryReader.read(Data(Self.placementLEF.utf8))
+        let converter = MaskDataFormatConverter(tech: .standard(), standardCellLibrary: library)
+        let document = try converter.importFromData(Data(Self.placementDEF.utf8), format: .def)
         let tech = LayoutTechDatabase.standard()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("def-roundtrip-\(UUID().uuidString)")
@@ -110,7 +113,6 @@ struct DocumentRoundTripTests {
         defer { Self.removeTemporaryDirectory(directory) }
         let url = directory.appendingPathComponent("placement.def")
 
-        let converter = MaskDataFormatConverter(tech: tech)
         try converter.exportDocument(document, to: url, format: .def)
         let defText = try String(contentsOf: url, encoding: .utf8)
         #expect(defText.contains("- u1 INV + PLACED ( 1250 2500 ) FN"))
@@ -121,9 +123,9 @@ struct DocumentRoundTripTests {
         #expect(importedTop.instances.count == 1)
         let instance = try #require(importedTop.instances.first)
         #expect(instance.name == "u1")
-        #expect(abs(instance.transform.translation.x - 1.25) < 0.0001)
+        #expect(abs(instance.transform.translation.x - 3.25) < 0.0001)
         #expect(abs(instance.transform.translation.y - 2.5) < 0.0001)
-        #expect(instance.transform.apply(to: LayoutPoint(x: 0.25, y: 0.5)) == LayoutPoint(x: 1, y: 3))
+        #expect(instance.transform.apply(to: LayoutPoint(x: 0.25, y: 0.5)) == LayoutPoint(x: 3, y: 3))
     }
 
     @Test func defRoundTripsRoutedNetsAsNettedShapes() throws {
@@ -141,7 +143,8 @@ struct DocumentRoundTripTests {
         let importedTop = try #require(imported.topCellID.flatMap { imported.cell(withID: $0) })
 
         #expect(importedTop.nets.map(\.name).sorted() == ["VDD", "clk"])
-        #expect(importedTop.shapes.count == 4)
+        #expect(importedTop.shapes.filter { $0.properties["def.route.kind"] != nil }.count == 4)
+        #expect(importedTop.shapes.filter { $0.properties["def.pin.name"] != nil }.count == 2)
         #expect(importedTop.vias.count == 2)
         #expect(importedTop.shapes.allSatisfy { $0.netID != nil })
         #expect(importedTop.vias.allSatisfy { $0.netID != nil })
@@ -169,7 +172,7 @@ struct DocumentRoundTripTests {
         #expect(output.contains("- clk ( PIN clk ) + USE CLOCK + ROUTED metal1"))
         #expect(output.contains("( 900 200 ) VIA1"))
         #expect(output.contains("SPECIALNETS 1"))
-        #expect(output.contains("- VDD ( * VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE"))
+        #expect(output.contains("- VDD ( PIN VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE"))
         #expect(output.contains("( 1000 1000 ) VIA1"))
         let parsed = try DEFLibraryReader.read(Data(output.utf8))
         let special = try #require(parsed.specialNets.first { $0.name == "VDD" })
@@ -336,20 +339,16 @@ struct DocumentRoundTripTests {
         return LayoutDocument(name: "rich", cells: [child, top], topCellID: top.id)
     }
 
-    private static func placementDocument() -> LayoutDocument {
-        let child = LayoutCell(name: "INV")
-        let instance = LayoutInstance(
-            cellID: child.id,
-            name: "u1",
-            transform: LayoutTransform(
-                translation: LayoutPoint(x: 1.25, y: 2.5),
-                rotation: .deg0,
-                mirrorX: true
-            )
-        )
-        let top = LayoutCell(name: "TOP", instances: [instance])
-        return LayoutDocument(name: "placement", cells: [child, top], topCellID: top.id)
-    }
+    private static let placementLEF = """
+    VERSION 5.8 ; UNITS DATABASE MICRONS 1000 ; END UNITS
+    MACRO INV SIZE 2 BY 1 ; PIN Y DIRECTION OUTPUT ; USE SIGNAL ;
+    PORT LAYER metal1 ; RECT 0.1 0.1 0.7 0.7 ; END END Y END INV END LIBRARY
+    """
+    private static let placementDEF = """
+    VERSION 5.8 ; DESIGN TOP ; UNITS DISTANCE MICRONS 1000 ;
+    COMPONENTS 1 ; - u1 INV + PLACED ( 1250 2500 ) FN ; END COMPONENTS
+    NETS 1 ; - N ( u1 Y ) ; END NETS END DESIGN
+    """
 
     private static let routedDEF = """
     VERSION 5.8 ;
@@ -358,11 +357,15 @@ struct DocumentRoundTripTests {
     VIAS 1 ;
       - VIA1 + CUTSIZE 50 50 + CUTSPACING 100 100 + ENCLOSURE 10 10 10 10 + RECT metal1 ( -35 -35 ) ( 35 35 ) + RECT via1 ( -25 -25 ) ( 25 25 ) + RECT metal2 ( -35 -35 ) ( 35 35 ) ;
     END VIAS
+    PINS 2 ;
+      - clk + NET clk + DIRECTION INPUT + USE SIGNAL + LAYER metal1 ( -50 -50 ) ( 50 50 ) + PLACED ( 100 200 ) N ;
+      - VDD + NET VDD + DIRECTION INOUT + USE POWER + LAYER metal2 ( -150 -150 ) ( 150 150 ) + PLACED ( 0 1000 ) N ;
+    END PINS
     NETS 1 ;
       - clk ( PIN clk ) + USE CLOCK + ROUTED metal1 ( 100 200 ) ( 900 200 ) VIA1 + NEW metal2 ( 900 200 ) ( 1200 200 ) ;
     END NETS
     SPECIALNETS 1 ;
-      - VDD ( * VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE ( 0 1000 ) ( 1000 * ) VIA1 + NEW metal1 300 + SHAPE STRIPE ( 1000 1000 ) ( 1200 1000 ) ;
+      - VDD ( PIN VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE ( 0 1000 ) ( 1000 * ) VIA1 + NEW metal1 300 + SHAPE STRIPE ( 1000 1000 ) ( 1200 1000 ) ;
     END SPECIALNETS
     END DESIGN
     """
@@ -371,6 +374,10 @@ struct DocumentRoundTripTests {
     VERSION 5.8 ;
     DESIGN unknown_via ;
     UNITS DISTANCE MICRONS 1000 ;
+    PINS 2 ;
+      - clk + NET clk + DIRECTION INPUT + USE SIGNAL + LAYER metal1 ( -50 -50 ) ( 50 50 ) + PLACED ( 100 200 ) N ;
+      - VDD + NET VDD + DIRECTION INOUT + USE POWER + LAYER metal2 ( -150 -150 ) ( 150 150 ) + PLACED ( 0 1000 ) N ;
+    END PINS
     NETS 1 ;
       - clk ( PIN clk ) + USE CLOCK + ROUTED metal1 ( 100 200 ) ( 900 200 ) UNKNOWNVIA ;
     END NETS
@@ -384,6 +391,9 @@ struct DocumentRoundTripTests {
     VIAS 1 ;
       - DEFVIA + CUTSIZE 50 50 + CUTSPACING 100 120 + ENCLOSURE 35 25 45 40 + RECT metal1 ( -60 -50 ) ( 60 50 ) + RECT via1 ( -25 -25 ) ( 25 25 ) + RECT metal2 ( -70 -65 ) ( 70 65 ) ;
     END VIAS
+    PINS 1 ;
+      - sig + NET sig + DIRECTION INPUT + USE SIGNAL + LAYER metal1 ( -50 -50 ) ( 50 50 ) + PLACED ( 100 200 ) N ;
+    END PINS
     NETS 1 ;
       - sig ( PIN sig ) + ROUTED metal1 ( 100 200 ) ( 900 200 ) DEFVIA ;
     END NETS

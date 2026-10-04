@@ -6,6 +6,7 @@ public struct LayoutDocumentConversionRequest: Codable, Sendable, Equatable {
     public let inputFormat: LayoutFileFormat
     public let outputPath: String
     public let outputFormat: LayoutFileFormat
+    public let standardCellLibraryPath: String?
     public let technologyPath: String?
     public let resultPath: String?
     public let artifactManifestPath: String?
@@ -16,6 +17,7 @@ public struct LayoutDocumentConversionRequest: Codable, Sendable, Equatable {
         outputPath: String,
         outputFormat: LayoutFileFormat,
         technologyPath: String?,
+        standardCellLibraryPath: String? = nil,
         resultPath: String? = nil,
         artifactManifestPath: String? = nil
     ) {
@@ -24,6 +26,7 @@ public struct LayoutDocumentConversionRequest: Codable, Sendable, Equatable {
         self.outputPath = outputPath
         self.outputFormat = outputFormat
         self.technologyPath = technologyPath
+        self.standardCellLibraryPath = standardCellLibraryPath
         self.resultPath = resultPath
         self.artifactManifestPath = artifactManifestPath
     }

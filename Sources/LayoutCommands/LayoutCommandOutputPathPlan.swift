@@ -15,6 +15,7 @@ struct LayoutCommandOutputPathPlan: Sendable, Equatable {
         )
         try validateDistinctPaths([
             ("input", plan.inputURL),
+            ("standard-cell-library", request.standardCellLibraryPath.map { URL(fileURLWithPath: $0) }),
             ("output", plan.outputURL),
             ("result", plan.resultURL),
             ("artifact-manifest", plan.manifestURL),
@@ -31,6 +32,7 @@ struct LayoutCommandOutputPathPlan: Sendable, Equatable {
         )
         try validateDistinctPaths([
             ("input", plan.inputURL),
+            ("standard-cell-library", request.standardCellLibraryPath.map { URL(fileURLWithPath: $0) }),
             ("result", plan.resultURL),
             ("artifact-manifest", plan.manifestURL),
         ])

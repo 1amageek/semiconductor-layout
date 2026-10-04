@@ -4,6 +4,7 @@ import LayoutIO
 public struct LayoutDocumentInspectionRequest: Codable, Sendable, Equatable {
     public let inputPath: String
     public let inputFormat: LayoutFileFormat
+    public let standardCellLibraryPath: String?
     public let technologyPath: String?
     public let resultPath: String?
     public let artifactManifestPath: String?
@@ -12,12 +13,14 @@ public struct LayoutDocumentInspectionRequest: Codable, Sendable, Equatable {
         inputPath: String,
         inputFormat: LayoutFileFormat,
         technologyPath: String?,
+        standardCellLibraryPath: String? = nil,
         resultPath: String? = nil,
         artifactManifestPath: String? = nil
     ) {
         self.inputPath = inputPath
         self.inputFormat = inputFormat
         self.technologyPath = technologyPath
+        self.standardCellLibraryPath = standardCellLibraryPath
         self.resultPath = resultPath
         self.artifactManifestPath = artifactManifestPath
     }

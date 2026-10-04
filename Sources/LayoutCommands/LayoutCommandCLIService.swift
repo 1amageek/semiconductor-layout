@@ -7,6 +7,7 @@ import LayoutCore
 import LayoutIO
 import LayoutTech
 import LayoutVerify
+import LEF
 
 public struct LayoutCommandCLIService: Sendable {
     private let decoder: JSONDecoder
@@ -94,8 +95,9 @@ public struct LayoutCommandCLIService: Sendable {
             outputFormat: request.outputFormat,
             technologyPath: request.technologyPath
         )
-        let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech)
-        try writeConvertedDocument(document, to: outputURL, format: request.outputFormat, tech: effectiveTech)
+        let selectedCells = try loadStandardCellLibrary(path: request.standardCellLibraryPath)
+        let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech, standardCellLibrary: selectedCells?.document)
+        try writeConvertedDocument(document, to: outputURL, format: request.outputFormat, tech: effectiveTech, standardCellLibrary: selectedCells?.document)
         let inputArtifact = try referenceArtifact(
             at: pathPlan.inputURL,
             role: "input-layout-document",
@@ -112,20 +114,22 @@ public struct LayoutCommandCLIService: Sendable {
         let result = makeConversionResult(
             inputArtifact: inputArtifact,
             outputArtifact: outputArtifact,
+            standardCellLibraryArtifact: selectedCells?.artifact,
             technologyArtifact: technologyArtifact,
             document: document
         )
         let resultData = try encoder.encode(result)
-        let artifacts = try conversionArtifacts(
+        var artifacts = try conversionArtifacts(
             resultData: resultData,
             pathPlan: pathPlan,
             inputArtifact: inputArtifact,
             outputArtifact: outputArtifact,
             technologyArtifact: technologyArtifact
         )
+        if let selectedCells { artifacts.append(selectedCells.artifact) }
         try writeManifestIfRequested(
             artifacts: artifacts,
-            inputs: [inputArtifact] + [technologyArtifact].compactMap { $0 },
+            inputs: [inputArtifact] + [technologyArtifact, selectedCells?.artifact].compactMap { $0 },
             to: pathPlan.manifestURL,
             entryPoint: "LayoutCommandCLIService.convertDocument",
             startedAt: startedAt
@@ -146,7 +150,8 @@ public struct LayoutCommandCLIService: Sendable {
             outputFormat: .json,
             technologyPath: request.technologyPath
         )
-        let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech)
+        let selectedCells = try loadStandardCellLibrary(path: request.standardCellLibraryPath)
+        let document = try loadDocument(from: pathPlan.inputURL, format: request.inputFormat, tech: effectiveTech, standardCellLibrary: selectedCells?.document)
         let verification = try inspectionVerification(document: document, tech: effectiveTech)
         let inputArtifact = try referenceArtifact(
             at: pathPlan.inputURL,
@@ -157,6 +162,7 @@ public struct LayoutCommandCLIService: Sendable {
         let technologyArtifact = try technologyArtifact(path: request.technologyPath)
         let result = LayoutDocumentInspectionResult(
             inputArtifact: inputArtifact,
+            standardCellLibraryArtifact: selectedCells?.artifact,
             technologyArtifact: technologyArtifact,
             summary: LayoutDocumentSummary(document: document),
             verification: verification
@@ -173,9 +179,10 @@ public struct LayoutCommandCLIService: Sendable {
         ) {
             artifacts.append(resultArtifact)
         }
+        if let selectedCells { artifacts.append(selectedCells.artifact) }
         try writeManifestIfRequested(
             artifacts: artifacts,
-            inputs: [inputArtifact] + [technologyArtifact].compactMap { $0 },
+            inputs: [inputArtifact] + [technologyArtifact, selectedCells?.artifact].compactMap { $0 },
             to: pathPlan.manifestURL,
             entryPoint: "LayoutCommandCLIService.inspectDocument",
             startedAt: startedAt
@@ -329,24 +336,27 @@ public struct LayoutCommandCLIService: Sendable {
         _ document: LayoutDocument,
         to outputURL: URL,
         format: LayoutFileFormat,
-        tech: LayoutTechDatabase?
+        tech: LayoutTechDatabase?,
+        standardCellLibrary: LEFDocument? = nil
     ) throws {
         try FileManager.default.createDirectory(
             at: outputURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try writeDocument(document, to: outputURL, format: format, tech: tech)
+        try writeDocument(document, to: outputURL, format: format, tech: tech, standardCellLibrary: standardCellLibrary)
     }
 
     private func makeConversionResult(
         inputArtifact: ArtifactReference,
         outputArtifact: ArtifactReference,
+        standardCellLibraryArtifact: ArtifactReference?,
         technologyArtifact: ArtifactReference?,
         document: LayoutDocument
     ) -> LayoutDocumentConversionResult {
         LayoutDocumentConversionResult(
             inputArtifact: inputArtifact,
             outputArtifact: outputArtifact,
+            standardCellLibraryArtifact: standardCellLibraryArtifact,
             technologyArtifact: technologyArtifact,
             summary: LayoutDocumentSummary(document: document)
         )
@@ -536,7 +546,7 @@ public struct LayoutCommandCLIService: Sendable {
         )
     }
 
-    private func loadDocument(from url: URL, format: LayoutFileFormat, tech: LayoutTechDatabase?) throws -> LayoutDocument {
+    private func loadDocument(from url: URL, format: LayoutFileFormat, tech: LayoutTechDatabase?, standardCellLibrary: LEFDocument? = nil) throws -> LayoutDocument {
         switch format {
         case .json:
             let data = try Data(contentsOf: url)
@@ -545,7 +555,7 @@ public struct LayoutCommandCLIService: Sendable {
             guard let tech else {
                 throw LayoutCommandError.missingRequiredArgument("--tech")
             }
-            return try MaskDataFormatConverter(tech: tech).importDocument(from: url, format: format)
+            return try MaskDataFormatConverter(tech: tech, standardCellLibrary: standardCellLibrary).importDocument(from: url, format: format)
         }
     }
 
@@ -567,7 +577,8 @@ public struct LayoutCommandCLIService: Sendable {
         _ document: LayoutDocument,
         to url: URL,
         format: LayoutFileFormat,
-        tech: LayoutTechDatabase?
+        tech: LayoutTechDatabase?,
+        standardCellLibrary: LEFDocument? = nil
     ) throws {
         switch format {
         case .json:
@@ -577,7 +588,7 @@ public struct LayoutCommandCLIService: Sendable {
             guard let tech else {
                 throw LayoutCommandError.missingRequiredArgument("--tech")
             }
-            try MaskDataFormatConverter(tech: tech).exportDocument(document, to: url, format: format)
+            try MaskDataFormatConverter(tech: tech, standardCellLibrary: standardCellLibrary).exportDocument(document, to: url, format: format)
         }
     }
 
@@ -606,6 +617,16 @@ public struct LayoutCommandCLIService: Sendable {
             }
         }
         return try TechFormatConverter().loadTech(from: url)
+    }
+
+    private func loadStandardCellLibrary(path: String?) throws -> (document: LEFDocument, artifact: ArtifactReference)? {
+        guard let path else { return nil }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let document = try LEFLibraryReader.read(data)
+        let digest = try SHA256ContentDigester().digest(data: data, using: .sha256)
+        let artifact = try ArtifactReference(digest: digest, byteCount: UInt64(data.count),
+            descriptor: .init(role: try ArtifactRole(validatingRawValue: "standard-cell-library"), kind: .technology, format: .lef))
+        return (document, artifact)
     }
 
     private func technologyArtifact(path: String?) throws -> ArtifactReference? {
