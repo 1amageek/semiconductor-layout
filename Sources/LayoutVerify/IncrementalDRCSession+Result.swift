@@ -60,10 +60,10 @@ extension IncrementalDRCSession {
             }
         }
         violations += shortViolations
-        for netID in openByNet.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
+        for netID in openByNet.keys.sorted() {
             violations += openByNet[netID] ?? []
         }
         violations += antennaViolations
-        return LayoutDRCResult(violations: violations)
+        return LayoutDRCResult(violations: violations, sourceHierarchy: nativeConnectivity?.currentSnapshot.hierarchy, electricalContext: electricalContext)
     }
 }

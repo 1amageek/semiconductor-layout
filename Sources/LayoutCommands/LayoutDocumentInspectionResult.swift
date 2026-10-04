@@ -32,18 +32,24 @@ public struct LayoutDocumentInspectionVerification: Codable, Sendable, Equatable
     public let status: String
     public let topCellID: UUID
     public let drc: LayoutDocumentInspectionDRCSummary
-    public let connectivity: LayoutDocumentInspectionConnectivitySummary
+    public let connectivity: LayoutDocumentInspectionConnectivitySummary?
+    public let electricalContext: LayoutElectricalContext
+    public let sourceHierarchy: LayoutHierarchySnapshot?
 
     public init(
         status: String,
         topCellID: UUID,
         drc: LayoutDocumentInspectionDRCSummary,
-        connectivity: LayoutDocumentInspectionConnectivitySummary
+        connectivity: LayoutDocumentInspectionConnectivitySummary?,
+        electricalContext: LayoutElectricalContext = .geometric,
+        sourceHierarchy: LayoutHierarchySnapshot? = nil
     ) {
         self.status = status
         self.topCellID = topCellID
         self.drc = drc
         self.connectivity = connectivity
+        self.electricalContext = electricalContext
+        self.sourceHierarchy = sourceHierarchy
     }
 }
 
@@ -93,6 +99,8 @@ public struct LayoutDocumentInspectionViolationSummary: Codable, Sendable, Equat
     public let viaIDs: [UUID]
     public let pinIDs: [UUID]
     public let netIDs: [UUID]
+    public let netReferences: [LayoutConductorSnapshot.NetReference]
+    public let sourcePinIndices: [Int]
     public let suggestedFix: String?
 
     public init(
@@ -110,7 +118,8 @@ public struct LayoutDocumentInspectionViolationSummary: Codable, Sendable, Equat
         viaIDs: [UUID],
         pinIDs: [UUID],
         netIDs: [UUID],
-        suggestedFix: String?
+        suggestedFix: String?,
+        netReferences: [LayoutConductorSnapshot.NetReference] = [], sourcePinIndices: [Int] = []
     ) {
         self.id = id
         self.kind = kind
@@ -126,6 +135,8 @@ public struct LayoutDocumentInspectionViolationSummary: Codable, Sendable, Equat
         self.viaIDs = viaIDs
         self.pinIDs = pinIDs
         self.netIDs = netIDs
+        self.netReferences = netReferences
+        self.sourcePinIndices = sourcePinIndices
         self.suggestedFix = suggestedFix
     }
 }

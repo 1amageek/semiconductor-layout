@@ -170,13 +170,13 @@ struct ProductionConnectivityCaptureTests {
         }
     }
 
-    @Test func unmigratedProductionConsumersFailExplicitly() throws {
+    @Test func everyProductionConsumerAdmitsEmptyNativeInput() throws {
         let doc = document(LayoutCell(name: "EMPTY")), tech = LayoutTechDatabase.standard()
         let live = try LiveConnectivitySession(document: doc, tech: tech)
         #expect(live.currentAnalysis == (try LayoutConnectivityExtractor().extract(document: doc, tech: tech)))
-        #expect(throws: LayoutConnectivityExtractionError.consumerMigrationIncomplete) { try DeviceExtractor().extract(document: doc, tech: tech) }
-        #expect(throws: LayoutConnectivityExtractionError.consumerMigrationIncomplete) { try LayoutDRCService().runChecked(document: doc, tech: tech) }
-        #expect(throws: LayoutConnectivityExtractionError.consumerMigrationIncomplete) { try IncrementalDRCSession(document: doc, tech: tech) }
-        #expect(LayoutDRCService().run(document: doc, tech: tech).diagnostics.contains { $0.severity == .error })
+        #expect(try DeviceExtractor().extract(document: doc, tech: tech).netlist.devices.isEmpty)
+        #expect(try LayoutDRCService().runChecked(document: doc, tech: tech).violations.isEmpty)
+        #expect(try IncrementalDRCSession(document: doc, tech: tech).currentResult.violations.isEmpty)
+        #expect(!LayoutDRCService().run(document: doc, tech: tech).hasErrors)
     }
 }

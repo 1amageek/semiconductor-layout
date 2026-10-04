@@ -78,9 +78,10 @@ struct DRCViolationMetadataTests {
         let result = LayoutDRCService().run(document: document, tech: tech)
         let violation = result.violations.first { $0.kind == .overlapShort }
 
-        #expect(violation?.ruleID == "connectivity.short.sameLayerOverlap")
-        #expect(violation?.shapeIDs == [first.id, second.id])
-        #expect(violation?.netIDs == [firstNet, secondNet])
+        #expect(violation?.ruleID == "connectivity.short.nativeComponent")
+        #expect(Set(violation?.shapeIDs ?? []) == [first.id, second.id])
+        #expect(Set(violation?.netIDs ?? []) == [firstNet, secondNet])
+        #expect(Set(violation?.netReferences ?? []) == [.init(occurrenceIndex: 0, netID: firstNet), .init(occurrenceIndex: 0, netID: secondNet)])
         #expect(violation?.suggestedFix != nil)
     }
 

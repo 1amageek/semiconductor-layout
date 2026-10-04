@@ -21,6 +21,9 @@ extension IncrementalDRCSession {
         try validate(delta, shapeIndexByID: shapeIndexByID, viaIndexByID: viaIndexByID)
         try validateSupportedGeometry(delta.addedShapes + delta.updatedShapes)
 
+        guard let native = nativeConnectivity else { throw LayoutConductorCaptureError.invalidComposition }
+        let preparedNative = try native.preparing(delta)
+        let updatedSource = try sourceDocument(applying: delta)
         var analysis = try analyze(delta)
         try mutateEditableShapes(delta)
         try mutateEditableVias(delta)
@@ -30,21 +33,22 @@ extension IncrementalDRCSession {
         try refreshEnclosureBuckets(dirtyLayers: analysis.dirtyLayers)
         try refreshSpacingBucketsIfNeeded(delta)
         try refreshDensityBuckets(using: analysis)
-        refreshShortBuckets(editedShapeIDs: analysis.editedShapeIDs)
-        refreshOpenBuckets(using: analysis)
         let recomputedViaCount = try refreshViaEnclosureBuckets(
             affectedViaIDs: analysis.affectedViaIDs,
             affectedViaKeys: affectedViaKeys
         )
-        try refreshGlobalBucketsIfNeeded(delta)
+        try refreshGlobalBucketsIfNeeded(delta, snapshot: preparedNative.session.currentSnapshot)
         refreshAntennaStalenessIfNeeded(delta)
+        refreshElectricalBuckets(snapshot: preparedNative.session.currentSnapshot, affectedNets: preparedNative.affectedNets)
+        sourceDocument = updatedSource
+        nativeConnectivity = preparedNative.session
 
         return makeApplyUpdate(
             clock: clock,
             start: start,
             dirtyLayers: analysis.dirtyLayers,
             recomputedViaCount: recomputedViaCount,
-            recomputedNetCount: analysis.affectedNets.count
+            recomputedNetCount: preparedNative.affectedNets.count
         )
     }
 
@@ -68,12 +72,6 @@ extension IncrementalDRCSession {
             let sameNet = old.netID == shape.netID
             analysis.markShape(old, forcesOpenRecompute: !sameNet)
             analysis.markShape(shape, forcesOpenRecompute: !sameNet)
-            if sameNet, let netID = shape.netID, openByNet[netID] == nil {
-                analysis.shapeOpenContactsBefore[shape.id] = (
-                    netID,
-                    openContacts(forShapeKey: .top(shape.id), shape: old)
-                )
-            }
             if old.layer != shape.layer {
                 analysis.idListChangedLayers.insert(old.layer)
                 analysis.idListChangedLayers.insert(shape.layer)
@@ -108,12 +106,6 @@ extension IncrementalDRCSession {
             if let netID = via.netID {
                 analysis.affectedNets.insert(netID)
                 if !sameNet { analysis.openMustRecomputeNets.insert(netID) }
-            }
-            if sameNet, let netID = via.netID, openByNet[netID] == nil {
-                analysis.viaOpenContactsBefore[via.id] = (
-                    netID,
-                    openContacts(forViaKey: .top(via.id), via: old)
-                )
             }
         }
         for id in delta.removedViaIDs {
@@ -334,38 +326,6 @@ extension IncrementalDRCSession {
         }
     }
 
-    private func refreshShortBuckets(editedShapeIDs: Set<UUID>) {
-        shortViolations.removeAll { !Set($0.shapeIDs).isDisjoint(with: editedShapeIDs) }
-        shortViolations.append(contentsOf: recomputeShorts(editedShapeIDs: editedShapeIDs))
-    }
-
-    private func refreshOpenBuckets(using analysis: IncrementalDRCApplyAnalysis) {
-        var openSkipNets = Set(analysis.affectedNets.filter {
-            openByNet[$0] == nil && !analysis.openMustRecomputeNets.contains($0)
-        })
-        for (shapeID, before) in analysis.shapeOpenContactsBefore {
-            guard openSkipNets.contains(before.netID),
-                  let shape = shapeByKey[.top(shapeID)] else { continue }
-            let after = openContacts(forShapeKey: .top(shapeID), shape: shape)
-            if after != before.contacts {
-                openSkipNets.remove(before.netID)
-            }
-        }
-        for (viaID, before) in analysis.viaOpenContactsBefore {
-            guard openSkipNets.contains(before.netID),
-                  let via = viaByKey[.top(viaID)] else { continue }
-            let after = openContacts(forViaKey: .top(viaID), via: via)
-            if after != before.contacts {
-                openSkipNets.remove(before.netID)
-            }
-        }
-        for netID in analysis.affectedNets {
-            if openSkipNets.contains(netID) { continue }
-            let fresh = checkOpen(netID: netID)
-            openByNet[netID] = fresh.isEmpty ? nil : fresh
-        }
-    }
-
     private func refreshViaEnclosureBuckets(
         affectedViaIDs: Set<UUID>,
         affectedViaKeys: Set<FlatViaKey>
@@ -384,13 +344,13 @@ extension IncrementalDRCSession {
         return recomputeVias.count
     }
 
-    private func refreshGlobalBucketsIfNeeded(_ delta: LayoutEditDelta) throws {
+    private func refreshGlobalBucketsIfNeeded(_ delta: LayoutEditDelta, snapshot: LayoutConductorSnapshot) throws {
         guard !delta.isEmpty else { return }
         if !tech.minimumCutRules.isEmpty {
             minimumCutViolations = try service.checkMinimumCuts(
                 shapes: topShapes + childShapes,
                 vias: topVias + childVias,
-                tech: tech
+                tech: tech, sourceNets: snapshot.declaredNetBySource
             )
         }
         if !tech.forbiddenLayerRules.isEmpty {

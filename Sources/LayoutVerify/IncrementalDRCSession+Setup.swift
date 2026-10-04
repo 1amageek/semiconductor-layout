@@ -6,6 +6,7 @@ extension IncrementalDRCSession {
     private struct SessionConfiguration {
         var sourceDocument: LayoutDocument
         var sourceCellID: UUID?
+        var nativeConnectivity: LiveConnectivitySession
         var topShapes: [LayoutShape]
         var topVias: [LayoutVia]
         var topPins: [LayoutPin]
@@ -52,6 +53,7 @@ extension IncrementalDRCSession {
         return SessionConfiguration(
             sourceDocument: document,
             sourceCellID: cellID,
+            nativeConnectivity: try LiveConnectivitySession(document: checkedDocument, tech: tech, cellID: cellID, electricalContext: electricalContext),
             topShapes: flattened.topShapes,
             topVias: flattened.topVias,
             topPins: flattened.topPins,
@@ -107,14 +109,7 @@ extension IncrementalDRCSession {
         try validateUniqueTopShapeIDs(flattened.topShapes)
         try validateUniqueTopViaIDs(flattened.topVias)
 
-        // ID-keyed splicing needs editable IDs to be distinct from child
-        // contributions; duplicates among multi-instanced children are fine.
-        for shape in flattened.topShapes where flattened.childShapeIDs.contains(shape.id) {
-            throw IncrementalDRCSessionError.hierarchyIdentifierCollision(shape.id)
-        }
-        for via in flattened.topVias where flattened.childViaIDs.contains(via.id) {
-            throw IncrementalDRCSessionError.hierarchyIdentifierCollision(via.id)
-        }
+
     }
 
     func validateSupportedGeometry(_ shapes: [LayoutShape]) throws {
@@ -155,6 +150,7 @@ extension IncrementalDRCSession {
     private func install(_ configuration: SessionConfiguration) {
         sourceDocument = configuration.sourceDocument
         sourceCellID = configuration.sourceCellID
+        nativeConnectivity = configuration.nativeConnectivity
         topShapes = configuration.topShapes
         topVias = configuration.topVias
         topPins = configuration.topPins
@@ -201,7 +197,7 @@ extension IncrementalDRCSession {
         )
     }
 
-    private func sourceDocument(applying delta: LayoutEditDelta) throws -> LayoutDocument {
+    func sourceDocument(applying delta: LayoutEditDelta) throws -> LayoutDocument {
         guard var targetCell = service.resolveCell(document: sourceDocument, cellID: sourceCellID) else {
             throw IncrementalDRCSessionError.targetCellNotFound
         }
@@ -362,7 +358,7 @@ extension IncrementalDRCSession {
         // instead of two, identical verdicts.
         viaEnclosureViolations = try checkViaEnclosure(vias: vias)
         forbiddenLayerViolations = service.checkForbiddenLayers(shapes: shapes, tech: tech)
-        minimumCutViolations = try service.checkMinimumCuts(shapes: shapes, vias: vias, tech: tech)
+        minimumCutViolations = try service.checkMinimumCuts(shapes: shapes, vias: vias, tech: tech, sourceNets: try nativeSnapshot().declaredNetBySource)
         exactOverlapViolations = service.checkExactOverlaps(shapes: shapes, tech: tech)
 
         densityStateByLayer = [:]
@@ -377,15 +373,7 @@ extension IncrementalDRCSession {
             overallBoundingBox = nil
         }
 
-        shortViolations = service.checkShorts(shapes: shapes)
-
-        openByNet = [:]
-        for violation in service.checkOpens(shapes: shapes, vias: vias, tech: tech) {
-            guard let netID = violation.netIDs.first else {
-                continue
-            }
-            openByNet[netID, default: []].append(violation)
-        }
+        refreshElectricalBuckets(snapshot: try nativeSnapshot())
 
         antennaViolations = try service.checkAntenna(shapes: shapes, vias: vias, pins: pins, tech: tech)
         antennaIsStale = false

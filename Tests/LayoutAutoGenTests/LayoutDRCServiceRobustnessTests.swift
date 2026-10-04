@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import LayoutCore
 import LayoutTech
-import LayoutVerify
+@testable import LayoutVerify
 
 @Suite("Layout DRC Service Robustness")
 struct LayoutDRCServiceRobustnessTests {
@@ -94,7 +94,7 @@ struct LayoutDRCServiceRobustnessTests {
         #expect(violation?.shapeIDs == [shape.id])
     }
 
-    @Test func viaEnclosureUsesGeometryInsteadOfBoundingBoxCorners() {
+    @Test func viaEnclosureUsesGeometryInsteadOfBoundingBoxCorners() throws {
         let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
         let m2 = LayoutLayerID(name: "M2", purpose: "drawing")
         let cut = LayoutLayerID(name: "VIA1", purpose: "cut")
@@ -108,9 +108,7 @@ struct LayoutDRCServiceRobustnessTests {
         )
         let bottom = rect(layer: m1, x: 0, y: 0, width: 2, height: 2)
         let via = LayoutVia(viaDefinitionID: "VIA1", position: LayoutPoint(x: 1, y: 1))
-        let result = LayoutDRCService().run(
-            document: document(shapes: [topTriangle, bottom], vias: [via]),
-            tech: LayoutTechDatabase(
+        let technology = LayoutTechDatabase(
                 grid: 0.01,
                 layers: [layerDefinition(id: m1), layerDefinition(id: m2), layerDefinition(id: cut)],
                 vias: [
@@ -129,14 +127,18 @@ struct LayoutDRCServiceRobustnessTests {
                     layerRule(layer: m2),
                 ]
             )
-        )
-
-        let violation = result.violations.first { $0.kind == .enclosure }
+        let violations = try LayoutDRCService().checkViaEnclosure(shapes: [topTriangle, bottom], vias: [via], tech: technology)
+        let result = LayoutDRCService().run(document: document(shapes: [topTriangle, bottom], vias: [via]), tech: technology)
+        #expect(result.hasErrors)
+        #expect(throws: LayoutConductorCaptureError.self) {
+            try LayoutDRCService().runChecked(document: document(shapes: [topTriangle, bottom], vias: [via]), tech: technology)
+        }
+        let violation = violations.first { $0.kind == .enclosure }
         #expect(violation?.viaIDs == [via.id])
         #expect(violation?.message.contains("top M2") == true)
     }
 
-    @Test func unknownViaDefinitionIsViolationInsteadOfBeingSkipped() {
+    @Test func unknownViaDefinitionIsViolationInsteadOfBeingSkipped() throws {
         let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
         let via = LayoutVia(viaDefinitionID: "MISSING_VIA", position: LayoutPoint(x: 2, y: 3))
         let result = LayoutDRCService().run(
@@ -144,7 +146,11 @@ struct LayoutDRCServiceRobustnessTests {
             tech: tech(layer: m1)
         )
 
-        let violation = result.violations.first { $0.ruleID == "via.MISSING_VIA.definition" }
+        #expect(throws: LayoutConductorCaptureError.missingViaDefinition("MISSING_VIA")) {
+            try LayoutDRCService().runChecked(document: document(shapes: [], vias: [via]), tech: tech(layer: m1))
+        }
+        let violations = try LayoutDRCService().checkViaEnclosure(shapes: [], vias: [via], tech: tech(layer: m1))
+        let violation = violations.first { $0.ruleID == "via.MISSING_VIA.definition" }
         #expect(violation?.kind == .ruleCoverage)
         #expect(violation?.viaIDs == [via.id])
         #expect(violation?.region.origin == LayoutPoint(x: 1.5, y: 2.5))
@@ -154,16 +160,15 @@ struct LayoutDRCServiceRobustnessTests {
     @Test func incrementalDRCReportsUnknownViaDefinition() throws {
         let m1 = LayoutLayerID(name: "M1", purpose: "drawing")
         let via = LayoutVia(viaDefinitionID: "MISSING_VIA", position: LayoutPoint(x: 2, y: 3))
-        let session = try IncrementalDRCSession(
-            document: document(shapes: [], vias: [via]),
-            tech: tech(layer: m1)
-        )
-
-        let violation = session.currentResult.violations.first {
-            $0.ruleID == "via.MISSING_VIA.definition"
+        #expect(throws: LayoutConductorCaptureError.missingViaDefinition("MISSING_VIA")) {
+            try IncrementalDRCSession(document: document(shapes: [], vias: [via]), tech: tech(layer: m1))
         }
-        #expect(violation?.kind == .ruleCoverage)
-        #expect(violation?.viaIDs == [via.id])
+        let session = try IncrementalDRCSession(document: document(shapes: []), tech: tech(layer: m1))
+        let before = session.currentResult
+        #expect(throws: LayoutConductorCaptureError.missingViaDefinition("MISSING_VIA")) {
+            try session.apply(LayoutEditDelta(addedVias: [via]))
+        }
+        #expect(session.currentResult == before)
     }
 
     @Test func densityUsesLocalWindowsWhenRuleSpecifiesWindow() {
@@ -271,9 +276,10 @@ struct LayoutDRCServiceRobustnessTests {
             tech: stackTech(m1: m1, m2: m2, cut: cut)
         )
 
-        let violation = result.violations.first { $0.ruleID == "connectivity.short.terminalComponent" }
+        let violation = result.violations.first { $0.ruleID == "connectivity.short.nativeComponent" }
         #expect(violation?.kind == .overlapShort)
         #expect(Set(violation?.netIDs ?? []) == Set([firstNet, secondNet]))
+        #expect(Set(violation?.netReferences.map(\.netID) ?? []) == Set([firstNet, secondNet]))
     }
 
     private func document(shapes: [LayoutShape], vias: [LayoutVia] = []) -> LayoutDocument {

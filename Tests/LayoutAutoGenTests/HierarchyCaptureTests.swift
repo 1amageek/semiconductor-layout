@@ -80,7 +80,7 @@ extension HierarchyCaptureTests {
         #expect(polygon.points[0].x != polygon.points[1].x && polygon.points[0].y != polygon.points[1].y)
     }
 
-    @Test func terminalMappingsRemainSourceFactsAndLegacyResolutionStillWorks() throws {
+    @Test func terminalMappingsStayNativeFactsWithoutSourceWideProjection() throws {
         let net = UUID()
         let wire = shape()
         let pin = LayoutPin(name: "P", position: LayoutPoint(x: 1, y: 0.5), size: LayoutSize(width: 1, height: 0.5), layer: metal)
@@ -91,7 +91,10 @@ extension HierarchyCaptureTests {
         #expect(capture.occurrences[1].terminalNetIDs == ["P": net])
         #expect(capture.shapes[0].netID == nil && capture.pins[0].netID == nil)
         let flat = try LayoutConnectivityExtractor().flattenedConductors(document: source, tech: .standard())
-        #expect(flat.shapes[0].netID == net && flat.pins[0].netID == net)
+        #expect(flat.shapes[0].netID == nil && flat.pins[0].netID == nil)
+        let electrical = try LayoutConnectivityExtractor().extract(document: source, tech: .standard())
+        #expect(electrical.nets.first?.declaredNets == [.init(occurrenceIndex: 0, netID: net)])
+        #expect(!LayoutDRCService().run(document: source, tech: .standard()).hasErrors)
     }
 
     @Test func cycleFailsAcrossCaptureBatchLiveAndDRC() throws {

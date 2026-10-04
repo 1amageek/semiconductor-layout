@@ -12,6 +12,7 @@ import LayoutTech
 public final class LiveConnectivitySession {
     private let tech: LayoutTechDatabase
     private let limits: LayoutConductorCaptureLimits
+    private let electricalContext: LayoutElectricalContext
     private var state: State
 
     private struct State {
@@ -32,16 +33,65 @@ public final class LiveConnectivitySession {
     }
 
     public init(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
-                limits: LayoutConductorCaptureLimits = .default) throws {
+                limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext = .geometric) throws {
         self.tech = tech
         self.limits = limits
-        self.state = try Self.makeState(document: document, tech: tech, cellID: cellID, limits: limits)
+        self.electricalContext = electricalContext
+        self.state = try Self.makeState(document: document, tech: tech, cellID: cellID, limits: limits, electricalContext: electricalContext)
+    }
+
+    var currentSnapshot: LayoutConductorSnapshot { state.snapshot }
+
+    private init(copying session: LiveConnectivitySession) {
+        tech = session.tech
+        limits = session.limits
+        electricalContext = session.electricalContext
+        state = session.state
+    }
+
+    /// Prepares a privately owned generation for a composing consumer.
+    /// Geometry preparation failure cannot advance the published session.
+    func preparing(_ delta: LayoutEditDelta) throws -> (session: LiveConnectivitySession, update: LiveConnectivityUpdate,
+        affectedNets: Set<LayoutConductorSnapshot.NetReference>) {
+        let candidate = LiveConnectivitySession(copying: self)
+        let update = try candidate.apply(delta)
+        let shapeIDs = Set(delta.removedShapeIDs + delta.updatedShapes.map(\.id) + delta.addedShapes.map(\.id))
+        let viaIDs = Set(delta.removedViaIDs + delta.updatedVias.map(\.id) + delta.addedVias.map(\.id))
+        var nets: Set<LayoutConductorSnapshot.NetReference> = []
+        for snapshot in [state.snapshot, candidate.state.snapshot] {
+            guard let root = snapshot.hierarchy.occurrences.firstIndex(where: {
+                $0.parentIndex == nil && $0.sourceCellID == snapshot.hierarchy.rootCellID
+            }) else { throw LayoutConductorCaptureError.invalidComposition }
+            for component in snapshot.components {
+                if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+                let touched = component.footprintIndices.contains { index in
+                    let footprint = snapshot.footprints[index]
+                    guard footprint.occurrenceIndex == root else { return false }
+                    switch footprint.source {
+                    case .shape: return shapeIDs.contains(footprint.sourceID)
+                    case .via: return viaIDs.contains(footprint.sourceID)
+                    case .pin: return false
+                    }
+                }
+                if touched { nets.formUnion(component.declaredNets) }
+            }
+        }
+        // Device gate edits can change ACTIVE slabs outside the edited UUID.
+        // Opens are compared once across the two full owned generations so
+        // incremental DRC refreshes those scoped nets too.
+        let previousOpens = Dictionary(uniqueKeysWithValues: state.snapshot.opens.map { ($0.net, $0) })
+        let currentOpens = Dictionary(uniqueKeysWithValues: candidate.state.snapshot.opens.map { ($0.net, $0) })
+        for net in Set(previousOpens.keys).union(currentOpens.keys) where previousOpens[net] != currentOpens[net] {
+            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            nets.insert(net)
+        }
+        return (candidate, update, nets)
     }
 
     public var currentAnalysis: ConnectivityAnalysis { state.analysis }
 
     public func rebuild(document: LayoutDocument, cellID: UUID? = nil) throws -> ConnectivityAnalysis {
-        let prepared = try Self.makeState(document: document, tech: tech, cellID: cellID, limits: limits)
+        let prepared = try Self.makeState(document: document, tech: tech, cellID: cellID, limits: limits, electricalContext: electricalContext)
         state = prepared
         return state.analysis
     }
@@ -71,24 +121,37 @@ public final class LiveConnectivitySession {
             $0.parentIndex == nil && $0.sourceCellID == hierarchy.rootCellID
         }) else { throw LayoutConductorCaptureError.invalidComposition }
         let occurrence = hierarchy.occurrences[root]
-        let editedShapeIDs = Set((delta.updatedShapes + delta.addedShapes).map(\.id))
+        var editedShapeIDs = Set((delta.updatedShapes + delta.addedShapes).map(\.id))
         let editedViaIDs = Set((delta.updatedVias + delta.addedVias).map(\.id))
+        let preparedGeometry: [Int: [LayoutGeometry]]
+        if electricalContext == .deviceAwareMOS {
+            let preparation = try DeviceExtractor().prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits)
+            guard preparation.layers == state.snapshot.conductiveLayers else { throw LayoutConductorCaptureError.invalidComposition }
+            preparedGeometry = preparation.replacements
+            // An edited gate can change unedited ACTIVE slabs. Source identity
+            // is mapped through the root owner, never through shifted ordinals.
+            let oldRoot = state.snapshot.hierarchy.occurrences.first { $0.parentIndex == nil && $0.sourceCellID == state.cellID }
+            guard let oldRoot else { throw LayoutConductorCaptureError.invalidComposition }
+            let oldGeometry = Dictionary(uniqueKeysWithValues: oldRoot.shapeRange.map { index in
+                (state.snapshot.hierarchy.shapes[index].id, state.snapshot.preparedShapeGeometry[index])
+            })
+            for index in occurrence.shapeRange where (oldGeometry[hierarchy.shapes[index].id] ?? nil) != preparedGeometry[index] {
+                editedShapeIDs.insert(hierarchy.shapes[index].id)
+            }
+        } else { preparedGeometry = [:] }
         var selected: Set<LayoutConductorSnapshot.Source> = []
         for index in occurrence.shapeRange where editedShapeIDs.contains(hierarchy.shapes[index].id) { selected.insert(.shape(index)) }
         for index in occurrence.viaRange where editedViaIDs.contains(hierarchy.vias[index].id) { selected.insert(.via(index)) }
         let replacementPreparation = try extractor.captureNativeConductors(document: pending.document, tech: tech,
             conductiveLayers: state.snapshot.conductiveLayers, cellID: state.cellID, limits: limits,
-            hierarchy: hierarchy, selectingSources: selected)
+            hierarchy: hierarchy, selectingSources: selected, replacingShapeGeometry: preparedGeometry,
+            electricalContext: electricalContext)
         let replacement = replacementPreparation.snapshot
         let captured = try LayoutConnectivityExtractor.capturedElements(replacement)
-        let replacedSources = Set(delta.updatedShapes.map { ConnectivityElementKey.shape(.top($0.id)) }
-            + delta.addedShapes.map { .shape(.top($0.id)) }
-            + delta.updatedVias.map { .via(.top($0.id)) }
-            + delta.addedVias.map { .via(.top($0.id)) })
-        let retiredSources = Set(delta.removedShapeIDs.map { ConnectivityElementKey.shape(.top($0)) }
-            + delta.updatedShapes.map { .shape(.top($0.id)) }
-            + delta.removedViaIDs.map { .via(.top($0)) }
-            + delta.updatedVias.map { .via(.top($0.id)) })
+        let replacedSources = Set(editedShapeIDs.map { ConnectivityElementKey.shape(.top($0)) }
+            + editedViaIDs.map { .via(.top($0)) })
+        let retiredSources = Set((Set(delta.removedShapeIDs).union(editedShapeIDs)).map { ConnectivityElementKey.shape(.top($0)) }
+            + (Set(delta.removedViaIDs).union(editedViaIDs)).map { .via(.top($0)) })
         let retired = retiredSources.reduce(into: Set<ConnectivityElementKey>()) {
             $0.formUnion(state.sourceKeys[$1, default: []])
         }
@@ -214,13 +277,12 @@ public final class LiveConnectivitySession {
     }
 
     private static func makeState(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID?,
-                                  limits: LayoutConductorCaptureLimits) throws -> State {
+                                  limits: LayoutConductorCaptureLimits, electricalContext: LayoutElectricalContext) throws -> State {
         guard let cell = LayoutDRCService().resolveCell(document: document, cellID: cellID) else {
             throw LiveConnectivitySessionError.targetCellNotFound
         }
-        let snapshot = try LayoutConnectivityExtractor().captureConductors(document: document, tech: tech,
-            conductiveLayers: LayoutConnectivityExtractor.productionConductiveLayers(tech, limits: limits),
-            cellID: cell.id, limits: limits)
+        let snapshot = try LayoutConnectivityExtractor().captureElectricalConductors(document: document, tech: tech,
+            cellID: cell.id, limits: limits, electricalContext: electricalContext)
         let captured = try LayoutConnectivityExtractor.capturedElements(snapshot)
         var adjacency = Dictionary(uniqueKeysWithValues: captured.keys.map { ($0, Set<ConnectivityElementKey>()) })
         for contact in snapshot.contacts {

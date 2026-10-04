@@ -9,49 +9,52 @@ public struct LayoutDRCService {
 
     public init() {}
 
-    private func requireCapturedPieceMigration() throws {
-        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
-    }
-
     public func run(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
         cellID: UUID? = nil,
-        geometryMode: LayoutDRCGeometryMode = .development
+        geometryMode: LayoutDRCGeometryMode = .development,
+        electricalContext: LayoutElectricalContext = .geometric
     ) -> LayoutDRCResult {
-        do {
-            return try runChecked(document: document, tech: tech, cellID: cellID, geometryMode: geometryMode)
-        } catch let error as LayoutDRCServiceError {
-            switch error {
-            case .targetCellNotFound:
-                return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
-            case .hierarchyCaptureFailed(let cause):
-                let code: String
-                switch cause {
-                case .missingChildCell: code = "drc.missing_child_cell"
-                case .hierarchyCycle: code = "drc.hierarchy_cycle"
-                case .limitExceeded: code = "drc.hierarchy_limit_exceeded"
-                case .cancelled: code = "drc.cancelled"
-                default: code = "drc.geometry_operation_failed"
+        func evaluate() -> LayoutDRCResult {
+            do {
+                return try runChecked(document: document, tech: tech, cellID: cellID, geometryMode: geometryMode, electricalContext: electricalContext)
+            } catch let error as LayoutDRCServiceError {
+                switch error {
+                case .targetCellNotFound:
+                    return LayoutDRCResult(diagnostics: [missingTargetCellDiagnostic(document: document, cellID: cellID)])
+                case .hierarchyCaptureFailed(let cause):
+                    let code: String
+                    switch cause {
+                    case .missingChildCell: code = "drc.missing_child_cell"
+                    case .hierarchyCycle: code = "drc.hierarchy_cycle"
+                    case .limitExceeded: code = "drc.hierarchy_limit_exceeded"
+                    case .cancelled: code = "drc.cancelled"
+                    default: code = "drc.geometry_operation_failed"
+                    }
+                    return LayoutDRCResult(diagnostics: [LayoutDRCDiagnostic(
+                        code: code, severity: .error, message: String(describing: cause),
+                        suggestedActions: ["inspect_layout_hierarchy", "inspect_capture_limits"])])
+                case .unsupportedDerivedGeometry(let diagnostics), .unsupportedExactGeometry(let diagnostics):
+                    return LayoutDRCResult(diagnostics: diagnostics)
+                case .geometryOperationFailed:
+                    return LayoutDRCResult(diagnostics: [geometryOperationDiagnostic(error)])
                 }
-                return LayoutDRCResult(diagnostics: [LayoutDRCDiagnostic(
-                    code: code, severity: .error, message: String(describing: cause),
-                    suggestedActions: ["inspect_layout_hierarchy", "inspect_capture_limits"])])
-            case .unsupportedDerivedGeometry(let diagnostics), .unsupportedExactGeometry(let diagnostics):
-                return LayoutDRCResult(diagnostics: diagnostics)
-            case .geometryOperationFailed:
+            } catch {
                 return LayoutDRCResult(diagnostics: [geometryOperationDiagnostic(error)])
             }
-        } catch {
-            return LayoutDRCResult(diagnostics: [geometryOperationDiagnostic(error)])
         }
+        var result = evaluate()
+        result.electricalContext = electricalContext
+        return result
     }
 
     public func runChecked(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
         cellID: UUID? = nil,
-        geometryMode: LayoutDRCGeometryMode = .exactOnly
+        geometryMode: LayoutDRCGeometryMode = .exactOnly,
+        electricalContext: LayoutElectricalContext = .geometric
     ) throws -> LayoutDRCResult {
         guard resolveCell(document: document, cellID: cellID) != nil else {
             throw LayoutDRCServiceError.targetCellNotFound(
@@ -65,10 +68,6 @@ public struct LayoutDRCService {
         } catch let error as LayoutHierarchyCaptureError {
             throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Batch DRC open checks still aggregate
-        // one via into one node. run/runChecked must fail until actual native
-        // band components and scoped pin labels drive electrical violations.
-        try requireCapturedPieceMigration()
         let geometryDiagnostics = LayoutDerivedLayerMaterializer().unsupportedGeometryDiagnostics(
             document: document,
             tech: tech,
@@ -81,7 +80,7 @@ public struct LayoutDRCService {
         }
         let context: LayoutDRCRunContext
         do {
-            context = try makeRunContext(document: document, tech: tech, cellID: cellID, captured: captured)
+            context = try makeRunContext(document: document, tech: tech, cellID: cellID, captured: captured, electricalContext: electricalContext)
         } catch let error as LayoutHierarchyCaptureError {
             throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
@@ -111,7 +110,7 @@ public struct LayoutDRCService {
             }
         }
         do {
-            return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech))
+            return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech), sourceHierarchy: context.connectivity.hierarchy, electricalContext: context.connectivity.electricalContext)
         } catch {
             throw LayoutDRCServiceError.geometryOperationFailed(message: String(describing: error))
         }
@@ -192,7 +191,7 @@ public struct LayoutDRCService {
         document: LayoutDocument,
         tech: LayoutTechDatabase,
         cellID: UUID?,
-        captured: LayoutHierarchySnapshot
+        captured: LayoutHierarchySnapshot, electricalContext: LayoutElectricalContext
     ) throws -> LayoutDRCRunContext {
         let checkedDocument = tech.derivedLayerRules.isEmpty
             ? document : LayoutDerivedLayerMaterializer.materialize(document: document, tech: tech)
@@ -215,7 +214,10 @@ public struct LayoutDRCService {
             capturedHierarchy: tech.derivedLayerRules.isEmpty ? captured : nil
         )
 
+        let connectivity = try LayoutConnectivityExtractor().captureElectricalConductors(document: checkedDocument, tech: tech,
+            cellID: targetCell.id, electricalContext: electricalContext)
         return LayoutDRCRunContext(
+            connectivity: connectivity,
             shapes: flattenedShapes,
             vias: flattenedVias,
             pins: flattenedPins,
@@ -229,7 +231,7 @@ public struct LayoutDRCService {
     ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
 
-        violations.append(contentsOf: context.terminalConflicts.map(makeTerminalConflictViolation))
+        violations.append(contentsOf: electricalViolations(snapshot: context.connectivity))
         violations.append(contentsOf: checkRuleCoverage(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkForbiddenLayers(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkWidthAndArea(shapes: context.shapes, tech: tech))
@@ -238,13 +240,11 @@ public struct LayoutDRCService {
         violations.append(contentsOf: try checkSpacing(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkSpacingRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkViaEnclosure(shapes: context.shapes, vias: context.vias, tech: tech))
-        violations.append(contentsOf: try checkMinimumCuts(shapes: context.shapes, vias: context.vias, tech: tech))
+        violations.append(contentsOf: try checkMinimumCuts(shapes: context.shapes, vias: context.vias, tech: tech, sourceNets: context.connectivity.declaredNetBySource))
         violations.append(contentsOf: checkExactOverlaps(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkEnclosureRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkExtensionRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkDensity(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkShorts(shapes: context.shapes))
-        violations.append(contentsOf: checkOpens(shapes: context.shapes, vias: context.vias, tech: tech))
         violations.append(contentsOf: try checkAntenna(
             shapes: context.shapes,
             vias: context.vias,
@@ -1087,6 +1087,7 @@ public struct LayoutDRCService {
 }
 
 private struct LayoutDRCRunContext: Sendable {
+    var connectivity: LayoutConductorSnapshot
     var shapes: [LayoutShape]
     var vias: [LayoutVia]
     var pins: [LayoutPin]

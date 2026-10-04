@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import LayoutCore
 import LayoutTech
-import LayoutVerify
+@testable import LayoutVerify
 
 /// Staged antenna model: every test states which etch stage it exercises
 /// and why the connectivity that exists at that stage produces (or avoids)
@@ -245,7 +245,7 @@ struct StagedAntennaCheckTests {
         #expect(violations.first?.message.contains("not part of the conductor stack") == true)
     }
 
-    @Test func unknownViaDefinitionReportsConfigurationViolation() {
+    @Test func unknownViaDefinitionReportsConfigurationViolation() throws {
         let orphanVia = LayoutVia(viaDefinitionID: "MISSING", position: LayoutPoint(x: 0, y: 0))
 
         let result = LayoutDRCService().run(
@@ -253,13 +253,17 @@ struct StagedAntennaCheckTests {
             tech: antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)])
         )
 
-        let violations = result.violations.filter { $0.kind == .antenna }
+        let violations = try LayoutDRCService().checkAntenna(shapes: [], vias: [orphanVia], pins: [], tech: antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)])).filter { $0.kind == .antenna }
         #expect(violations.count == 1)
         #expect(violations.first?.ruleID == "antenna.config.viaDefinition")
         #expect(violations.first?.message.contains("MISSING") == true)
+        #expect(result.hasErrors)
+        #expect(throws: LayoutConductorCaptureError.missingViaDefinition("MISSING")) {
+            try LayoutDRCService().runChecked(document: document(vias: [orphanVia]), tech: antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)]))
+        }
     }
 
-    @Test func gatePinOutsideStackReportsConfigurationViolation() {
+    @Test func gatePinOutsideStackReportsConfigurationViolation() throws {
         let poly = LayoutLayerID(name: "POLY", purpose: "drawing")
         let strandedGate = LayoutPin(
             name: "gate",
@@ -274,10 +278,14 @@ struct StagedAntennaCheckTests {
             tech: antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)])
         )
 
-        let violations = result.violations.filter { $0.kind == .antenna }
+        let violations = try LayoutDRCService().checkAntenna(shapes: [], vias: [], pins: [strandedGate], tech: antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)])).filter { $0.kind == .antenna }
         #expect(violations.count == 1)
         #expect(violations.first?.ruleID == "antenna.config.gatePinLayer")
         #expect(violations.first?.pinIDs == [strandedGate.id])
+        #expect(result.hasErrors)
+        #expect(throws: LayoutConductorCaptureError.unknownLayer(poly)) {
+            try LayoutDRCService().runChecked(document: document(pins: [strandedGate]), tech: antennaTech(rules: [LayoutAntennaRule(layerID: m1, maxRatio: 10)]))
+        }
     }
 
     @Test func transformedOffsetViaCarriesUpperMetalAntennaExposure() throws {

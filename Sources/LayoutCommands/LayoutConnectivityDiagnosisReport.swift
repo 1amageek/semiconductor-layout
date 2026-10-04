@@ -8,6 +8,7 @@ import LayoutVerify
 /// the shortest suggested connections between the pieces (flylines).
 public struct LayoutConnectivityDiagnosisReport: Codable, Sendable, Equatable {
     /// Cell the analysis flattened, resolved like `--inspect-document`.
+    public let electricalContext: LayoutElectricalContext
     public let topCellID: UUID
     public let sourceDocumentID: UUID
     /// Capture-local NetReference indices resolve through this owned table.
@@ -24,6 +25,7 @@ public struct LayoutConnectivityDiagnosisReport: Codable, Sendable, Equatable {
 
     public init(
         topCellID: UUID,
+        electricalContext: LayoutElectricalContext = .geometric,
         sourceDocumentID: UUID,
         occurrences: [LayoutHierarchySnapshot.Occurrence],
         pins: [LayoutPin],
@@ -32,6 +34,7 @@ public struct LayoutConnectivityDiagnosisReport: Codable, Sendable, Equatable {
         opens: [LayoutConnectivityOpenDiagnosis],
         shorts: [LayoutConnectivityShortDiagnosis]
     ) {
+        self.electricalContext = electricalContext
         self.topCellID = topCellID
         self.sourceDocumentID = sourceDocumentID
         self.occurrences = occurrences

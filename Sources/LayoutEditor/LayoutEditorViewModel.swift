@@ -220,9 +220,14 @@ public final class LayoutEditorViewModel {
             violations = liveDRC.commit().violations
             staleViolationKinds = []
         } else {
-            let service = LayoutDRCService()
-            violations = service.run(document: editor.document, tech: tech, cellID: activeCellID).violations
-            staleViolationKinds = []
+            do {
+                violations = try LayoutDRCService().runChecked(document: editor.document, tech: tech,
+                    cellID: activeCellID, electricalContext: .deviceAwareMOS).violations
+                staleViolationKinds = []
+            } catch {
+                staleViolationKinds = Set(LayoutViolationKind.allCases)
+                handleError(error)
+            }
         }
     }
 
@@ -244,7 +249,8 @@ public final class LayoutEditorViewModel {
                 let session = try IncrementalDRCSession(
                     document: editor.document,
                     tech: tech,
-                    cellID: cellID
+                    cellID: cellID,
+                    electricalContext: .deviceAwareMOS
                 )
                 liveDRC = session
                 result = session.currentResult
@@ -286,7 +292,8 @@ public final class LayoutEditorViewModel {
                 let session = try LiveConnectivitySession(
                     document: editor.document,
                     tech: tech,
-                    cellID: cellID
+                    cellID: cellID,
+                    electricalContext: .deviceAwareMOS
                 )
                 liveConnectivity = session
                 connectivityAnalysis = session.currentAnalysis
@@ -512,7 +519,8 @@ public final class LayoutEditorViewModel {
                     netID: netID ?? self.netID(at: point, on: activeLayer)
                 ),
                 mode: routeShoveEnabled ? .shove : .manual,
-                width: pathWidth > 0 ? pathWidth : nil
+                width: pathWidth > 0 ? pathWidth : nil,
+                electricalContext: .deviceAwareMOS
             )
             routePreview = nil
         } catch {
@@ -1099,16 +1107,17 @@ public final class LayoutEditorViewModel {
     public func addRectangle(from start: LayoutPoint, to end: LayoutPoint) {
         let start = editPoint(start)
         let end = editPoint(end)
-        let minX = min(start.x, end.x)
-        let minY = min(start.y, end.y)
-        let maxX = max(start.x, end.x)
-        let maxY = max(start.y, end.y)
-        let rect = LayoutRect(
-            origin: LayoutPoint(x: minX, y: minY),
-            size: LayoutSize(width: maxX - minX, height: maxY - minY)
-        )
-        let shape = LayoutShape(layer: activeLayer, geometry: .rect(rect))
-        commitDelta(LayoutEditDelta(addedShapes: [shape]))
+        guard let snapshot = connectivityAnalysis?.sourceSnapshot, snapshot.electricalContext == .deviceAwareMOS else {
+            handleError(LayoutConductorCaptureError.unsupportedDevicePreparation)
+            return
+        }
+        let sourceID = UUID()
+        do {
+            let rect = try LayoutEditorGridGeometry.rectangle(from: start, to: end,
+                scale: snapshot.coordinateUnits.scale.databaseUnitsPerMicrometer, sourceID: sourceID)
+            let shape = LayoutShape(id: sourceID, layer: activeLayer, geometry: .rect(rect))
+            commitDelta(LayoutEditDelta(addedShapes: [shape]))
+        } catch { handleError(error) }
     }
 
     public func addPolygon(points: [LayoutPoint]) {

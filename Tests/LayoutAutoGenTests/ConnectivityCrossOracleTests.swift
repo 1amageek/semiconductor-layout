@@ -4,16 +4,8 @@ import LayoutCore
 import LayoutTech
 import LayoutVerify
 
-/// Cross-checks the extraction engine against the DRC deck's declared-net
-/// connectivity checks. The two oracles answer different questions — the
-/// DRC short check compares declared labels pairwise, the extractor
-/// compares physical conductor pieces — so the contract is containment,
-/// not equality:
-///
-/// - every pairwise overlap short is inside some extracted short, and the
-///   extractor additionally sees via-mediated and unlabeled-bridge shorts;
-/// - every extracted open is also a DRC open, and the two agree exactly
-///   when the net's connectivity runs through its own labeled geometry.
+/// Batch DRC and connectivity presentation consume the same native scoped
+/// physical partition, including via and unlabeled bridges.
 @Suite("Connectivity cross-oracle")
 struct ConnectivityCrossOracleTests {
 
@@ -92,7 +84,7 @@ struct ConnectivityCrossOracleTests {
         #expect(extracted.shorts.count == 1)
     }
 
-    @Test func viaMediatedShortIsInvisibleToThePairwiseCheck() throws {
+    @Test func viaMediatedShortMatchesNativeDRC() throws {
         let netA = UUID()
         let netB = UUID()
         let doc = document(
@@ -108,12 +100,13 @@ struct ConnectivityCrossOracleTests {
             .violations.filter { $0.kind == .overlapShort }
         let extracted = try LayoutConnectivityExtractor().extract(document: doc, tech: tech)
 
-        #expect(drcShorts.isEmpty, "different layers never trip the same-layer pairwise check")
+        #expect(drcShorts.count == 1, "native DRC preserves the via-mediated short")
+        #expect(drcShorts.first?.netReferences == extracted.shorts.first?.netIDs)
         #expect(extracted.shorts.count == 1, "the extractor must see the short through the via")
         #expect(Set(extracted.shorts.first?.netIDs.map(\.netID) ?? []) == [netA, netB])
     }
 
-    @Test func unlabeledBridgeShortIsInvisibleToThePairwiseCheck() throws {
+    @Test func unlabeledBridgeShortMatchesNativeDRC() throws {
         let netA = UUID()
         let netB = UUID()
         let doc = document(shapes: [
@@ -127,7 +120,8 @@ struct ConnectivityCrossOracleTests {
             .violations.filter { $0.kind == .overlapShort }
         let extracted = try LayoutConnectivityExtractor().extract(document: doc, tech: tech)
 
-        #expect(drcShorts.isEmpty, "nil-net contacts never trip the pairwise check")
+        #expect(drcShorts.count == 1, "native DRC preserves the unlabeled bridge short")
+        #expect(drcShorts.first?.netReferences == extracted.shorts.first?.netIDs)
         #expect(extracted.shorts.count == 1, "the extractor must see the short through the bridge")
         #expect(Set(extracted.shorts.first?.netIDs.map(\.netID) ?? []) == [netA, netB])
     }
@@ -142,27 +136,23 @@ struct ConnectivityCrossOracleTests {
         let drcOpenNets = Set(
             LayoutDRCService().run(document: fixture.document, tech: fixture.tech)
                 .violations.filter { $0.kind == .disconnectedOpen }
-                .flatMap(\.netIDs)
+                .flatMap(\.netReferences)
         )
         let extracted = try LayoutConnectivityExtractor().extract(
             document: fixture.document,
             tech: fixture.tech
         )
 
-        #expect(!drcOpenNets.isEmpty, "the twice-instantiated child net must be open")
-        #expect(Set(extracted.opens.map { $0.netID.netID }) == drcOpenNets)
-        for open in extracted.opens {
-            #expect(open.islands.count == 2, "one island per child instance")
-            #expect(open.flylines.count == 1)
-        }
+        #expect(drcOpenNets.isEmpty, "independent occurrences do not create a false open")
+        #expect(extracted.opens.isEmpty)
+        let childScopes = Set(extracted.nets.flatMap(\.declaredNets).filter { $0.occurrenceIndex != 0 }.map(\.occurrenceIndex))
+        #expect(childScopes == [1, 2], "both child scopes retain their independently connected net")
+
     }
 
-    @Test func unlabeledBridgeMakesExtractorStricterSubsetOfDRCOpens() throws {
+    @Test func unlabeledBridgeClosesNativeDRCAndExtraction() throws {
         // Net A's two labeled pieces connect only through unlabeled metal.
-        // The DRC open check walks the declared subgraph and calls it
-        // open; the extractor sees the physical conductor and does not.
-        // The containment direction must never flip: extracted opens are
-        // always DRC opens too.
+        // Both consumers preserve the native physical bridge.
         let netA = UUID()
         let doc = document(shapes: [
             rect(layer: m1, net: netA, x: 0, y: 0, width: 1, height: 0.4),
@@ -174,12 +164,12 @@ struct ConnectivityCrossOracleTests {
         let drcOpenNets = Set(
             LayoutDRCService().run(document: doc, tech: tech)
                 .violations.filter { $0.kind == .disconnectedOpen }
-                .flatMap(\.netIDs)
+                .flatMap(\.netReferences)
         )
         let extracted = try LayoutConnectivityExtractor().extract(document: doc, tech: tech)
 
-        #expect(drcOpenNets == [netA], "the declared subgraph alone is disconnected")
+        #expect(drcOpenNets.isEmpty, "the unlabeled bridge is an actual conductor in DRC")
         #expect(extracted.opens.isEmpty, "physically the net is one conductor piece")
-        #expect(Set(extracted.opens.map { $0.netID.netID }).isSubset(of: drcOpenNets))
+        #expect(Set(extracted.opens.map(\.netID)) == drcOpenNets)
     }
 }

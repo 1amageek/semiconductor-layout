@@ -9,8 +9,8 @@ remain separate responsibilities.
 Capture a supplied immutable layout value; preserve source identifiers, every
 instance/array path, world shape/via/pin geometry and parent terminal mappings.
 Never resolve missing children, cycles or invalid geometry as empty success.
-Legacy DRC/connectivity consumers use this same traversal and resolve terminal
-labels afterwards. Capture itself does not claim electrical connectivity.
+DRC/connectivity/device consumers use this same traversal and resolve terminal
+labels through the native conductor owner. Capture itself does not claim electrical connectivity.
 
 ## Related Designs
 | Design | Relationship | Contract Used | Summary | Cautions |
@@ -25,7 +25,7 @@ flowchart LR
   Source[Supplied document value] --> Admit[Unique cells and bounded iterative traversal]
   Admit --> Repeat[One array occurrence at a time]
   Repeat --> Values[Owned world geometry and source occurrence ranges]
-  Values --> Legacy[Existing terminal resolution]
+  Values --> Report[Owned scoped report context]
   Values --> Native[Native conductor/contact snapshot]
 ```
 
@@ -56,7 +56,11 @@ and cancellation throw typed errors. No partial capture is returned.
 ## State, Ownership, and Lifecycle
 All mutable traversal state is synchronous and local to one call. The supplied
 Sendable value snapshot owns source storage through Swift value semantics;
-returned arrays own captured values. No pointer or shared mutable state escapes.
+returned arrays own captured values. The Hashable/Codable snapshot is retained
+by scoped DRC reports, so occurrence and source-pin indices have their exact
+source generation, path, bindings and source values after serialization.
+A numeric index alone is not a stable identity across captures. No pointer or
+shared mutable state escapes.
 There is no target-specific storage/isolation branch. This host package's native
 evidence is not WASM/Embedded qualification.
 
@@ -71,7 +75,7 @@ admitted or rejected by that consumer.
 [HierarchyCaptureTests](../../../Tests/LayoutAutoGenTests/HierarchyCaptureTests.swift)
 checks repeated/nested identity, source/world geometry, pin rectangles, finite
 arithmetic, malformed repetitions, typed limits, missing children, cycles and
-cancellation. Existing batch/live/DRC/editor/device tests verify legacy terminal
+cancellation. Existing batch/live/DRC/editor/device tests verify native terminal
 resolution and failure propagation over the shared traversal. Changing order or
 ranges requires rechecking their top/child split and native snapshot consumers.
 

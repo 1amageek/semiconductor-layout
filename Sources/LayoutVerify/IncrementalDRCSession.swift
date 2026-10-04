@@ -18,8 +18,8 @@ import LayoutTech
 /// - via enclosure: per via (halo intersection with edited geometry)
 /// - minimum-cut rules: full exact recompute when cut policy exists
 /// - exact-overlap rules: full exact recompute when layer-pair policy exists
-/// - shorts: per shape pair involving an edited shape
-/// - opens: per net of an edited element
+/// - shorts: native physical components of the complete current generation
+/// - opens: scoped nets touched by old/new native contacts of the edit
 /// - density: per (layer, window) over a per-shape clipped-area cache;
 ///   every window when the design bounding box moves
 ///
@@ -39,8 +39,10 @@ import LayoutTech
 public final class IncrementalDRCSession {
     let service = LayoutDRCService()
     let tech: LayoutTechDatabase
+    let electricalContext: LayoutElectricalContext
     var sourceDocument = LayoutDocument(name: "")
     var sourceCellID: UUID?
+    var nativeConnectivity: LiveConnectivitySession?
 
     // Flattened design. The target cell's own elements come first in
     // flatten order and are the editable region; contributions from
@@ -74,14 +76,15 @@ public final class IncrementalDRCSession {
     var exactOverlapViolations: [LayoutViolation] = []
     var densityStateByLayer: [LayoutLayerID: LayerDensityState] = [:]
     var shortViolations: [LayoutViolation] = []
-    var openByNet: [UUID: [LayoutViolation]] = [:]
+    var openByNet: [LayoutConductorSnapshot.NetReference: [LayoutViolation]] = [:]
     var antennaViolations: [LayoutViolation] = []
     var antennaIsStale = false
 
     // Current flattened shape occurrences, fully incremental: the shape
     // table, per-layer key sets, and per-layer spatial grids are all
-    // maintained per delta so apply() never rescans the whole design.
-    // Per-layer pair arrays (flatten order) are
+    // maintained per delta. Native current-generation materialization and
+    // electrical report lowering remain O(N), separately from local geometry
+    // decomposition and contact/repartition work. Per-layer pair arrays (flatten order) are
     // materialized on demand only for the rare paths that need them.
     var shapeByKey: [FlatShapeKey: LayoutShape] = [:]
     var shapeKeysByLayer: [LayoutLayerID: Set<FlatShapeKey>] = [:]
@@ -106,19 +109,12 @@ public final class IncrementalDRCSession {
     public init(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
-        cellID: UUID? = nil
+        cellID: UUID? = nil,
+        electricalContext: LayoutElectricalContext = .geometric
     ) throws {
         self.tech = tech
-        _ = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Incremental DRC open contacts still
-        // use aggregate source-via nodes. Editor incremental DRC must fail until
-        // local updates preserve native individual bands and scoped labels.
-        try Self.requireCapturedPieceMigration()
+        self.electricalContext = electricalContext
         try configure(document: document, cellID: cellID)
-    }
-
-    private static func requireCapturedPieceMigration() throws {
-        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
     }
 
     /// Current violation snapshot. Kinds in ``staleKinds`` are carried
@@ -161,9 +157,4 @@ public final class IncrementalDRCSession {
         return assembleResult()
     }
 
-}
-
-enum OpenContactKey: Hashable {
-    case shape(FlatShapeKey)
-    case via(FlatViaKey)
 }

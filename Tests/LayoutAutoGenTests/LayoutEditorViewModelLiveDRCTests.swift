@@ -74,7 +74,8 @@ struct LayoutEditorViewModelLiveDRCTests {
         let reference = LayoutDRCService().run(
             document: viewModel.editor.document,
             tech: viewModel.tech,
-            cellID: viewModel.activeCellID
+            cellID: viewModel.activeCellID,
+            electricalContext: .deviceAwareMOS
         )
         #expect(
             IncrementalDRCEquivalenceHarness.canonicalCounts(viewModel.violations, excludingAntenna: false)

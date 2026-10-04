@@ -24,9 +24,7 @@ extension IncrementalDRCSession {
             guard shapeIndexByID[shape.id] == nil else {
                 throw IncrementalDRCSessionError.duplicateShapeID(shape.id)
             }
-            guard !childShapeIDs.contains(shape.id) else {
-                throw IncrementalDRCSessionError.hierarchyIdentifierCollision(shape.id)
-            }
+
         }
         for shape in delta.updatedShapes {
             guard seenShapeIDs.insert(shape.id).inserted else {
@@ -58,9 +56,7 @@ extension IncrementalDRCSession {
             guard viaIndexByID[via.id] == nil else {
                 throw IncrementalDRCSessionError.duplicateViaID(via.id)
             }
-            guard !childViaIDs.contains(via.id) else {
-                throw IncrementalDRCSessionError.hierarchyIdentifierCollision(via.id)
-            }
+
         }
         for via in delta.updatedVias {
             guard seenViaIDs.insert(via.id).inserted else {

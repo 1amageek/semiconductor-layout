@@ -3,7 +3,7 @@ import Testing
 import LayoutCore
 import LayoutTech
 import LayoutVerify
-import LayoutEditor
+@testable import LayoutEditor
 
 /// Contract of the M4 editing verbs (marquee selection, duplicate,
 /// rotate, mirror, handle stretch/vertex editing, Option-drag copy):
@@ -60,7 +60,8 @@ struct LayoutEditorViewModelEditingVerbsTests {
         let reference = LayoutDRCService().run(
             document: viewModel.editor.document,
             tech: viewModel.tech,
-            cellID: viewModel.activeCellID
+            cellID: viewModel.activeCellID,
+            electricalContext: .deviceAwareMOS
         )
         #expect(
             IncrementalDRCEquivalenceHarness.canonicalCounts(
@@ -88,7 +89,8 @@ struct LayoutEditorViewModelEditingVerbsTests {
         let reference = LayoutDRCService().run(
             document: viewModel.editor.document,
             tech: viewModel.tech,
-            cellID: viewModel.activeCellID
+            cellID: viewModel.activeCellID,
+            electricalContext: .deviceAwareMOS
         )
         #expect(
             IncrementalDRCEquivalenceHarness.canonicalCounts(
@@ -109,7 +111,8 @@ struct LayoutEditorViewModelEditingVerbsTests {
         let reference = try LayoutConnectivityExtractor().extract(
             document: viewModel.editor.document,
             tech: viewModel.tech,
-            cellID: viewModel.activeCellID
+            cellID: viewModel.activeCellID,
+            electricalContext: .deviceAwareMOS
         )
         let live = try #require(
             viewModel.connectivityAnalysis,
@@ -254,6 +257,53 @@ struct LayoutEditorViewModelEditingVerbsTests {
 
     // MARK: - Rotate
 
+    @Test func gridRotationPreservesKindsCapsAndRejectsUnrepresentableSources() throws {
+        let sourceID = UUID()
+        let pivot = LayoutPoint(x: 0.4, y: 0.2)
+        let caps: [LayoutPathEndCap] = [.truncate, .extend, .round, .custom(begin: 0.03, end: 0.07)]
+        for cap in caps {
+            let original = LayoutGeometry.path(LayoutPath(points: [.zero, LayoutPoint(x: 0.8, y: 0)], width: 0.1, endCap: cap))
+            let rotated = try LayoutEditorGridGeometry.rotated(original, around: pivot, clockwise: true, scale: 1000, sourceID: sourceID)
+            guard case .path(let path) = rotated else { Issue.record("Rotation changed the source geometry kind"); continue }
+            #expect(path.endCap == cap)
+            #expect(path.width == 0.1)
+            #expect(path.points == [LayoutPoint(x: 0.2, y: 0.6), LayoutPoint(x: 0.2, y: -0.2)])
+            #expect(try LayoutEditorGridGeometry.rotated(rotated, around: pivot, clockwise: false, scale: 1000, sourceID: sourceID) == original)
+        }
+        let offGrid = LayoutGeometry.polygon(LayoutPolygon(points: [.zero, LayoutPoint(x: 0.1.nextUp, y: 0), LayoutPoint(x: 0.1, y: 0.1)]))
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(sourceID)) {
+            try LayoutEditorGridGeometry.rotated(offGrid, around: pivot, clockwise: true, scale: 1000, sourceID: sourceID)
+        }
+        let outside = LayoutGeometry.rect(LayoutRect(origin: LayoutPoint(x: Double(Int32.max) / 1000, y: 0), size: LayoutSize(width: 1, height: 1)))
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(sourceID)) {
+            try LayoutEditorGridGeometry.rotated(outside, around: .zero, clockwise: true, scale: 1000, sourceID: sourceID)
+        }
+    }
+
+    @Test func gridRectangleCreationRejectsUnavailableContextAndInvalidBoundsAtomically() throws {
+        let fixture = try Self.makeFixture()
+        let model = fixture.viewModel
+        let sourceID = UUID()
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(sourceID)) {
+            try LayoutEditorGridGeometry.rectangle(from: .zero, to: .zero, scale: 1000, sourceID: sourceID)
+        }
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(sourceID)) {
+            try LayoutEditorGridGeometry.rectangle(from: .zero, to: .init(x: 0.1.nextUp, y: 1), scale: 1000, sourceID: sourceID)
+        }
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(sourceID)) {
+            try LayoutEditorGridGeometry.rectangle(from: .init(x: Double(Int32.min) / 1000, y: 0),
+                to: .init(x: Double(Int32.max) / 1000, y: 1), scale: 1000, sourceID: sourceID)
+        }
+        let before = model.editor.document
+        model.addRectangle(from: .zero, to: .zero)
+        #expect(model.editor.document == before)
+        #expect(model.lastError != nil)
+        model.liveConnectivityEnabled = false
+        model.addRectangle(from: .zero, to: .init(x: 1, y: 1))
+        #expect(model.editor.document == before)
+        #expect(model.lastError != nil)
+    }
+
     @Test func rotateQuarterTurnIsIDPreservingAndVerified() throws {
         let fixture = try Self.makeFixture()
         let viewModel = fixture.viewModel
@@ -270,7 +320,7 @@ struct LayoutEditorViewModelEditingVerbsTests {
 
         let turned = try geometry(of: wireID, in: viewModel)
         #expect(
-            turned == original.rotated90(around: pivot, clockwise: true),
+            turned == (try LayoutEditorGridGeometry.rotated(original, around: pivot, clockwise: true, scale: 1000, sourceID: wireID)),
             "rotation pivots on the grid-snapped selection-bbox center, ID preserved"
         )
         guard case .rect(let turnedRect) = turned else {
@@ -300,7 +350,8 @@ struct LayoutEditorViewModelEditingVerbsTests {
         )
         viewModel.rotateSelectedShapes(clockwise: false)
         let restored = try geometry(of: wireID, in: viewModel)
-        #expect(restored == turned.rotated90(around: ccwPivot, clockwise: false))
+        #expect(restored == (try LayoutEditorGridGeometry.rotated(turned, around: ccwPivot, clockwise: false, scale: 1000, sourceID: wireID))
+                && restored == original)
         guard case .rect(let restoredRect) = restored,
               case .rect(let originalRect) = original else {
             Issue.record("the restored wire must stay a rect")
@@ -497,8 +548,14 @@ struct LayoutEditorViewModelEditingVerbsTests {
         #expect(dragged.points[2] == LayoutPoint(x: 11.5, y: 1.5))
         #expect(dragged.points[0] == LayoutPoint(x: 10, y: 0))
         viewModel.endHandleDrag()
-        expectDRCMatchesBatchExactly(viewModel, "after vertex drag")
-        try expectConnectivityMatchesBatch(viewModel, "after vertex drag")
+        #expect(viewModel.connectivityAnalysis == nil, "nonrectilinear geometry has no admitted electrical analysis")
+        #expect(viewModel.staleViolationKinds == Set(LayoutViolationKind.allCases))
+        #expect(throws: LayoutConductorCaptureError.self) {
+            try LayoutConnectivityExtractor().extract(document: viewModel.editor.document, tech: viewModel.tech,
+                cellID: viewModel.activeCellID, electricalContext: .deviceAwareMOS)
+        }
+        #expect(LayoutDRCService().run(document: viewModel.editor.document, tech: viewModel.tech,
+            electricalContext: .deviceAwareMOS).hasErrors)
     }
 
     // MARK: - Option-drag duplicate

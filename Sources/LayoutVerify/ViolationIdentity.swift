@@ -18,15 +18,20 @@ public struct ViolationIdentity: Hashable, Sendable {
     public let viaIDs: [UUID]
     public let pinIDs: [UUID]
     public let netIDs: [UUID]
+    public let netReferences: [LayoutConductorSnapshot.NetReference]
+    public let sourcePinIndices: [Int]
 
     public init(of violation: LayoutViolation) {
         self.kind = violation.kind
         self.ruleID = violation.ruleID
         self.layer = violation.layer
-        self.shapeIDs = violation.shapeIDs.sorted { $0.uuidString < $1.uuidString }
-        self.viaIDs = violation.viaIDs.sorted { $0.uuidString < $1.uuidString }
-        self.pinIDs = violation.pinIDs.sorted { $0.uuidString < $1.uuidString }
+        let scopedOpen = violation.kind == .disconnectedOpen && !violation.netReferences.isEmpty
+        self.shapeIDs = scopedOpen ? [] : violation.shapeIDs.sorted { $0.uuidString < $1.uuidString }
+        self.viaIDs = scopedOpen ? [] : violation.viaIDs.sorted { $0.uuidString < $1.uuidString }
+        self.pinIDs = scopedOpen ? [] : violation.pinIDs.sorted { $0.uuidString < $1.uuidString }
         self.netIDs = violation.netIDs.sorted { $0.uuidString < $1.uuidString }
+        self.netReferences = violation.netReferences.sorted()
+        self.sourcePinIndices = scopedOpen ? [] : violation.sourcePinIndices.sorted()
     }
 
     /// Whether the violation involves any of the given shape IDs.

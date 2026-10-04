@@ -16,7 +16,12 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
     public var shapeIDs: [UUID]
     public var viaIDs: [UUID]
     public var pinIDs: [UUID]
+    /// Source UUIDs used for highlighting only.
     public var netIDs: [UUID]
+    /// Electrical references interpreted through the owning result hierarchy.
+    public var netReferences: [LayoutConductorSnapshot.NetReference]
+    /// Original source pin indices within that same hierarchy generation.
+    public var sourcePinIndices: [Int]
     public var suggestedFix: String?
 
     public init(
@@ -34,6 +39,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
         viaIDs: [UUID] = [],
         pinIDs: [UUID] = [],
         netIDs: [UUID] = [],
+        netReferences: [LayoutConductorSnapshot.NetReference] = [],
+        sourcePinIndices: [Int] = [],
         suggestedFix: String? = nil
     ) {
         self.id = id ?? Self.deterministicID(
@@ -50,6 +57,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
             viaIDs: viaIDs,
             pinIDs: pinIDs,
             netIDs: netIDs,
+            netReferences: netReferences,
+            sourcePinIndices: sourcePinIndices,
             suggestedFix: suggestedFix
         )
         self.kind = kind
@@ -65,6 +74,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
         self.viaIDs = viaIDs
         self.pinIDs = pinIDs
         self.netIDs = netIDs
+        self.netReferences = netReferences
+        self.sourcePinIndices = sourcePinIndices
         self.suggestedFix = suggestedFix
     }
 
@@ -83,6 +94,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
         case viaIDs
         case pinIDs
         case netIDs
+        case netReferences
+        case sourcePinIndices
         case suggestedFix
     }
 
@@ -102,6 +115,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
         viaIDs = try container.decode([UUID].self, forKey: .viaIDs)
         pinIDs = try container.decode([UUID].self, forKey: .pinIDs)
         netIDs = try container.decode([UUID].self, forKey: .netIDs)
+        netReferences = try container.decode([LayoutConductorSnapshot.NetReference].self, forKey: .netReferences)
+        sourcePinIndices = try container.decode([Int].self, forKey: .sourcePinIndices)
         suggestedFix = try container.decodeIfPresent(String.self, forKey: .suggestedFix)
     }
 
@@ -119,6 +134,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
         viaIDs: [UUID],
         pinIDs: [UUID],
         netIDs: [UUID],
+        netReferences: [LayoutConductorSnapshot.NetReference],
+        sourcePinIndices: [Int],
         suggestedFix: String?
     ) -> UUID {
         let parts = [
@@ -136,6 +153,8 @@ public struct LayoutViolation: Identifiable, Hashable, Sendable, Codable {
             "viaIDs=\(viaIDs.map(\.uuidString).joined(separator: ","))",
             "pinIDs=\(pinIDs.map(\.uuidString).joined(separator: ","))",
             "netIDs=\(netIDs.map(\.uuidString).joined(separator: ","))",
+            "netReferences=\(netReferences.map { "\($0.occurrenceIndex):\($0.netID.uuidString)" }.joined(separator: ","))",
+            "sourcePinIndices=\(sourcePinIndices.map(String.init).joined(separator: ","))",
             "suggestedFix=\(suggestedFix ?? "")",
         ]
         let digest = SHA256.hash(data: Data(parts.joined(separator: "|").utf8))

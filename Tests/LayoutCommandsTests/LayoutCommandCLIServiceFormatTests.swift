@@ -63,10 +63,12 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect(response.exitCode == 1)
         #expect(inspection.status == "failed")
         #expect(inspection.verification?.status == "failed")
+        #expect(inspection.verification?.electricalContext == .deviceAwareMOS)
+        #expect(inspection.verification?.connectivity == nil)
         #expect((inspection.verification?.drc.errorCount ?? 0) > 0)
         #expect((inspection.verification?.drc.diagnosticCount ?? 0) > 0)
         #expect(inspection.verification?.drc.diagnostics.contains {
-            $0.code == "drc.unsupported_exact_geometry" && $0.severity == .error
+            $0.code == "connectivity.capture_failed" && $0.severity == .error
         } == true)
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionManifestURL.path))
@@ -431,9 +433,10 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect(verification.drc.violationCount == verification.drc.violations.count)
         #expect(verification.drc.diagnosticCount == verification.drc.diagnostics.count)
         #expect(!verification.drc.diagnostics.contains { $0.severity == .error })
-        #expect(verification.connectivity.extractedNetCount >= 0)
-        #expect(verification.connectivity.openCount >= 0)
-        #expect(verification.connectivity.shortCount >= 0)
+        let connectivity = try #require(verification.connectivity)
+        #expect(connectivity.extractedNetCount >= 0)
+        #expect(connectivity.openCount >= 0)
+        #expect(connectivity.shortCount >= 0)
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionManifestURL.path))
     }

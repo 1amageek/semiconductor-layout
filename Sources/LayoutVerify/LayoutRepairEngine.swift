@@ -36,19 +36,29 @@ public struct LayoutRepairEngine {
     /// The pre-repair violation set, computed once: every candidate is
     /// judged against the same baseline.
     private let baselineViolations: [LayoutViolation]
+    private let baselineResult: LayoutDRCResult
 
     public init(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID) {
         self.document = document
         self.tech = tech
         self.cellID = cellID
-        self.baselineViolations = LayoutDRCService()
-            .run(document: document, tech: tech, cellID: cellID)
-            .violations
+        self.baselineResult = LayoutDRCService()
+            .run(document: document, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
+        self.baselineViolations = baselineResult.violations
     }
 
     /// Computes a verified repair for `violation`, or the reason none
     /// exists.
     public func repair(for violation: LayoutViolation) throws -> LayoutRepairOutcome {
+        try requireVerification()
+        guard let hierarchy = baselineResult.sourceHierarchy,
+              let root = hierarchy.occurrences.first(where: { $0.parentIndex == nil && $0.sourceCellID == cellID }) else {
+            return .infeasible(.missingContext("Repair requires the owned source generation"))
+        }
+        let childShapeIDs = Set(hierarchy.shapes.indices.filter { !root.shapeRange.contains($0) }.map { hierarchy.shapes[$0].id })
+        let childViaIDs = Set(hierarchy.vias.indices.filter { !root.viaRange.contains($0) }.map { hierarchy.vias[$0].id })
+        guard !violation.shapeIDs.contains(where: childShapeIDs.contains),
+              !violation.viaIDs.contains(where: childViaIDs.contains) else { return .infeasible(.childGeometry) }
         guard let cell = document.cell(withID: cellID) else {
             throw IncrementalDRCSessionError.targetCellNotFound
         }
@@ -86,14 +96,16 @@ public struct LayoutRepairEngine {
     /// sweep SIMULATES on a working copy and returns one combined delta
     /// per applied repair in order.
     public func sweep(budget: Int = 64) throws -> (repairs: [LayoutRepair], sweep: LayoutRepairSweep) {
+        try requireVerification()
         var working = document
         var applied: [LayoutRepair] = []
         var summaries: [String] = []
 
         for _ in 0..<budget {
             let engine = LayoutRepairEngine(document: working, tech: tech, cellID: cellID)
+            try engine.requireVerification()
             let violations = LayoutDRCService()
-                .run(document: working, tech: tech, cellID: cellID)
+                .run(document: working, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
                 .violations
             guard let next = try engine.firstRepairable(in: violations) else {
                 let residuals = try engine.residualReasons(in: violations)
@@ -112,9 +124,10 @@ public struct LayoutRepairEngine {
         }
 
         let violations = LayoutDRCService()
-            .run(document: working, tech: tech, cellID: cellID)
+            .run(document: working, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
             .violations
         let engine = LayoutRepairEngine(document: working, tech: tech, cellID: cellID)
+        try engine.requireVerification()
         return (
             applied,
             LayoutRepairSweep(
@@ -317,7 +330,14 @@ public struct LayoutRepairEngine {
             return .infeasible(.missingContext("minimum-cut violation carries no count measurement"))
         }
         let missingCount = max(1, Int(ceil(required - measured)))
-        guard let netID = violation.netIDs.first else {
+        guard let hierarchy = baselineResult.sourceHierarchy,
+              let root = hierarchy.occurrences.firstIndex(where: { $0.parentIndex == nil && $0.sourceCellID == cellID }),
+              violation.netReferences.count == 1,
+              let reference = violation.netReferences.first, reference.occurrenceIndex == root else {
+            return .infeasible(.childGeometry)
+        }
+        let netID = reference.netID
+        guard violation.netIDs.contains(netID) else {
             return .infeasible(.missingContext("minimum-cut violation carries no net ID"))
         }
         let centers = cutCenters(
@@ -548,12 +568,19 @@ public struct LayoutRepairEngine {
         try Self.apply(delta, to: &mirror, cellID: cellID)
         let service = LayoutDRCService()
         let before = baselineViolations
-        let after = service.run(document: mirror, tech: tech, cellID: cellID).violations
+        let result = service.run(document: mirror, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
+        guard !result.diagnostics.contains(where: { $0.severity == .error }) else { return false }
+        let after = result.violations
         guard after.count < before.count else { return false }
         let beforeIdentities = Set(before.map(ViolationIdentity.init))
         let target = ViolationIdentity(of: violation)
         guard !after.contains(where: { ViolationIdentity(of: $0) == target }) else { return false }
         return after.allSatisfy { beforeIdentities.contains(ViolationIdentity(of: $0)) }
+    }
+
+    private func requireVerification() throws {
+        let failures = baselineResult.diagnostics.filter { $0.severity == .error }
+        guard failures.isEmpty else { throw LayoutRepairVerificationError.verificationFailed(failures) }
     }
 
     private static func apply(

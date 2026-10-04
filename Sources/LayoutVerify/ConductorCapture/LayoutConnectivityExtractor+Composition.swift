@@ -37,7 +37,7 @@ extension LayoutConnectivityExtractor {
         let rootOccurrence = hierarchy.occurrences[root]
         let units = try captureCoordinateUnits(hierarchy: hierarchy,
             conductiveLayers: template.conductiveLayers, cutLayers: Set(template.adjacentConductorLayersByCut.keys))
-        guard replacement.hierarchy == hierarchy, replacement.coordinateUnits == units,
+        guard replacement.electricalContext == template.electricalContext, replacement.hierarchy == hierarchy, replacement.coordinateUnits == units,
               replacement.contactTechnology == template.contactTechnology,
               replacement.conductiveLayers == template.conductiveLayers,
               replacement.adjacentConductorLayersByCut == template.adjacentConductorLayersByCut else {
@@ -104,13 +104,15 @@ extension LayoutConnectivityExtractor {
                     declaredNet: old.declaredNet))
             }
         }
+        let registeredLayers = Set(template.contactTechnology.layers.map(\.id))
         for (occurrenceIndex, occurrence) in hierarchy.occurrences.enumerated() {
             try checkCancellation()
             for index in occurrence.shapeRange {
                 let shape = hierarchy.shapes[index]
-                guard template.conductiveLayers.contains(shape.layer) || template.adjacentConductorLayersByCut[shape.layer] != nil else {
+                guard registeredLayers.contains(shape.layer) else {
                     throw LayoutConductorCaptureError.unknownLayer(shape.layer)
                 }
+                guard template.conductiveLayers.contains(shape.layer) || template.adjacentConductorLayersByCut[shape.layer] != nil else { continue }
                 try appendSource(.shape(index), key: .shape(occurrenceIndex == root ? .top(shape.id)
                     : .child(index - rootOccurrence.shapeRange.count)), sourceID: shape.id, occurrence: occurrenceIndex)
             }
@@ -120,6 +122,7 @@ extension LayoutConnectivityExtractor {
                     : .child(index - rootOccurrence.viaRange.count)), sourceID: via.id, occurrence: occurrenceIndex)
             }
             for index in occurrence.pinRange {
+                guard template.conductiveLayers.contains(hierarchy.pins[index].layer) else { continue }
                 guard let pin = pinsBySource[index], pin.occurrenceIndex == occurrenceIndex else {
                     throw LayoutConductorCaptureError.invalidComposition
                 }
@@ -196,6 +199,7 @@ extension LayoutConnectivityExtractor {
         return try finishCapturedSnapshot(hierarchy: hierarchy, coordinateUnits: units,
             conductiveLayers: template.conductiveLayers, adjacency: template.adjacentConductorLayersByCut,
             tech: template.contactTechnology, footprints: footprints, polygonSources: polygonSources,
-            contacts: contacts, groups: groups, pins: relocatedPins)
+            contacts: contacts, groups: groups, pins: relocatedPins, sourceNets: try resolvedSourceNets(hierarchy),
+            electricalContext: template.electricalContext, preparedShapeGeometry: replacement.preparedShapeGeometry)
     }
 }

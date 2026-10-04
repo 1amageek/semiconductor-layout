@@ -8,11 +8,12 @@ extension LayoutDRCService {
     func checkMinimumCuts(
         shapes: [LayoutShape],
         vias: [LayoutVia],
-        tech: LayoutTechDatabase
+        tech: LayoutTechDatabase,
+        sourceNets: [LayoutConductorSnapshot.Source: LayoutConductorSnapshot.NetReference]
     ) throws -> [LayoutViolation] {
         guard !tech.minimumCutRules.isEmpty else { return [] }
 
-        let shapesByLayer = Dictionary(grouping: shapes, by: { $0.layer })
+        let shapesByLayer = Dictionary(grouping: Array(shapes.enumerated()), by: { $0.element.layer })
         let dbu = tech.units.scale.databaseUnitsPerMicrometer
         var violations: [LayoutViolation] = []
 
@@ -21,21 +22,22 @@ extension LayoutDRCService {
             guard let bottomShapes = shapesByLayer[rule.bottomLayer], !bottomShapes.isEmpty else { continue }
             guard let topShapes = shapesByLayer[rule.topLayer], !topShapes.isEmpty else { continue }
             let explicitCutShapes = shapesByLayer[rule.cutLayer] ?? []
-            let matchingVias = vias.compactMap { via -> (via: LayoutVia, rects: [LayoutRect])? in
+            let matchingVias = vias.enumerated().compactMap { entry -> (index: Int, via: LayoutVia, rects: [LayoutRect])? in
+                let (index, via) = entry
                 guard cutDefinitionMatchesMinimumCutRule(via.viaDefinitionID, rule: rule, tech: tech) else {
                     return nil
                 }
-                return (via: via, rects: viaCutRects(for: via, tech: tech))
+                return (index: index, via: via, rects: viaCutRects(for: via, tech: tech))
             }
 
-            for bottom in bottomShapes {
-                for top in topShapes {
-                    let sharedNetID: UUID?
-                    if let bottomNetID = bottom.netID {
-                        guard top.netID == bottomNetID else { continue }
+            for (bottomIndex, bottom) in bottomShapes {
+                for (topIndex, top) in topShapes {
+                    let sharedNetID: LayoutConductorSnapshot.NetReference?
+                    if let bottomNetID = sourceNets[.shape(bottomIndex)] {
+                        guard sourceNets[.shape(topIndex)] == bottomNetID else { continue }
                         sharedNetID = bottomNetID
                     } else {
-                        guard top.netID == nil else { continue }
+                        guard sourceNets[.shape(topIndex)] == nil else { continue }
                         sharedNetID = nil
                     }
                     guard let overlap = try overlapRegion(
@@ -46,34 +48,35 @@ extension LayoutDRCService {
                         continue
                     }
 
-                    let explicitCutIDs = try explicitCutShapes.compactMap { cutShape -> UUID? in
+                    let explicitCutIDs = try explicitCutShapes.compactMap { entry -> UUID? in
+                        let (cutIndex, cutShape) = entry
                         if let sharedNetID {
-                            guard cutShape.netID == nil || cutShape.netID == sharedNetID else { return nil }
+                            guard sourceNets[.shape(cutIndex)] == nil || sourceNets[.shape(cutIndex)] == sharedNetID else { return nil }
                         } else {
-                            guard cutShape.netID == nil else { return nil }
+                            guard sourceNets[.shape(cutIndex)] == nil else { return nil }
                         }
-                        guard try overlapRegion(first: cutShape.geometry, second: .rect(overlap), dbu: dbu) != nil else {
+                        guard try intersectsPositiveArea(cutShape.geometry, region: overlap.region, dbu: dbu) else {
                             return nil
                         }
                         return cutShape.id
                     }
                     var viaIDs: [UUID] = []
-                    var seenViaIDs: Set<UUID> = []
+                    var seenViaIndices: Set<Int> = []
                     let viaCutCount = try matchingVias.reduce(into: 0) { count, entry in
                         if let sharedNetID {
-                            guard entry.via.netID == nil || entry.via.netID == sharedNetID else { return }
+                            guard sourceNets[.via(entry.index)] == nil || sourceNets[.via(entry.index)] == sharedNetID else { return }
                         } else {
-                            guard entry.via.netID == nil else { return }
+                            guard sourceNets[.via(entry.index)] == nil else { return }
                         }
                         var contributed = false
                         for rect in entry.rects {
-                            guard try overlapRegion(first: .rect(rect), second: .rect(overlap), dbu: dbu) != nil else {
+                            guard try intersectsPositiveArea(.rect(rect), region: overlap.region, dbu: dbu) else {
                                 continue
                             }
                             count += 1
                             contributed = true
                         }
-                        if contributed, seenViaIDs.insert(entry.via.id).inserted {
+                        if contributed, seenViaIndices.insert(entry.index).inserted {
                             viaIDs.append(entry.via.id)
                         }
                     }
@@ -86,13 +89,14 @@ extension LayoutDRCService {
                         ruleID: minimumCutRuleID(rule),
                         message: "Minimum cut violation between \(rule.bottomLayer.name) and \(rule.topLayer.name). Required \(rule.minimumCount), found \(cutCount).",
                         layer: rule.cutLayer,
-                        region: overlap,
+                        region: overlap.bounds,
                         measured: Double(cutCount),
                         required: Double(rule.minimumCount),
                         unit: "cut",
                         shapeIDs: [bottom.id, top.id] + explicitCutIDs,
                         viaIDs: viaIDs,
-                        netIDs: sharedNetID.map { [$0] } ?? [],
+                        netIDs: sharedNetID.map { [$0.netID] } ?? [],
+                        netReferences: sharedNetID.map { [$0] } ?? [],
                         suggestedFix: "Add cut features on \(rule.cutLayer.name) inside the overlap or reduce the conductor overlap so the connection is intentional and rule-clean."
                     ))
                 }
@@ -218,7 +222,7 @@ extension LayoutDRCService {
         first: LayoutGeometry,
         second: LayoutGeometry,
         dbu: Double
-    ) throws -> LayoutRect? {
+    ) throws -> (region: Region, bounds: LayoutRect)? {
         guard let firstBoundary = geometryToIRBoundary(first, dbu: dbu),
               let secondBoundary = geometryToIRBoundary(second, dbu: dbu) else {
             return nil
@@ -226,6 +230,13 @@ extension LayoutDRCService {
         let overlap = try Region(polygons: [firstBoundary]).intersection(Region(polygons: [secondBoundary]))
         guard !overlap.isEmpty, let box = overlap.boundingBox else { return nil }
         guard box.maxX > box.minX, box.maxY > box.minY else { return nil }
-        return irBoundingBoxToRect(box, dbu: dbu)
+        return (overlap, irBoundingBoxToRect(box, dbu: dbu))
+    }
+
+    private func intersectsPositiveArea(_ geometry: LayoutGeometry, region: Region, dbu: Double) throws -> Bool {
+        guard let boundary = geometryToIRBoundary(geometry, dbu: dbu) else { return false }
+        let intersection = try region.intersection(Region(polygons: [boundary]))
+        guard !intersection.isEmpty, let bounds = intersection.boundingBox else { return false }
+        return bounds.maxX > bounds.minX && bounds.maxY > bounds.minY
     }
 }

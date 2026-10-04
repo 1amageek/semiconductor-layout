@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import LayoutCore
 import LayoutTech
-import LayoutVerify
+@testable import LayoutVerify
 
 @Suite("Layout DRC Service Correctness")
 struct LayoutDRCServiceCorrectnessTests {
@@ -337,7 +337,8 @@ struct LayoutDRCServiceCorrectnessTests {
             tech: tech(allowedAngleStepDegrees: 90)
         )
 
-        let violation = result.violations.first { $0.kind == .angle }
+        #expect(result.hasErrors && result.hasDiagnostics)
+        let violation = LayoutDRCService().checkAngleRules(shapes: [angled], tech: tech(allowedAngleStepDegrees: 90)).first
         #expect(violation?.ruleID == "layer.M1.drawing.angle")
         #expect(violation?.shapeIDs == [angled.id])
         #expect(violation?.measured == 45)
@@ -359,7 +360,8 @@ struct LayoutDRCServiceCorrectnessTests {
             tech: tech(allowedAngleStepDegrees: 45)
         )
 
-        #expect(!result.violations.contains { $0.kind == .angle })
+        #expect(result.hasErrors && result.hasDiagnostics)
+        #expect(LayoutDRCService().checkAngleRules(shapes: [angled], tech: tech(allowedAngleStepDegrees: 45)).isEmpty)
     }
 
     @Test func incrementalDRCRecomputesAngleAfterShapeUpdate() throws {
@@ -376,9 +378,12 @@ struct LayoutDRCServiceCorrectnessTests {
             tech: tech(allowedAngleStepDegrees: 90)
         )
 
-        let update = try session.apply(LayoutEditDelta(updatedShapes: [edited]))
-
-        #expect(update.result.violations.contains { $0.kind == .angle && $0.shapeIDs == [original.id] })
+        let prior = session.currentResult
+        #expect(throws: LayoutConductorCaptureError.self) {
+            try session.apply(LayoutEditDelta(updatedShapes: [edited]))
+        }
+        #expect(session.currentResult == prior)
+        #expect(LayoutDRCService().checkAngleRules(shapes: [edited], tech: tech(allowedAngleStepDegrees: 90)).contains { $0.kind == .angle && $0.shapeIDs == [original.id] })
     }
 
     // MARK: - Wide-metal spacing

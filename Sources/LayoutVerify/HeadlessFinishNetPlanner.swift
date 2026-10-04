@@ -4,6 +4,7 @@ import LayoutCore
 import LayoutTech
 
 public enum HeadlessFinishNetPlannerError: Error, Sendable, Equatable {
+    case electricalVerificationFailed([LayoutDRCDiagnostic])
     case targetCellNotFound(UUID)
     case invalidRouteWidth(Double)
     case netAlreadyConnected(UUID)
@@ -124,7 +125,7 @@ public struct HeadlessFinishNetPlanner: Sendable {
             netID: netID,
             context: context
         )
-        let drcAfter = LayoutDRCService().run(document: evaluation.candidateDocument, tech: tech, cellID: cellID)
+        let drcAfter = LayoutDRCService().run(document: evaluation.candidateDocument, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
         try validateNoRegressions(drcAfter: drcAfter, context: context, netID: netID)
 
         return makePlan(
@@ -147,7 +148,7 @@ public struct HeadlessFinishNetPlanner: Sendable {
     ) throws -> PlanningContext {
         let targetCell = try requireTargetCell(document: document, cellID: cellID)
         let extractor = LayoutConnectivityExtractor()
-        let analysisBefore = try extractor.extract(document: document, tech: tech, cellID: cellID)
+        let analysisBefore = try extractor.extract(document: document, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
         guard let open = analysisBefore.opens.first(where: { $0.netID == analysisBefore.rootNetReference(for: netID) }) else {
             throw HeadlessFinishNetPlannerError.netAlreadyConnected(netID)
         }
@@ -156,7 +157,7 @@ public struct HeadlessFinishNetPlanner: Sendable {
             throw HeadlessFinishNetPlannerError.unconnectedPinOpen(netID: netID, pinIDs: ids)
         }
         guard let flyline = open.flylines.first else { throw HeadlessFinishNetPlannerError.netAlreadyConnected(netID) }
-        let drcBefore = LayoutDRCService().run(document: document, tech: tech, cellID: cellID)
+        let drcBefore = LayoutDRCService().run(document: document, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
         let effectiveWidth = try validatedRouteWidth(width, layer: layer, tech: tech)
         let routeWindow = routeWindow(start: flyline.start, end: flyline.end)
         return PlanningContext(
@@ -201,7 +202,8 @@ public struct HeadlessFinishNetPlanner: Sendable {
             tech: tech,
             start: RouteAnchor(point: context.flyline.start, layer: layer, netID: netID),
             mode: .manual,
-            width: context.effectiveWidth
+            width: context.effectiveWidth,
+            electricalContext: .deviceAwareMOS
         )
         let preview = try session.proposePath(Array(path.dropFirst()))
         guard preview.isLegal else {
@@ -223,7 +225,7 @@ public struct HeadlessFinishNetPlanner: Sendable {
         context: PlanningContext
     ) throws -> CandidateEvaluation {
         let candidateDocument = try apply(delta: delta, to: document, cellID: cellID)
-        let analysisAfter = try context.extractor.extract(document: candidateDocument, tech: tech, cellID: cellID)
+        let analysisAfter = try context.extractor.extract(document: candidateDocument, tech: tech, cellID: cellID, electricalContext: .deviceAwareMOS)
         let opensBefore = context.analysisBefore.flylines.count { $0.netID == context.analysisBefore.rootNetReference(for: netID) }
         let opensAfter = analysisAfter.flylines.count { $0.netID == analysisAfter.rootNetReference(for: netID) }
         guard opensAfter < opensBefore else {
@@ -246,11 +248,13 @@ public struct HeadlessFinishNetPlanner: Sendable {
         context: PlanningContext,
         netID: UUID
     ) throws {
+        let failures = drcAfter.diagnostics.filter { $0.severity == .error }
+        guard failures.isEmpty else { throw HeadlessFinishNetPlannerError.electricalVerificationFailed(failures) }
         let regressions = drcAfter.violations.filter { violation in
             guard !context.beforeIdentities.contains(ViolationIdentity(of: violation)) else {
                 return false
             }
-            return !(violation.kind == .disconnectedOpen && violation.netIDs == [netID])
+            return !(violation.kind == .disconnectedOpen && violation.netReferences == [context.analysisBefore.rootNetReference(for: netID)].compactMap { $0 })
         }
         guard regressions.isEmpty else {
             throw HeadlessFinishNetPlannerError.routeRegressed(netID: netID, violations: regressions)

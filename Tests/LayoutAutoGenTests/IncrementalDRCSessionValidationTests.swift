@@ -20,7 +20,7 @@ struct IncrementalDRCSessionValidationTests {
         }
     }
 
-    @Test func topLevelIDCollidingWithChildIsRejectedAtInit() {
+    @Test func topLevelIDSharedWithChildKeepsScopedOccurrencesAtInit() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         var document = fixture.document
         guard let topIndex = document.cells.firstIndex(where: { $0.id == document.topCellID }) else {
@@ -35,9 +35,10 @@ struct IncrementalDRCSessionValidationTests {
                 size: LayoutSize(width: 0.4, height: 0.4)
             ))
         ))
-        #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
-            _ = try IncrementalDRCSession(document: document, tech: fixture.tech)
-        }
+        let session = try IncrementalDRCSession(document: document, tech: fixture.tech)
+        let hierarchy = try #require(session.currentResult.sourceHierarchy)
+        #expect(hierarchy.shapes.filter { $0.id == fixture.childShapeID }.count == 3)
+        #expect(Set(session.currentResult.violations) == Set(try LayoutDRCService().runChecked(document: document, tech: fixture.tech).violations))
     }
 
     @Test func duplicateTopShapeIDsAreRejectedAtInit() throws {
@@ -126,7 +127,7 @@ struct IncrementalDRCSessionValidationTests {
         }
     }
 
-    @Test func addCollidingWithChildIDIsRejected() throws {
+    @Test func addShapeSharingChildIDPreservesBothOccurrences() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let session = try IncrementalDRCSession(document: fixture.document, tech: fixture.tech)
         let collider = LayoutShape(
@@ -134,12 +135,15 @@ struct IncrementalDRCSessionValidationTests {
             layer: fixture.m1,
             geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 1)))
         )
-        #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
-            _ = try session.apply(LayoutEditDelta(addedShapes: [collider]))
-        }
+        let update = try session.apply(LayoutEditDelta(addedShapes: [collider]))
+        #expect(update.result.sourceHierarchy?.shapes.filter { $0.id == collider.id }.count == 3)
+        var expected = fixture.document
+        let index = try #require(expected.cells.firstIndex { $0.id == expected.topCellID })
+        expected.cells[index].shapes.append(collider)
+        #expect(Set(update.result.violations) == Set(try LayoutDRCService().runChecked(document: expected, tech: fixture.tech).violations))
     }
 
-    @Test func addViaCollidingWithChildIDIsRejected() throws {
+    @Test func addViaSharingChildIDPreservesBothOccurrences() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let session = try IncrementalDRCSession(document: fixture.document, tech: fixture.tech)
         let topID = try #require(fixture.document.topCellID)
@@ -153,9 +157,12 @@ struct IncrementalDRCSessionValidationTests {
             netID: fixture.netA
         )
 
-        #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(childVia.id)) {
-            _ = try session.apply(LayoutEditDelta(addedVias: [collider]))
-        }
+        let update = try session.apply(LayoutEditDelta(addedVias: [collider]))
+        #expect(update.result.sourceHierarchy?.vias.filter { $0.id == collider.id }.count == 3)
+        var expected = fixture.document
+        let index = try #require(expected.cells.firstIndex { $0.id == expected.topCellID })
+        expected.cells[index].vias.append(collider)
+        #expect(Set(update.result.violations) == Set(try LayoutDRCService().runChecked(document: expected, tech: fixture.tech).violations))
     }
 
     @Test func rejectedDeltaLeavesSessionUsable() throws {
@@ -206,9 +213,12 @@ struct IncrementalDRCSessionValidationTests {
             )
         ]
 
-        #expect(throws: IncrementalDRCSessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
+        invalid.cells[topIndex].shapes[0].geometry = .rect(LayoutRect(origin: LayoutPoint(x: 0.00025, y: 10), size: LayoutSize(width: 0.4, height: 0.4)))
+        let prior = harness.session.currentResult
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(fixture.childShapeID)) {
             _ = try harness.session.rebuild(document: invalid)
         }
+        #expect(harness.session.currentResult == prior)
 
         try harness.applyAndVerify(
             LayoutEditDelta(removedShapeIDs: [removable.id]),

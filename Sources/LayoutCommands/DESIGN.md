@@ -51,3 +51,8 @@ results, mutable shared cache or external process is introduced.
 owns actual CLI JSON decode/encode, scoped repeated-net rows and isolated-pin
 failure/source identity. Native contract changes require this serializer and
 diagnosis pass/fail controller to be checked together.
+
+Inspection and diagnosis explicitly select the shared Device electrical context
+when representing MOS electrical nets. Reports retain that context and scoped
+hierarchy evidence. Unsupported capture/preparation is a structured failed
+inspection; it must not become empty connectivity counts.

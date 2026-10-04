@@ -41,7 +41,8 @@ struct LayoutEditorViewModelLiveConnectivityTests {
         let reference = try LayoutConnectivityExtractor().extract(
             document: viewModel.editor.document,
             tech: viewModel.tech,
-            cellID: viewModel.activeCellID
+            cellID: viewModel.activeCellID,
+            electricalContext: .deviceAwareMOS
         )
         let live = try #require(
             viewModel.connectivityAnalysis,
@@ -83,6 +84,8 @@ struct LayoutEditorViewModelLiveConnectivityTests {
             to: LayoutPoint(x: 7.4, y: 1.7)
         )
         try expectLiveMatchesBatch(viewModel, "addRectangle bridge")
+        let rectangle = try #require(viewModel.documentShapes().first { !fixture.initialShapeIDs.contains($0.id) })
+        #expect(rectangle.geometry == .rect(.init(origin: .init(x: 7, y: 0.2), size: .init(width: 0.4, height: 1.5))))
         #expect(shortsNetANetB(viewModel.connectivityAnalysis, fixture))
 
         let bridgeID = try #require(

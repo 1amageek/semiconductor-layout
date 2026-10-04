@@ -40,6 +40,7 @@ public struct InteractiveRouteSession {
     }
 
     private let tech: LayoutTechDatabase
+    private let rootRouteNet: LayoutConductorSnapshot.NetReference?
     private let mode: RouteMode
     /// Requested wire width; nil falls back to the layer's minimum width.
     /// A sub-minimum request is not clamped — the DRC enforcement makes
@@ -83,7 +84,8 @@ public struct InteractiveRouteSession {
         mode: RouteMode = .manual,
         width: Double? = nil,
         snapRadius: Double = 0.25,
-        shoveBudget: Int = 8
+        shoveBudget: Int = 8,
+        electricalContext: LayoutElectricalContext = .geometric
     ) throws {
         guard let cell = document.cell(withID: cellID) else {
             throw InteractiveRouteSessionError.targetCellNotFound
@@ -94,7 +96,12 @@ public struct InteractiveRouteSession {
         self.requestedWidth = width
         self.snapRadius = snapRadius
         self.shoveBudget = shoveBudget
-        self.drc = try IncrementalDRCSession(document: document, tech: tech, cellID: cellID)
+        self.drc = try IncrementalDRCSession(document: document, tech: tech, cellID: cellID, electricalContext: electricalContext)
+        guard let snapshot = drc.nativeConnectivity?.currentSnapshot,
+              let root = snapshot.hierarchy.occurrences.firstIndex(where: { $0.parentIndex == nil && $0.sourceCellID == cellID }) else {
+            throw LayoutConductorCaptureError.invalidComposition
+        }
+        self.rootRouteNet = start.netID.map { .init(occurrenceIndex: root, netID: $0) }
         self.baselineViolationIDs = Set(drc.currentResult.violations.map(ViolationIdentity.init))
         self.lastPreview = RoutePreview(
             mode: mode,
@@ -104,28 +111,22 @@ public struct InteractiveRouteSession {
             delta: LayoutEditDelta()
         )
 
-        var shapes: [LayoutShape] = []
-        var vias: [LayoutVia] = []
-        var pins: [LayoutPin] = []
-        var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        try LayoutDRCService().flatten(
-            cell: cell,
-            document: document,
-            tech: tech,
-            shapes: &shapes,
-            vias: &vias,
-            pins: &pins,
-            terminalConflicts: &conflicts
-        )
-        for shape in cell.shapes {
-            topShapesByID[shape.id] = shape
-        }
-        if let netID = start.netID {
-            routeNetShapes = shapes.filter { $0.netID == netID }
-            routeNetPins = pins.filter { $0.netID == netID }
-        } else {
-            routeNetShapes = []
-            routeNetPins = []
+        for shape in cell.shapes { topShapesByID[shape.id] = shape }
+        if let rootRouteNet {
+            let dbu = snapshot.coordinateUnits.scale.databaseUnitsPerMicrometer
+            for component in snapshot.components where component.declaredNets.contains(rootRouteNet) {
+                for index in component.footprintIndices {
+                    let footprint = snapshot.footprints[index]
+                    guard !footprint.isCut, case .shape(let source) = footprint.source else { continue }
+                    var shape = snapshot.hierarchy.shapes[source]
+                    let band = footprint.band
+                    shape.geometry = .rect(.init(origin: .init(x: Double(band.minX) / dbu, y: Double(band.minY) / dbu),
+                        size: .init(width: Double(Int64(band.maxX) - Int64(band.minX)) / dbu,
+                                    height: Double(Int64(band.maxY) - Int64(band.minY)) / dbu)))
+                    routeNetShapes.append(shape)
+                }
+            }
+            routeNetPins = snapshot.pins.filter { $0.declaredNet == rootRouteNet }.map { snapshot.hierarchy.pins[$0.sourcePinIndex] }
         }
         refreshSnapTargets()
     }
@@ -371,8 +372,8 @@ public struct InteractiveRouteSession {
                 return false
             }
             if violation.kind == .disconnectedOpen,
-               let netID = anchor.netID,
-               violation.netIDs == [netID] {
+               let rootRouteNet,
+               violation.netReferences == [rootRouteNet] {
                 return false
             }
             return true

@@ -15,6 +15,10 @@ extension LayoutEditorViewModel {
             handleError(LayoutEditorError.routingUnavailableInPlace)
             return false
         }
+        guard connectivityAnalysis?.sourceSnapshot?.electricalContext == .deviceAwareMOS else {
+            handleError(LayoutEditorError.finishNetBlocked("Device electrical context is unavailable"))
+            return false
+        }
         guard let analysis = connectivityAnalysis,
               let open = analysis.opens.first(where: { $0.netID == analysis.rootNetReference(for: netID) }) else {
             handleError(LayoutEditorError.netAlreadyConnected(netID))
@@ -271,6 +275,10 @@ extension LayoutEditorViewModel {
     /// is the number of completed connections.
     @discardableResult
     public func finishAllNets(budget: Int = 64) -> Int {
+        guard connectivityAnalysis?.sourceSnapshot?.electricalContext == .deviceAwareMOS else {
+            handleError(LayoutEditorError.finishNetBlocked("Device electrical context is unavailable"))
+            return 0
+        }
         var completed = 0
         var failed: Set<UUID> = []
         for _ in 0..<budget {

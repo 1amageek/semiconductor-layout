@@ -37,8 +37,13 @@ flowchart LR
 ## Contracts and Invariants
 `captureConductors` returns owned integer geometry and occurrence-exact source
 references. Selected conductor layers must be declared technology layers and
-must not be cut layers. A cut layer has one unambiguous bottom/top adjacency
-from the technology via/contact definitions; distinct cuts are never connected
+must not be cut layers. Via definitions sharing a cut layer must retain one unambiguous bottom/top
+stack. Typed contact definitions may share a cut and landing (top) conductor
+while declaring different bottom contact materials. Their adjacency is the set
+of those explicit materials plus the common landing; each connection still
+requires actual positive-area contact. Different landing layers, a conflicting
+via stack, missing declared material layers or a conductor/cut role collision
+fail explicitly. Names never determine these roles. Distinct cuts are never connected
 by definition identity or by a declared net label. Vias retain individual cut
 rectangles and every declared metal footprint. Incomplete explicit geometry,
 unknown definitions and extra layers without topology fail. A definition with
@@ -63,9 +68,15 @@ Input and generated rectangle work consume the existing decomposition budget;
 the emitter does not build an unbounded intermediate outline.
 
 `LayoutConductorSnapshot.coordinateUnits` owns the integer footprint coordinate
-scale. It equals the captured document scale for polygon/rectangle-only input.
-Selected paths refine that scale by two to represent half-width boundaries
-without rounding an odd database-unit width. Source hierarchy units remain
+scale. It equals the captured document scale for polygon/rectangle-only input
+without selected pins. Selected pins and paths refine that scale by two to represent half-width boundaries
+without rounding an odd database-unit width or centered pin half-span. Pin
+center/size and occurrence transforms are admitted independently on that lattice;
+checked integer affine operations derive their endpoints, avoiding cancellation
+in floating center-minus-half-size arithmetic. Source pin UUID, source cell and
+range offset are matched before conversion. Inexact lattice values, transforms
+or out-of-range endpoints fail; raw hierarchy pin geometry remains unchanged.
+Source hierarchy units remain
 unchanged. All footprints and pin bands use the one admitted output scale; its
 finite scale and Int32 endpoint constraints are checked before publication.
 Consumers convert numeric bands through `coordinateUnits`, never through the
@@ -88,14 +99,30 @@ query permits local consumer graph updates without recapturing unaffected
 geometry or duplicating the exact geometry algorithm. Its caller owns candidate
 probe admission; native full capture continues to charge its existing budget.
 
+### Prepared device conductors
+The native owner can internally consume replacement geometry lists keyed by an
+existing captured source-shape index. Device recognition owns channel removal
+and the resulting source/drain slabs; the native owner owns admission, bands
+and contacts. Every slab retains the original source UUID, occurrence and
+resolved NetReference. No synthetic document, source identity or second contact
+graph is introduced. Prepared input selects actual conductor and contact roles;
+implant/well markers and nonconducting bulk pins remain recognition/source facts.
+Gate and slab terminals must resolve through their actual captured bands.
+Contact alternatives do not bridge the removed channel through an ACTIVE source.
+
+The RC consumer uses model-bound selected conductors and a unique electrical
+cut model. This extension does not assign an RC model to semiconductor contact
+alternatives; unsupported or ambiguous electrical model selection remains a
+typed failure in the RC owner.
+
 ### Current-generation composition for live edits
 The live migration composes a complete current snapshot, never a historical
 identity baseline presented as current geometry. The native owner captures the
 pending document's hierarchy and chooses coordinate units from the entire
 selected source set. Edited sources alone are decomposed on that profile.
-Removing the last path therefore requires all retained bands and pin bands to
-remain exactly representable on the ordinary grid; failure preserves the prior
-generation. An unchanged path can permit a half-grid edited rectangle.
+Removing the last path without any selected pins therefore requires all retained
+bands to remain exactly representable on the ordinary grid; failure preserves
+the prior generation. Selected pins keep the centered half-span profile active. An unchanged path can permit a half-grid edited rectangle.
 
 Composition consumes validated owned footprint references, the consumer's
 existing contact graph/partition, and cached exact pin-contact facts. The owner
@@ -158,8 +185,34 @@ scoped hierarchy labels, pins, opens, shorts, exact grid rejection, limits and
 cancellation. The dependency revision must include the verified bounded band API.
 Native macOS evidence does not qualify WASM/Embedded or process/corner RC.
 [LiveProductionConnectivityTests](../../../Tests/LayoutAutoGenTests/LiveProductionConnectivityTests.swift) and [LiveConnectivitySessionTests](../../../Tests/LayoutAutoGenTests/LiveConnectivitySessionTests.swift) own full-generation equality, scoped occurrence/pin identity, exact profile changes, atomic geometry/budget/cancellation failure, and separately measured local versus materialization costs. A 200-band one-source edit captured and repartitioned one band, inspected zero contact candidates and visited 12 spatial cells while materializing all 200 bands.
-The remaining device/DRC consumers are tracked by the parent consumer matrix and retain explicit unavailable gates until migrated.
+[ProductionConsumerScopedTests](../../../Tests/LayoutAutoGenTests/ProductionConsumerScopedTests.swift)
+executes contact alternatives, independent cuts, centered source pin lattice
+admission, scoped device and DRC consumer composition; the parent owns the
+single six-consumer completion matrix.
 [ConductorPathCaptureTests](../../../Tests/LayoutAutoGenTests/ConductorPathCaptureTests.swift) additionally owns analytical stroke coverage,
 caps/joins, half-grid output units, hierarchy, contacts and resource/cancel failure.
 Changing coordinate units invalidates PEXNative conversion assumptions and
 requires native RC consumer verification before composition.
+
+The prepared electrical context is public immutable provenance: geometric or
+Device-aware MOS with configured active/poly/implant roles. It owns no second
+graph. Native capture keeps source geometry unchanged and consumes the Device
+owner's overlay; composition checks context equality before publication. Native
+point queries use admitted band coordinates, not source UUID or display bounds.
+
+Point authorization uses the existing continuous `LayoutLabel.position` domain.
+It compares the unchanged finite point to native band boundaries converted to
+micrometers using the snapshot coordinate scale, exactly as owned presentation
+footprints do. It never rounds, clamps, or expands a probe. A nextUp point beyond
+an edge remains outside; an arbitrary finite in-band point remains inside.
+
+Via definitions sharing a cut require both the same material pair and the same
+ordered landing/top role. Reversed bottom/top stacks are rejected even though
+the unordered electrical pair is equal; contact alternatives retain their one
+explicit top material and individually admitted bottom materials.
+
+Rectangle footprint admission converts the original origin and positive spans
+individually to the admitted integer lattice, then adds endpoints with checked
+Int32 arithmetic. Endpoint cancellation in a floating origin-plus-span operation
+does not authorize expanding tolerance or rounding an off-grid source. Original
+source geometry remains retained; overflow is a typed capture failure.

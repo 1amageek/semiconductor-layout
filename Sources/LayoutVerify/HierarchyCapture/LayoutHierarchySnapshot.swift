@@ -2,14 +2,14 @@ import Foundation
 import LayoutCore
 
 /// Owned source/world geometry; electrical connectivity is not inferred here.
-public struct LayoutHierarchySnapshot: Sendable, Equatable {
+public struct LayoutHierarchySnapshot: Sendable, Hashable, Codable {
     public struct Step: Sendable, Equatable, Hashable, Codable {
         public let instanceID: UUID
         public let row: Int
         public let column: Int
     }
 
-    public struct Occurrence: Sendable, Equatable, Codable {
+    public struct Occurrence: Sendable, Hashable, Codable {
         public let sourceCellID: UUID
         public let parentIndex: Int?
         public let path: [Step]

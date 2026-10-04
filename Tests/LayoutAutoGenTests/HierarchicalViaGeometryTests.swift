@@ -76,8 +76,9 @@ struct HierarchicalViaGeometryTests {
         fixture.document.cells[childIndex].shapes = []
         fixture.document.cells[childIndex].pins = []
         let result = LayoutDRCService().run(document: fixture.document, tech: fixture.technology, geometryMode: .exactOnly)
-        #expect(result.diagnostics.contains { $0.code == "drc.unsupported_exact_geometry" && $0.message.contains("Via") })
-        #expect(throws: LayoutDRCServiceError.self) {
+        #expect(result.hasErrors)
+        #expect(result.diagnostics.contains { $0.severity == .error })
+        #expect(throws: LayoutConductorCaptureError.self) {
             try LayoutDRCService().runChecked(document: fixture.document, tech: fixture.technology, geometryMode: .exactOnly)
         }
     }

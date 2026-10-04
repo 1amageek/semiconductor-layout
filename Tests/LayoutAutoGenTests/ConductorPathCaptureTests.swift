@@ -129,11 +129,11 @@ struct ConductorPathCaptureTests {
         #expect(boundary.points.contains(.init(x: 1_500, y: 3_000)))
         let outside = path([.zero, .init(x: 2, y: 0)], cap: .custom(begin: 1e10, end: 0))
         #expect(LayoutDRCService().geometryToIRBoundary(outside.geometry, dbu: 1_000) == nil)
-        #expect(throws: LayoutDRCServiceError.self) {
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(outside.id)) {
             try LayoutDRCService().runChecked(document: document([outside]), tech: .standard(), geometryMode: .development)
         }
         let circular = path([.zero, .init(x: 2, y: 0)], cap: .round)
-        #expect(throws: LayoutDRCServiceError.self) {
+        #expect(throws: LayoutConductorCaptureError.unsupportedGeometry(circular.id)) {
             try LayoutDRCService().runChecked(document: document([circular]), tech: .standard(), geometryMode: .development)
         }
     }

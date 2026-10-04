@@ -40,10 +40,6 @@ public struct DeviceExtractor: Sendable {
 
     public init() {}
 
-    private func requireCapturedPieceMigration() throws {
-        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
-    }
-
     public func extract(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
@@ -53,36 +49,26 @@ public struct DeviceExtractor: Sendable {
         guard let targetCell = service.resolveCell(document: document, cellID: cellID) else {
             throw DeviceExtractionError.targetCellNotFound
         }
-        _ = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): DeviceExtractor.buildConnectivity still
-        // joins all cuts of one via. LVS/device callers must not publish results
-        // until prepared channel/slab conductors use validated individual bands.
-        try requireCapturedPieceMigration()
-
-        var shapes: [LayoutShape] = []
-        var vias: [LayoutVia] = []
-        var pins: [LayoutPin] = []
-        var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        try service.flatten(
-            cell: targetCell,
-            document: document,
-            tech: tech,
-            shapes: &shapes,
-            vias: &vias,
-            pins: &pins,
-            terminalConflicts: &conflicts
-        )
-
+        let hierarchy = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: targetCell.id)
+        guard let root = hierarchy.occurrences.firstIndex(where: {
+            $0.parentIndex == nil && $0.sourceCellID == hierarchy.rootCellID
+        }) else { throw DeviceExtractionError.targetCellNotFound }
+        let shapes = hierarchy.shapes, vias = hierarchy.vias
+        var pins = hierarchy.pins
+        for (occurrenceIndex, occurrence) in hierarchy.occurrences.enumerated() where occurrenceIndex != root {
+            let prefix = occurrencePrefix(occurrence)
+            for pinIndex in occurrence.pinRange { pins[pinIndex].name = prefix + pins[pinIndex].name }
+        }
         var issues: [DeviceExtractionIssue] = []
-        appendTerminalConflictIssues(conflicts, to: &issues)
 
         let actives = recognizeActives(shapes: shapes, issues: &issues)
-        let channelsByActive = discoverChannels(
+        let channelsByActive = try discoverChannels(
             shapes: shapes,
             actives: actives,
             issues: &issues
         )
-        let connectivity = buildConnectivity(
+        let connectivity = try buildConnectivity(
+            document: document, hierarchy: hierarchy,
             shapes: shapes,
             vias: vias,
             actives: actives,
@@ -91,20 +77,28 @@ public struct DeviceExtractor: Sendable {
             service: service
         )
         let pinIslandByIndex = mapPinsToIslands(pins: pins, connectivity: connectivity)
+        for pin in connectivity.snapshot.pins where pin.componentIndices.count != 1 && pins[pin.sourcePinIndex].role != .bulk {
+            issues.append(DeviceExtractionIssue(kind: .openNet,
+                message: "Pin '\(pins[pin.sourcePinIndex].name)' contacts \(pin.componentIndices.count) conductor islands.",
+                region: pinRect(pins[pin.sourcePinIndex]), policyApplicability: .layoutRepairRequired,
+                suggestedActions: ["connect-pin-to-one-island"]))
+        }
         // Declared nets that carry a NAME speak the same currency as
         // `.subckt` references ("pin:<name>"); anonymous net IDs keep the
         // uuid form. Names come from the target cell's net table — the
         // label→net annotation pass writes exactly there.
-        let netNameByID = Dictionary(
-            targetCell.nets.map { ($0.id, $0.name) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        // Labels sitting ON conductor geometry name their island directly
-        // (Magic semantics). This is what keeps extraction working after
-        // formats that drop pins and nets: the text survives, the
-        // conductor under it defines what it names.
-        let labels = flattenedLabels(cell: targetCell, document: document)
+        var netNameByID: [LayoutConductorSnapshot.NetReference: String] = [:]
+        for (occurrenceIndex, occurrence) in hierarchy.occurrences.enumerated() {
+            guard let source = document.cell(withID: occurrence.sourceCellID) else { throw DeviceExtractionError.targetCellNotFound }
+            let prefix = occurrenceIndex == root ? "" : occurrencePrefix(occurrence)
+            for net in source.nets {
+                netNameByID[.init(occurrenceIndex: occurrenceIndex, netID: net.id)] = prefix + net.name
+            }
+        }
+        let labels = try flattenedLabels(hierarchy: hierarchy, document: document, root: root)
         let labelsByIsland = mapLabelsToIslands(labels: labels, connectivity: connectivity)
+        let rootLabels = targetCell.labels
+        let rootLabelsByIsland = mapLabelsToIslands(labels: rootLabels, connectivity: connectivity)
         let islandNames = nameIslands(
             connectivity: connectivity,
             pins: pins,
@@ -122,6 +116,9 @@ public struct DeviceExtractor: Sendable {
             islandNames: islandNames,
             pins: pins,
             pinIslandByIndex: pinIslandByIndex,
+            fallbackPinNames: Dictionary(uniqueKeysWithValues: pins.indices.map { index in
+                (index, comparisonName(for: connectivity.snapshot.declaredNetBySource[.pin(index)], fallback: pins[index].name, names: netNameByID, hierarchy: hierarchy, root: root))
+            }),
             issues: &issues
         )
         devices = groupedDevices(devices)
@@ -135,41 +132,21 @@ public struct DeviceExtractor: Sendable {
         // Flattened child pins are device terminal markers: two instances
         // of one device cell both expose "gate", legitimately on
         // different nets — an interface built from them would conflict.
-        let topPinIDs = Set(targetCell.pins.map(\.id))
         let ports = ports(
-            from: pins.filter { topPinIDs.contains($0.id) },
+            from: pins, rootPinRange: hierarchy.occurrences[root].pinRange,
             pinIslandByIndex: pinIslandByIndex,
-            pinIndexByID: Dictionary(
-                pins.enumerated().map { ($0.element.id, $0.offset) },
-                uniquingKeysWith: { first, _ in first }
-            ),
-            labelsByIsland: labelsByIsland,
+            labelsByIsland: rootLabelsByIsland,
             declaredNetsByIsland: connectivity.declaredNetsByIsland,
             netNameByID: netNameByID,
             islandNames: islandNames,
             connectivity: connectivity,
+            root: root,
             issues: &issues
         )
         return DeviceExtractionResult(
             netlist: ComparisonNetlist(devices: devices, ports: ports),
             issues: issues
         )
-    }
-
-    private func appendTerminalConflictIssues(
-        _ conflicts: [LayoutDRCService.TerminalConnectivityConflict],
-        to issues: inout [DeviceExtractionIssue]
-    ) {
-        for conflict in conflicts {
-            issues.append(DeviceExtractionIssue(
-                kind: .shortedNet,
-                message: "Instance terminal mapping shorts \(conflict.netIDs.count) declared nets.",
-                region: conflict.region,
-                shapeIDs: conflict.shapeIDs,
-                policyApplicability: .layoutRepairRequired,
-                suggestedActions: ["split-shorted-conductors", "inspect-net-annotations"]
-            ))
-        }
     }
 
     // MARK: - Geometry recognition
@@ -268,14 +245,23 @@ public struct DeviceExtractor: Sendable {
     private func discoverChannels(
         shapes: [LayoutShape],
         actives: [Active],
-        issues: inout [DeviceExtractionIssue]
-    ) -> [Int: [Channel]?] {
+        issues: inout [DeviceExtractionIssue],
+        limits: LayoutConductorCaptureLimits = .default
+    ) throws -> [Int: [Channel]?] {
+        var probes = 0
+        var polys: [(index: Int, shape: LayoutShape, rect: LayoutRect)] = []
+        for (index, shape) in shapes.enumerated() {
+            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            if shape.layer == polyLayer, let rect = rectLike(shape.geometry) { polys.append((index, shape, rect)) }
+        }
         var result: [Int: [Channel]?] = [:]
         for (activeOrdinal, active) in actives.enumerated() {
             var channels: [Channel] = []
             var invalid = false
-            for (index, shape) in shapes.enumerated() where shape.layer == polyLayer {
-                guard let polyRect = rectLike(shape.geometry) else { continue }
+            for (index, shape, polyRect) in polys {
+                if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+                guard probes < limits.maximumContactProbes else { throw LayoutConductorCaptureError.limitExceeded(.contactProbes) }
+                probes += 1
                 guard let channel = positiveIntersection(active.rect, polyRect) else { continue }
                 let fullHeight = channel.minY <= active.rect.minY + eps
                     && channel.maxY >= active.rect.maxY - eps
@@ -376,8 +362,10 @@ public struct DeviceExtractor: Sendable {
         var islandIndexByKey: [ConnectivityElementKey: Int]
         var elements: [ConnectivityElementKey: ConnectivityElement]
         /// Declared nets per island, unique and sorted by uuidString.
-        var declaredNetsByIsland: [Int: [UUID]]
+        var declaredNetsByIsland: [Int: [LayoutConductorSnapshot.NetReference]]
         var islandCount: Int
+        var snapshot: LayoutConductorSnapshot
+        var root: Int
         /// Element key of each poly shape, by flatten index.
         var polyKeyByFlatIndex: [Int: ConnectivityElementKey]
         /// Slab element keys per active ordinal, in channel order:
@@ -397,193 +385,173 @@ public struct DeviceExtractor: Sendable {
     /// conducts within its own layer. Keys are deterministic flatten-order
     /// ordinals, so two extractions of the same document agree exactly.
     private func buildConnectivity(
-        shapes: [LayoutShape],
-        vias: [LayoutVia],
-        actives: [Active],
-        channelsByActive: [Int: [Channel]?],
-        tech: LayoutTechDatabase,
-        service: LayoutDRCService
-    ) -> Connectivity {
-        let contactCutLayers = Set(tech.contacts.map(\.cutLayer))
-        let activeOrdinalByFlatIndex = Dictionary(
-            uniqueKeysWithValues: actives.enumerated().map { ($0.element.flatIndex, $0.offset) }
-        )
-
-        var elements: [ConnectivityElementKey: ConnectivityElement] = [:]
-        var polyKeyByFlatIndex: [Int: ConnectivityElementKey] = [:]
-        var slabKeysByActiveOrdinal: [Int: [ConnectivityElementKey?]] = [:]
-        var slabRectsByActiveOrdinal: [Int: [LayoutRect?]] = [:]
-        var plainShapeKeyByFlatIndex: [Int: ConnectivityElementKey] = [:]
-        var shapeOrdinal = 0
-        var viaOrdinal = 0
-
-        func appendShapeElement(_ shape: LayoutShape, geometry: LayoutGeometry) -> ConnectivityElementKey {
-            let key = ConnectivityElementKey.shape(.child(shapeOrdinal))
-            shapeOrdinal += 1
-            elements[key] = ConnectivityElement(
-                key: key,
-                elementID: shape.id,
-                isVia: false,
-                netID: shape.netID,
-                geometry: geometry,
-                layer: shape.layer,
-                viaDefinition: nil,
-                viaCutRects: [],
-                viaContactRectsByLayer: [:],
-                boundingBox: LayoutGeometryAnalysis.boundingBox(for: geometry)
-            )
-            return key
+        document: LayoutDocument, hierarchy: LayoutHierarchySnapshot,
+        shapes: [LayoutShape], vias: [LayoutVia], actives: [Active],
+        channelsByActive: [Int: [Channel]?], tech: LayoutTechDatabase, service: LayoutDRCService
+    ) throws -> Connectivity {
+        let preparation = try prepareConductors(shapes: shapes, actives: actives,
+            channelsByActive: channelsByActive, tech: tech, limits: .default)
+        let slabRectsByActiveOrdinal = preparation.slabs
+        let snapshot = try capturePrepared(document: document, tech: tech, hierarchy: hierarchy,
+            preparation: preparation, limits: .default)
+        guard let root = hierarchy.occurrences.firstIndex(where: { $0.parentIndex == nil && $0.sourceCellID == hierarchy.rootCellID }) else {
+            throw DeviceExtractionError.targetCellNotFound
         }
-
-        for (index, shape) in shapes.enumerated() {
-            if shape.layer == polyLayer {
-                polyKeyByFlatIndex[index] = appendShapeElement(shape, geometry: shape.geometry)
-                continue
-            }
-            if contactCutLayers.contains(shape.layer) {
-                // A contact cut conducts between its definition's bottom
-                // and top layers, exactly like a via plug. Definitions
-                // sharing the cut layer (active vs poly contact) each get
-                // a bridge element; a bridge whose far layer is absent
-                // under the cut simply joins nothing there.
-                let definitions = tech.contacts
-                    .filter { $0.cutLayer == shape.layer }
-                    .sorted { $0.id < $1.id }
-                for definition in definitions {
-                    let key = ConnectivityElementKey.via(.child(viaOrdinal))
-                    viaOrdinal += 1
-                    elements[key] = ConnectivityElement(
-                        key: key,
-                        elementID: shape.id,
-                        isVia: true,
-                        netID: shape.netID,
-                        geometry: shape.geometry,
-                        layer: nil,
-                        viaDefinition: LayoutViaDefinition(
-                            id: definition.id,
-                            cutLayer: definition.cutLayer,
-                            topLayer: definition.topLayer,
-                            bottomLayer: definition.bottomLayer,
-                            cutSize: definition.cutSize,
-                            enclosure: definition.enclosure,
-                            cutSpacing: definition.cutSpacing
-                        ),
-                        viaCutRects: [],
-                        viaContactRectsByLayer: [:],
-                        boundingBox: LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
-                    )
-                }
-                continue
-            }
-            if let activeOrdinal = activeOrdinalByFlatIndex[index],
-               let maybeChannels = channelsByActive[activeOrdinal],
-               let channels = maybeChannels,
-               !channels.isEmpty {
-                let active = actives[activeOrdinal]
-                let horizontal = channels[0].horizontalCurrent
-                var boundaries: [Double] = horizontal ? [active.rect.minX] : [active.rect.minY]
-                for channel in channels {
-                    boundaries.append(horizontal ? channel.rect.minX : channel.rect.minY)
-                    boundaries.append(horizontal ? channel.rect.maxX : channel.rect.maxY)
-                }
-                boundaries.append(horizontal ? active.rect.maxX : active.rect.maxY)
-
-                var slabKeys: [ConnectivityElementKey?] = []
-                var slabRects: [LayoutRect?] = []
-                for slabIndex in 0...(channels.count) {
-                    let low = boundaries[slabIndex * 2]
-                    let high = boundaries[slabIndex * 2 + 1]
-                    guard high - low > eps else {
-                        slabKeys.append(nil)
-                        slabRects.append(nil)
-                        continue
-                    }
-                    let rect = horizontal
-                        ? LayoutRect(
-                            origin: LayoutPoint(x: low, y: active.rect.minY),
-                            size: LayoutSize(width: high - low, height: active.rect.size.height)
-                        )
-                        : LayoutRect(
-                            origin: LayoutPoint(x: active.rect.minX, y: low),
-                            size: LayoutSize(width: active.rect.size.width, height: high - low)
-                        )
-                    slabKeys.append(appendShapeElement(shape, geometry: .rect(rect)))
-                    slabRects.append(rect)
-                }
-                slabKeysByActiveOrdinal[activeOrdinal] = slabKeys
-                slabRectsByActiveOrdinal[activeOrdinal] = slabRects
-                continue
-            }
-            plainShapeKeyByFlatIndex[index] = appendShapeElement(shape, geometry: shape.geometry)
+        let captured = try LayoutConnectivityExtractor.capturedElements(snapshot)
+        var keysBySource: [Int: [ConnectivityElementKey]] = [:]
+        for (index, footprint) in snapshot.footprints.enumerated() {
+            if case .shape(let source) = footprint.source { keysBySource[source, default: []].append(captured.keys[index]) }
         }
-
-        for via in vias {
-            let key = ConnectivityElementKey.via(.child(viaOrdinal))
-            viaOrdinal += 1
-            let cuts = service.viaCutRects(for: via, tech: tech)
-            let conductors = service.viaConductorRects(for: via, tech: tech)
-            let bounds = service.union(rects: conductors) ?? service.viaCutBoundingBox(for: via, tech: tech)
-            elements[key] = ConnectivityElement(
-                key: key,
-                elementID: via.id,
-                isVia: true,
-                netID: via.netID,
-                geometry: .rect(bounds),
-                layer: nil,
-                viaDefinition: tech.viaDefinition(for: via.viaDefinitionID),
-                viaCutRects: cuts,
-                viaContactRectsByLayer: service.viaContactRectsByLayer(for: via, tech: tech),
-                boundingBox: bounds
-            )
-        }
-
-        let adjacency = LayoutConnectivityExtractor.contactAdjacency(
-            elements: elements,
-            service: service
-        )
-        let components = LayoutConnectivityExtractor.components(
-            adjacency: adjacency,
-            elements: elements
-        )
-
         var islandIndexByKey: [ConnectivityElementKey: Int] = [:]
-        var declaredNetsByIsland: [Int: [UUID]] = [:]
-        for (islandIndex, component) in components.enumerated() {
-            var declared = Set<UUID>()
-            for key in component {
-                islandIndexByKey[key] = islandIndex
-                if let netID = elements[key]?.netID {
-                    declared.insert(netID)
-                }
-            }
-            declaredNetsByIsland[islandIndex] = declared.sorted { $0.uuidString < $1.uuidString }
+        var declared: [Int: [LayoutConductorSnapshot.NetReference]] = [:]
+        for (index, component) in snapshot.components.enumerated() {
+            declared[index] = component.declaredNets
+            for footprint in component.footprintIndices { islandIndexByKey[captured.keys[footprint]] = index }
         }
+        var polyKeys: [Int: ConnectivityElementKey] = [:], plainKeys: [Int: ConnectivityElementKey] = [:]
+        for source in shapes.indices {
+            if shapes[source].layer == polyLayer { polyKeys[source] = keysBySource[source]?.first }
+            else { plainKeys[source] = keysBySource[source]?.first }
+        }
+        var slabKeys: [Int: [ConnectivityElementKey?]] = [:]
+        for (ordinal, slabs) in slabRectsByActiveOrdinal {
+            let keys = keysBySource[actives[ordinal].flatIndex, default: []]
+            guard keys.count == slabs.compactMap({ $0 }).count else { throw LayoutConductorCaptureError.invalidComposition }
+            var cursor = 0
+            slabKeys[ordinal] = slabs.map { slab in
+                guard slab != nil else { return nil }
+                defer { cursor += 1 }
+                return keys[cursor]
+            }
+        }
+        return Connectivity(islandIndexByKey: islandIndexByKey, elements: captured.elements,
+            declaredNetsByIsland: declared, islandCount: snapshot.components.count, snapshot: snapshot, root: root,
+            polyKeyByFlatIndex: polyKeys, slabKeysByActiveOrdinal: slabKeys,
+            slabRectsByActiveOrdinal: slabRectsByActiveOrdinal, plainShapeKeyByFlatIndex: plainKeys)
+    }
 
-        return Connectivity(
-            islandIndexByKey: islandIndexByKey,
-            elements: elements,
-            declaredNetsByIsland: declaredNetsByIsland,
-            islandCount: components.count,
-            polyKeyByFlatIndex: polyKeyByFlatIndex,
-            slabKeysByActiveOrdinal: slabKeysByActiveOrdinal,
-            slabRectsByActiveOrdinal: slabRectsByActiveOrdinal,
-            plainShapeKeyByFlatIndex: plainShapeKeyByFlatIndex
-        )
+    struct ConductorPreparation {
+        let layers: Set<LayoutLayerID>
+        let replacements: [Int: [LayoutGeometry]]
+        let slabs: [Int: [LayoutRect?]]
+    }
+
+    /// Bounded immutable electrical facts with Device-owned channel separation.
+    /// The hierarchy remains the original source generation, not slab geometry.
+    public func captureConductors(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
+        limits: LayoutConductorCaptureLimits = .default
+    ) throws -> LayoutConductorSnapshot {
+        let hierarchy = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID, limits: limits.hierarchy)
+        let preparation = try prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits)
+        return try capturePrepared(document: document, tech: tech, hierarchy: hierarchy, preparation: preparation, limits: limits)
+    }
+
+    func prepareConductors(hierarchy: LayoutHierarchySnapshot, tech: LayoutTechDatabase,
+        limits: LayoutConductorCaptureLimits
+    ) throws -> ConductorPreparation {
+        guard limits.maximumContactProbes >= 0 else { throw LayoutConductorCaptureError.invalidLimits }
+        var issues: [DeviceExtractionIssue] = []
+        let actives = recognizeActives(shapes: hierarchy.shapes, issues: &issues)
+        let channels = try discoverChannels(shapes: hierarchy.shapes, actives: actives, issues: &issues, limits: limits)
+        guard issues.isEmpty else { throw LayoutConductorCaptureError.unsupportedDevicePreparation }
+        return try prepareConductors(shapes: hierarchy.shapes, actives: actives, channelsByActive: channels,
+            tech: tech, limits: limits)
+    }
+
+    private func prepareConductors(shapes: [LayoutShape], actives: [Active], channelsByActive: [Int: [Channel]?],
+        tech: LayoutTechDatabase, limits: LayoutConductorCaptureLimits
+    ) throws -> ConductorPreparation {
+        _ = try LayoutConnectivityExtractor.productionConductiveLayers(tech, limits: limits)
+        var selectedLayers: Set<LayoutLayerID> = []
+        for via in tech.vias { selectedLayers.formUnion([via.bottomLayer, via.topLayer]) }
+        for contact in tech.contacts { selectedLayers.formUnion([contact.bottomLayer, contact.topLayer]) }
+        let known = Set(tech.layers.map(\.id))
+        selectedLayers.formUnion([activeLayer, polyLayer].filter { known.contains($0) })
+        // A technology with no configured device materials or layer bridges has
+        // a metal-only profile, explicitly using its registered non-cut layers.
+        if selectedLayers.isEmpty {
+            selectedLayers = try LayoutConnectivityExtractor.productionConductiveLayers(tech, limits: limits)
+            selectedLayers.subtract([nimpLayer, pimpLayer])
+        }
+        var replacements: [Int: [LayoutGeometry]] = [:]
+        var slabRectsByActiveOrdinal: [Int: [LayoutRect?]] = [:]
+        var preparedSlabCount = 0
+        for (ordinal, active) in actives.enumerated() {
+            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            guard let wrapped = channelsByActive[ordinal], let channels = wrapped, !channels.isEmpty else { continue }
+            let horizontal = channels[0].horizontalCurrent
+            var bounds = horizontal ? [active.rect.minX] : [active.rect.minY]
+            for channel in channels {
+                bounds.append(horizontal ? channel.rect.minX : channel.rect.minY)
+                bounds.append(horizontal ? channel.rect.maxX : channel.rect.maxY)
+            }
+            bounds.append(horizontal ? active.rect.maxX : active.rect.maxY)
+            var slabs: [LayoutRect?] = [], geometries: [LayoutGeometry] = []
+            for index in 0...channels.count {
+                let low = bounds[index * 2], high = bounds[index * 2 + 1]
+                guard high - low > eps else { slabs.append(nil); continue }
+                let slab = horizontal
+                    ? LayoutRect(origin: .init(x: low, y: active.rect.minY), size: .init(width: high - low, height: active.rect.size.height))
+                    : LayoutRect(origin: .init(x: active.rect.minX, y: low), size: .init(width: active.rect.size.width, height: high - low))
+                guard preparedSlabCount < limits.maximumFootprints else { throw LayoutConductorCaptureError.limitExceeded(.footprints) }
+                preparedSlabCount += 1
+                slabs.append(slab)
+                // The boundaries are the owner facts. Avoid admitting a new
+                // high-minus-low span contaminated by translated subtraction.
+                let minX = horizontal ? low : active.rect.minX
+                let maxX = horizontal ? high : active.rect.maxX
+                let minY = horizontal ? active.rect.minY : low
+                let maxY = horizontal ? active.rect.maxY : high
+                geometries.append(.polygon(.init(points: [
+                    .init(x: minX, y: minY), .init(x: maxX, y: minY),
+                    .init(x: maxX, y: maxY), .init(x: minX, y: maxY)])))
+            }
+            replacements[active.flatIndex] = geometries
+            slabRectsByActiveOrdinal[ordinal] = slabs
+        }
+        return ConductorPreparation(layers: selectedLayers, replacements: replacements, slabs: slabRectsByActiveOrdinal)
+    }
+
+    private func capturePrepared(document: LayoutDocument, tech: LayoutTechDatabase, hierarchy: LayoutHierarchySnapshot,
+        preparation: ConductorPreparation, limits: LayoutConductorCaptureLimits
+    ) throws -> LayoutConductorSnapshot {
+        var selected = Set(hierarchy.shapes.indices.map { LayoutConductorSnapshot.Source.shape($0) })
+        selected.formUnion(hierarchy.vias.indices.map { .via($0) })
+        for index in hierarchy.pins.indices where preparation.layers.contains(hierarchy.pins[index].layer) {
+            selected.insert(.pin(index))
+        }
+        return try LayoutConnectivityExtractor().captureNativeConductors(document: document, tech: tech,
+            conductiveLayers: preparation.layers, cellID: hierarchy.rootCellID, limits: limits, hierarchy: hierarchy,
+            selectingSources: selected, replacingShapeGeometry: preparation.replacements, electricalContext: .deviceAwareMOS).snapshot
+    }
+
+    private func occurrencePrefix(_ occurrence: LayoutHierarchySnapshot.Occurrence) -> String {
+        "occurrence:" + occurrence.path.map { "\($0.instanceID.uuidString):\($0.row):\($0.column)" }.joined(separator: "/") + ":"
+    }
+
+    private func comparisonName(for reference: LayoutConductorSnapshot.NetReference?, fallback: String,
+        names: [LayoutConductorSnapshot.NetReference: String], hierarchy: LayoutHierarchySnapshot, root: Int
+    ) -> ComparisonNetID {
+        guard let reference else { return ComparisonNetID("pin:\(fallback)") }
+        if let name = names[reference] { return ComparisonNetID("pin:\(name)") }
+        let scope = reference.occurrenceIndex == root ? "" : occurrencePrefix(hierarchy.occurrences[reference.occurrenceIndex])
+        return ComparisonNetID("net:\(scope)\(reference.netID.uuidString)")
     }
 
     /// Labels of the cell plus all instance occurrences, recursively
     /// mapped into the target cell's space.
-    private func flattenedLabels(cell: LayoutCell, document: LayoutDocument) -> [LayoutLabel] {
-        var result = cell.labels
-        for instance in cell.instances {
-            guard let child = document.cell(withID: instance.cellID) else { continue }
-            let childLabels = flattenedLabels(cell: child, document: document)
-            for occurrence in instance.occurrenceTransforms() {
-                for label in childLabels {
-                    var moved = label
-                    moved.position = occurrence.apply(to: label.position)
-                    result.append(moved)
-                }
+    private func flattenedLabels(hierarchy: LayoutHierarchySnapshot, document: LayoutDocument, root: Int) throws -> [LayoutLabel] {
+        var result: [LayoutLabel] = []
+        for (index, occurrence) in hierarchy.occurrences.enumerated() {
+            guard let cell = document.cell(withID: occurrence.sourceCellID) else { throw LayoutHierarchyCaptureError.missingChildCell(occurrence.sourceCellID) }
+            guard cell.labels.count <= LayoutHierarchyCaptureLimits.default.maximumObjects - result.count else {
+                throw LayoutHierarchyCaptureError.limitExceeded(.objects)
+            }
+            for label in cell.labels {
+                var transformed = label
+                for transform in occurrence.transforms.reversed() { transformed.position = transform.apply(to: transformed.position) }
+                if index != root { transformed.text = occurrencePrefix(occurrence) + transformed.text }
+                result.append(transformed)
             }
         }
         return result
@@ -627,21 +595,8 @@ public struct DeviceExtractor: Sendable {
         connectivity: Connectivity
     ) -> [Int: Int] {
         var result: [Int: Int] = [:]
-        for (pinIndex, pin) in pins.enumerated() {
-            let probe = LayoutGeometry.rect(pinRect(pin))
-            var island: Int? = nil
-            for element in connectivity.elements.values {
-                guard element.layer == pin.layer,
-                      let candidate = connectivity.islandIndexByKey[element.key],
-                      island.map({ candidate < $0 }) ?? true,
-                      LayoutGeometryAnalysis.intersects(probe, element.geometry) else {
-                    continue
-                }
-                island = candidate
-            }
-            if let island {
-                result[pinIndex] = island
-            }
+        for pin in connectivity.snapshot.pins {
+            if let island = pin.componentIndices.first { result[pin.sourcePinIndex] = island }
         }
         return result
     }
@@ -655,15 +610,15 @@ public struct DeviceExtractor: Sendable {
         pins: [LayoutPin],
         pinIslandByIndex: [Int: Int],
         labelsByIsland: [Int: [LayoutLabel]],
-        netNameByID: [UUID: String],
+        netNameByID: [LayoutConductorSnapshot.NetReference: String],
         issues: inout [DeviceExtractionIssue]
     ) -> [ComparisonNetID] {
-        var pinsByIsland: [Int: [LayoutPin]] = [:]
+        var pinsByIsland: [Int: [Int]] = [:]
         for (pinIndex, island) in pinIslandByIndex {
-            pinsByIsland[island, default: []].append(pins[pinIndex])
+            pinsByIsland[island, default: []].append(pinIndex)
         }
         for island in pinsByIsland.keys {
-            pinsByIsland[island]?.sort { $0.name < $1.name }
+            pinsByIsland[island]?.sort { pins[$0].name < pins[$1].name }
         }
 
         var names: [ComparisonNetID] = []
@@ -683,22 +638,12 @@ public struct DeviceExtractor: Sendable {
                 ))
             }
             let base: ComparisonNetID
+            let root = connectivity.root
             if let first = declared.first {
-                if let name = netNameByID[first] {
-                    base = ComparisonNetID("pin:\(name)")
-                } else {
-                    base = ComparisonNetID("net:\(first.uuidString)")
-                }
-            } else if let pin = pinsByIsland[island]?.first {
-                if let netID = pin.netID {
-                    if let name = netNameByID[netID] {
-                        base = ComparisonNetID("pin:\(name)")
-                    } else {
-                        base = ComparisonNetID("net:\(netID.uuidString)")
-                    }
-                } else {
-                    base = ComparisonNetID("pin:\(pin.name)")
-                }
+                base = comparisonName(for: first, fallback: "", names: netNameByID, hierarchy: connectivity.snapshot.hierarchy, root: root)
+            } else if let pinIndex = pinsByIsland[island]?.first {
+                base = comparisonName(for: connectivity.snapshot.declaredNetBySource[.pin(pinIndex)], fallback: pins[pinIndex].name,
+                    names: netNameByID, hierarchy: connectivity.snapshot.hierarchy, root: root)
             } else if let label = labelsByIsland[island]?.first {
                 base = ComparisonNetID("pin:\(label.text)")
             } else {
@@ -719,7 +664,7 @@ public struct DeviceExtractor: Sendable {
                     suggestedActions: ["connect-open-net", "inspect-net-annotations"]
                 ))
                 usedNames[base] = priorUses + 1
-                names.append(ComparisonNetID("\(base.rawValue):split:\(priorUses)"))
+                names.append(ComparisonNetID("island:\(island):open:\(base.rawValue)"))
             } else {
                 usedNames[base] = 1
                 names.append(base)
@@ -772,6 +717,7 @@ public struct DeviceExtractor: Sendable {
         islandNames: [ComparisonNetID],
         pins: [LayoutPin],
         pinIslandByIndex: [Int: Int],
+        fallbackPinNames: [Int: ComparisonNetID],
         issues: inout [DeviceExtractionIssue]
     ) -> [ComparisonNetlist.Device] {
         let nimpBoxes = shapes
@@ -885,6 +831,7 @@ public struct DeviceExtractor: Sendable {
                     islandNames: islandNames,
                     // NMOS bulk is the substrate (P+ tap), PMOS the well (N+ tap).
                     taps: tapCandidates.filter { $0.isPType == (kind == .nmos) },
+                    fallbackPinNames: fallbackPinNames,
                     issues: &issues
                 )
 
@@ -924,6 +871,7 @@ public struct DeviceExtractor: Sendable {
         pinIslandByIndex: [Int: Int],
         islandNames: [ComparisonNetID],
         taps: [(rect: LayoutRect, name: ComparisonNetID, isPType: Bool)],
+        fallbackPinNames: [Int: ComparisonNetID],
         issues: inout [DeviceExtractionIssue]
     ) -> ComparisonNetID {
         func rectDistance(_ lhs: LayoutRect, _ rhs: LayoutRect) -> Double {
@@ -955,10 +903,7 @@ public struct DeviceExtractor: Sendable {
         if let island = pinIslandByIndex[best.offset] {
             return islandNames[island]
         }
-        if let netID = best.element.netID {
-            return ComparisonNetID("net:\(netID.uuidString)")
-        }
-        return ComparisonNetID("pin:\(best.element.name)")
+        return fallbackPinNames[best.offset] ?? ComparisonNetID("unconnected:bulk:\(best.offset)")
     }
 
     // MARK: - Grouping
@@ -1012,14 +957,14 @@ public struct DeviceExtractor: Sendable {
     /// legal when they agree on the net; a disagreement is reported and
     /// the first (flatten-order) resolution wins deterministically.
     private func ports(
-        from pins: [LayoutPin],
+        from pins: [LayoutPin], rootPinRange: Range<Int>,
         pinIslandByIndex: [Int: Int],
-        pinIndexByID: [UUID: Int],
         labelsByIsland: [Int: [LayoutLabel]],
-        declaredNetsByIsland: [Int: [UUID]],
-        netNameByID: [UUID: String],
+        declaredNetsByIsland: [Int: [LayoutConductorSnapshot.NetReference]],
+        netNameByID: [LayoutConductorSnapshot.NetReference: String],
         islandNames: [ComparisonNetID],
         connectivity: Connectivity,
+        root: Int,
         issues: inout [DeviceExtractionIssue]
     ) -> [String: ComparisonNetID] {
         var ports: [String: ComparisonNetID] = [:]
@@ -1040,14 +985,14 @@ public struct DeviceExtractor: Sendable {
             }
         }
 
-        for pin in pins {
+        for pinIndex in rootPinRange {
+            let pin = pins[pinIndex]
             let net: ComparisonNetID
-            if let pinIndex = pinIndexByID[pin.id], let island = pinIslandByIndex[pinIndex] {
+            if let island = pinIslandByIndex[pinIndex] {
                 net = islandNames[island]
-            } else if let netID = pin.netID {
-                net = ComparisonNetID("net:\(netID.uuidString)")
             } else {
-                net = ComparisonNetID("pin:\(pin.name)")
+                net = comparisonName(for: connectivity.snapshot.declaredNetBySource[.pin(pinIndex)], fallback: pin.name,
+                    names: netNameByID, hierarchy: connectivity.snapshot.hierarchy, root: root)
             }
             insertPort(name: pin.name, net: net, region: pinRect(pin))
         }
@@ -1058,7 +1003,7 @@ public struct DeviceExtractor: Sendable {
             for label in labelsByIsland[island] ?? [] {
                 insertPort(name: label.text, net: net, region: region)
             }
-            for netID in declaredNetsByIsland[island] ?? [] {
+            for netID in declaredNetsByIsland[island] ?? [] where netID.occurrenceIndex == root {
                 if let name = netNameByID[netID] {
                     insertPort(name: name, net: net, region: region)
                 }

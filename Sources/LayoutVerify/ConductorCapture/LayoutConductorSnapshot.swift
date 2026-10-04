@@ -62,6 +62,8 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
         public let unconnectedPinIndices: [Int]
     }
 
+    public let electricalContext: LayoutElectricalContext
+    let preparedShapeGeometry: [Int: [LayoutGeometry]]
     public let hierarchy: LayoutHierarchySnapshot
     /// Coordinate scale of all footprint and pin bands, independently of raw source units.
     public let coordinateUnits: LayoutUnits
@@ -69,6 +71,7 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
     /// Validated cut-to-metal topology used by capture and cross-snapshot queries.
     let adjacentConductorLayersByCut: [LayoutLayerID: Set<LayoutLayerID>]
     let contactTechnology: LayoutTechDatabase
+    let declaredNetBySource: [Source: NetReference]
     public let footprints: [Footprint]
     /// Source ownership for each decomposition polygon ordinal.
     let polygonSources: [Source]
@@ -92,7 +95,7 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
         guard other.footprints.indices.contains(secondIndex) else {
             throw LayoutConductorCaptureError.invalidFootprintIndex(secondIndex)
         }
-        guard contactTechnology == other.contactTechnology,
+        guard electricalContext == other.electricalContext, contactTechnology == other.contactTechnology,
               conductiveLayers == other.conductiveLayers,
               adjacentConductorLayersByCut == other.adjacentConductorLayersByCut else {
             throw LayoutConductorCaptureError.incompatibleContactTopology
@@ -115,7 +118,7 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
         guard other.footprints.indices.contains(footprintIndex) else {
             throw LayoutConductorCaptureError.invalidFootprintIndex(footprintIndex)
         }
-        guard contactTechnology == other.contactTechnology, conductiveLayers == other.conductiveLayers,
+        guard electricalContext == other.electricalContext, contactTechnology == other.contactTechnology, conductiveLayers == other.conductiveLayers,
               adjacentConductorLayersByCut == other.adjacentConductorLayersByCut else {
             throw LayoutConductorCaptureError.incompatibleContactTopology
         }
@@ -125,6 +128,24 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
         for band in pin.bands where try Self.bandsTouch(band, multiplier: pinMultiplier,
             footprint.band, multiplier: footprintMultiplier, sameLayer: false) { return true }
         return false
+    }
+
+    /// Continuous point incidence on admitted native band boundaries. Multiple components are
+    /// returned explicitly; callers must not select one by bounding box or UUID.
+    public func componentIndices(containing point: LayoutPoint, on layer: LayoutLayerID) throws -> [Int] {
+        guard point.x.isFinite, point.y.isFinite else { throw LayoutConductorCaptureError.invalidQueryPoint }
+        let dbu = coordinateUnits.scale.databaseUnitsPerMicrometer
+        var result: [Int] = []
+        for (index, component) in components.enumerated() {
+            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            if component.footprintIndices.contains(where: { ordinal in
+                let footprint = footprints[ordinal], band = footprint.band
+                return !footprint.isCut && footprint.layer == layer
+                    && point.x >= Double(band.minX) / dbu && point.x <= Double(band.maxX) / dbu
+                    && point.y >= Double(band.minY) / dbu && point.y <= Double(band.maxY) / dbu
+            }) { result.append(index) }
+        }
+        return result
     }
 
     func coordinateMultipliers(with otherUnits: LayoutUnits) throws -> (Int64, Int64) {

@@ -396,16 +396,25 @@ public struct LayoutCommandCLIService: Sendable {
               let topCellID = document.topCellID ?? document.cells.first?.id else {
             return nil
         }
-        let drcResult = LayoutDRCService().run(
+        var drcResult = LayoutDRCService().run(
             document: document,
             tech: tech,
-            cellID: topCellID
+            cellID: topCellID,
+            electricalContext: .deviceAwareMOS
         )
-        let connectivity = try LayoutConnectivityExtractor().extract(
+        let connectivity: ConnectivityAnalysis?
+        do {
+        connectivity = try LayoutConnectivityExtractor().extract(
             document: document,
             tech: tech,
-            cellID: topCellID
+            cellID: topCellID,
+            electricalContext: .deviceAwareMOS
         )
+        } catch {
+            connectivity = nil
+            drcResult.diagnostics.append(LayoutDRCDiagnostic(code: "connectivity.capture_failed", severity: .error,
+                message: String(describing: error), suggestedActions: ["inspect-electrical-context", "repair-source-geometry"]))
+        }
         let violationErrorCount = drcResult.violations.count { $0.severity == .error }
         let diagnosticErrorCount = drcResult.diagnostics.count { $0.severity == .error }
         let violationWarningCount = drcResult.violations.count { $0.severity == .warning }
@@ -441,7 +450,7 @@ public struct LayoutCommandCLIService: Sendable {
                     viaIDs: violation.viaIDs,
                     pinIDs: violation.pinIDs,
                     netIDs: violation.netIDs,
-                    suggestedFix: violation.suggestedFix
+                    suggestedFix: violation.suggestedFix, netReferences: violation.netReferences, sourcePinIndices: violation.sourcePinIndices
                 )
             }
         return LayoutDocumentInspectionVerification(
@@ -457,12 +466,12 @@ public struct LayoutCommandCLIService: Sendable {
                 violations: violations,
                 diagnostics: drcResult.diagnostics
             ),
-            connectivity: LayoutDocumentInspectionConnectivitySummary(
-                extractedNetCount: connectivity.nets.count,
-                shortCount: connectivity.shorts.count,
-                openCount: connectivity.opens.count,
-                flylineCount: connectivity.flylines.count
-            )
+            connectivity: connectivity.map { analysis in LayoutDocumentInspectionConnectivitySummary(
+                extractedNetCount: analysis.nets.count,
+                shortCount: analysis.shorts.count,
+                openCount: analysis.opens.count,
+                flylineCount: analysis.flylines.count
+            ) }, electricalContext: .deviceAwareMOS, sourceHierarchy: drcResult.sourceHierarchy
         )
     }
 

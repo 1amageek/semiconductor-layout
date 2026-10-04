@@ -168,7 +168,7 @@ struct LiveLVSSessionTests {
         let device = try #require(result.netlist.devices.first)
         #expect(abs(device.parameters.width - 2.0) < 1e-9)
         #expect(abs(device.parameters.length - 0.18) < 1e-9)
-        #expect(device.terminals[.gate] == ComparisonNetID("pin:gate"))
+        #expect(device.terminals[.gate] == ComparisonNetID("pin:occurrence:\(instance.id.uuidString):0:0:gate"))
     }
 
     @Test func duplicatePortNamesReportConflictInsteadOfTrapping() throws {
@@ -257,7 +257,7 @@ struct LiveLVSSessionTests {
         )
 
         #expect(result.issues.contains {
-            $0.kind == .shortedNet && $0.message.contains("Instance terminal mapping")
+            $0.kind == .shortedNet && $0.message.contains("2 declared nets")
         })
     }
 

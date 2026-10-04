@@ -2,13 +2,13 @@ import Foundation
 import Testing
 import LayoutCore
 import LayoutTech
-import LayoutVerify
+@testable import LayoutVerify
 
 /// Stress tests for the cluster-granular width/area/spacing maintenance in
 /// `IncrementalDRCSession`: every partition transition an edit can cause —
 /// merge by abutment or overlap, corner contact, halo-coupled gaps, chain
 /// merges across many clusters, atomic rejection of unsupported geometry,
-/// degenerate pseudo-node membership, and ID reuse after
+/// degenerate geometry rejection, and ID reuse after
 /// removal — must keep the live snapshot equal to a from-scratch full run.
 @Suite("IncrementalDRC Cluster Transitions", .timeLimit(.minutes(5)))
 struct IncrementalDRCClusterTests {
@@ -141,9 +141,9 @@ struct IncrementalDRCClusterTests {
         )
     }
 
-    /// A degenerate two-point polygon produces no checkable geometry, but
-    /// the full run still lists it as a bbox contributor of violations it
-    /// overlaps — so the session must co-cluster it as a pseudo node.
+    /// A two-point polygon is not an electrical conductor. The physical
+    /// contributor oracle still records its marker incidence, while native
+    /// session admission rejects it without replacing the valid generation.
     @Test func degenerateShapeJoinsContributorClusters() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
         let harness = try IncrementalDRCEquivalenceHarness(
@@ -172,28 +172,18 @@ struct IncrementalDRCClusterTests {
                 LayoutPoint(x: 0.55, y: 12.3),
             ]))
         )
-        let update = try harness.applyAndVerify(
-            LayoutEditDelta(addedShapes: [left, right, degenerate]),
-            context: "violating pair plus a degenerate polygon across the gap"
-        )
-
-        let spacing = update.result.violations.first {
+        _ = try harness.applyAndVerify(LayoutEditDelta(addedShapes: [left, right]), context: "valid spacing pair")
+        let before = harness.session.currentResult
+        #expect(throws: LayoutConductorCaptureError.self) {
+            try harness.session.apply(LayoutEditDelta(addedShapes: [degenerate]))
+        }
+        #expect(harness.session.currentResult == before)
+        let physical = try LayoutDRCService().checkSpacing(shapes: [left, right, degenerate], tech: fixture.tech)
+        let spacing = physical.first {
             $0.kind == .minSpacing && $0.shapeIDs.contains(left.id) && $0.shapeIDs.contains(right.id)
         }
-        #expect(
-            spacing?.shapeIDs.contains(degenerate.id) == true,
-            "the degenerate shape's bbox crosses the marker, so it must be a contributor"
-        )
-
-        var shifted = degenerate
-        shifted.geometry = .polygon(LayoutPolygon(points: [
-            LayoutPoint(x: 3, y: 12.1),
-            LayoutPoint(x: 3.2, y: 12.3),
-        ]))
-        try harness.applyAndVerify(
-            LayoutEditDelta(updatedShapes: [shifted]),
-            context: "degenerate shape moved out of the contributor halo"
-        )
+        #expect(spacing?.shapeIDs.contains(degenerate.id) == true,
+                "the physical marker contributor remains independently verified")
     }
 
     /// Removing a shape and later re-adding its UUID elsewhere is a legal

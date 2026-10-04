@@ -384,9 +384,24 @@ extension LayoutEditorViewModel {
     /// Rotates the selection a quarter turn about the grid-snapped center
     /// of its combined bounding box, preserving shape identity.
     public func rotateSelectedShapes(clockwise: Bool = true) {
-        transformSelectedShapes { geometry, pivot in
-            geometry.rotated90(around: pivot, clockwise: clockwise)
+        guard let snapshot = connectivityAnalysis?.sourceSnapshot, snapshot.electricalContext == .deviceAwareMOS else {
+            handleError(LayoutConductorCaptureError.unsupportedDevicePreparation)
+            return
         }
+        let shapes = selectedShapes()
+        guard let first = shapes.first else { return }
+        var combined = LayoutGeometryAnalysis.boundingBox(for: first.geometry)
+        for shape in shapes.dropFirst() { combined = combined.union(LayoutGeometryAnalysis.boundingBox(for: shape.geometry)) }
+        let pivot = snapToGrid(combined.center)
+        do {
+            let updated = try shapes.map { shape in
+                var copy = shape
+                copy.geometry = try LayoutEditorGridGeometry.rotated(shape.geometry, around: pivot, clockwise: clockwise,
+                    scale: snapshot.coordinateUnits.scale.databaseUnitsPerMicrometer, sourceID: shape.id)
+                return copy
+            }
+            commitDelta(.init(updatedShapes: updated))
+        } catch { handleError(error) }
     }
 
     /// Mirrors the selection across an axis through the grid-snapped

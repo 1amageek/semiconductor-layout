@@ -20,14 +20,15 @@ public struct LayoutConnectivityDiagnoser: Sendable {
             throw LayoutConnectivityExtractionError.targetCellNotFound
         }
         let extractor = LayoutConnectivityExtractor()
-        let analysis = try extractor.extract(document: document, tech: tech, cellID: topCellID)
+        let analysis = try extractor.extract(document: document, tech: tech, cellID: topCellID, electricalContext: .deviceAwareMOS)
         guard let snapshot = analysis.sourceSnapshot else {
-            throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
+            throw LayoutConnectivityExtractionError.missingSourceSnapshot
         }
         let nameByNetID = Self.netNames(document: document, snapshot: snapshot)
 
         return LayoutConnectivityDiagnosisReport(
             topCellID: topCellID,
+            electricalContext: snapshot.electricalContext,
             sourceDocumentID: snapshot.hierarchy.documentID,
             occurrences: snapshot.hierarchy.occurrences,
             pins: snapshot.hierarchy.pins,

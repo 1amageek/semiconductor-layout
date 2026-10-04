@@ -20,6 +20,8 @@ public enum LayoutConductorCaptureError: Error, Equatable, Sendable {
     case conflictingTerminalBinding(occurrenceIndex: Int, netID: UUID)
     case invalidFootprintIndex(Int)
     case invalidPinIndex(Int)
+    case invalidQueryPoint
+    case unsupportedDevicePreparation
     case invalidComposition
     case invalidSpatialBounds
     case incompatibleContactTopology

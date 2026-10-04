@@ -54,219 +54,32 @@ public struct LayoutConnectivityExtractor {
         document: LayoutDocument,
         tech: LayoutTechDatabase,
         cellID: UUID? = nil,
-        limits: LayoutConductorCaptureLimits = .default
+        limits: LayoutConductorCaptureLimits = .default,
+        electricalContext: LayoutElectricalContext = .geometric
     ) throws -> ConnectivityAnalysis {
         guard service.resolveCell(document: document, cellID: cellID) != nil else {
             throw LayoutConnectivityExtractionError.targetCellNotFound
         }
 
-        let snapshot = try captureConductors(document: document, tech: tech,
-            conductiveLayers: Self.productionConductiveLayers(tech, limits: limits), cellID: cellID, limits: limits)
+        let snapshot = try captureElectricalConductors(document: document, tech: tech, cellID: cellID,
+            limits: limits, electricalContext: electricalContext)
         return try Self.analysis(from: snapshot)
     }
 
-    // MARK: - Element table
-
-    /// Builds the conductor element table in flatten order, keyed by the
-    /// occurrence identities the live session also uses.
-    static func makeElements(
-        topShapes: [LayoutShape],
-        childShapes: [LayoutShape],
-        topVias: [LayoutVia],
-        childVias: [LayoutVia],
-        tech: LayoutTechDatabase,
-        service: LayoutDRCService
-    ) -> [ConnectivityElementKey: ConnectivityElement] {
-        var elements: [ConnectivityElementKey: ConnectivityElement] = [:]
-        elements.reserveCapacity(
-            topShapes.count + childShapes.count + topVias.count + childVias.count
-        )
-        for shape in topShapes {
-            let element = makeShapeElement(shape, key: .shape(.top(shape.id)))
-            elements[element.key] = element
+    func captureElectricalConductors(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
+        limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext
+    ) throws -> LayoutConductorSnapshot {
+        switch electricalContext {
+        case .geometric:
+            return try captureConductors(document: document, tech: tech,
+                conductiveLayers: Self.productionConductiveLayers(tech, limits: limits), cellID: cellID, limits: limits)
+        case .deviceAwareMOS:
+            return try DeviceExtractor().captureConductors(document: document, tech: tech, cellID: cellID, limits: limits)
         }
-        for (index, shape) in childShapes.enumerated() {
-            let element = makeShapeElement(shape, key: .shape(.child(index)))
-            elements[element.key] = element
-        }
-        for via in topVias {
-            let element = makeViaElement(via, key: .via(.top(via.id)), tech: tech, service: service)
-            elements[element.key] = element
-        }
-        for (index, via) in childVias.enumerated() {
-            let element = makeViaElement(via, key: .via(.child(index)), tech: tech, service: service)
-            elements[element.key] = element
-        }
-        return elements
     }
 
-    static func makeShapeElement(_ shape: LayoutShape, key: ConnectivityElementKey) -> ConnectivityElement {
-        ConnectivityElement(
-            key: key,
-            elementID: shape.id,
-            isVia: false,
-            netID: shape.netID,
-            geometry: shape.geometry,
-            layer: shape.layer,
-            viaDefinition: nil,
-            viaCutRects: [],
-            viaContactRectsByLayer: [:],
-            boundingBox: LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
-        )
-    }
+    // MARK: - Native component presentation
 
-    // FIXME(INCOMPLETE_IMPLEMENTATION): Legacy live/device preparation aggregates
-    // every cut of one via. Those public consumers fail at their entry points;
-    // this helper must be removed when they migrate to native individual bands.
-    static func makeViaElement(
-        _ via: LayoutVia,
-        key: ConnectivityElementKey,
-        tech: LayoutTechDatabase,
-        service: LayoutDRCService
-    ) -> ConnectivityElement {
-        let cuts = service.viaCutRects(for: via, tech: tech)
-        let conductors = service.viaConductorRects(for: via, tech: tech)
-        let bounds = service.union(rects: conductors) ?? service.viaCutBoundingBox(for: via, tech: tech)
-        return ConnectivityElement(
-            key: key,
-            elementID: via.id,
-            isVia: true,
-            netID: via.netID,
-            geometry: .rect(bounds),
-            layer: nil,
-            viaDefinition: tech.viaDefinition(for: via.viaDefinitionID),
-            viaCutRects: cuts,
-            viaContactRectsByLayer: service.viaContactRectsByLayer(for: via, tech: tech),
-            boundingBox: bounds
-        )
-    }
-
-    // MARK: - Contact graph
-
-    /// Full pairwise contact graph over the element table, pruned by a
-    /// spatial index. Symmetric: `b ∈ adjacency[a]` iff `a ∈ adjacency[b]`.
-    /// Every element owns an entry, isolated ones an empty set.
-    static func contactAdjacency(
-        elements: [ConnectivityElementKey: ConnectivityElement],
-        service: LayoutDRCService
-    ) -> [ConnectivityElementKey: Set<ConnectivityElementKey>] {
-        var adjacency: [ConnectivityElementKey: Set<ConnectivityElementKey>] = [:]
-        adjacency.reserveCapacity(elements.count)
-        for key in elements.keys { adjacency[key] = [] }
-        guard elements.count > 1 else { return adjacency }
-
-        let ordered = elements.values.sorted { $0.key < $1.key }
-        let arrays = parallelArrays(for: ordered)
-        let boxes = ordered.map(\.boundingBox)
-        let grid = ShapeGridIndex(
-            boundingBoxes: boxes,
-            cellSize: ShapeGridIndex.defaultCellSize(for: boxes)
-        )
-        for i in 0..<(ordered.count - 1) {
-            for j in grid.candidateIndices(near: boxes[i]) where j > i {
-                if service.shouldConnect(
-                    indexA: i,
-                    indexB: j,
-                    geometries: arrays.geometries,
-                    layers: arrays.layers,
-                    isVia: arrays.isVia,
-                    viaDefs: arrays.viaDefs,
-                    viaCutRects: arrays.viaCutRects,
-                    viaContactRectsByLayer: arrays.viaContactRectsByLayer
-                ) {
-                    adjacency[ordered[i].key, default: []].insert(ordered[j].key)
-                    adjacency[ordered[j].key, default: []].insert(ordered[i].key)
-                }
-            }
-        }
-        return adjacency
-    }
-
-    /// Contact set of one element against the spatial-index candidates,
-    /// for the live session's edited-element re-tests. The element itself
-    /// is excluded.
-    static func contacts(
-        of element: ConnectivityElement,
-        candidates: Set<ConnectivityElementKey>,
-        elements: [ConnectivityElementKey: ConnectivityElement],
-        service: LayoutDRCService
-    ) -> Set<ConnectivityElementKey> {
-        var result: Set<ConnectivityElementKey> = []
-        for key in candidates where key != element.key {
-            guard let other = elements[key] else {
-                continue
-            }
-            if elementsTouch(element, other, service: service) {
-                result.insert(key)
-            }
-        }
-        return result
-    }
-
-    /// Pairwise form of the shared contact predicate. `shouldConnect`
-    /// dispatches on both sides' via-ness itself, so argument order is
-    /// irrelevant and this stays the same single source of truth the batch
-    /// pair scan and the DRC open check use.
-    static func elementsTouch(
-        _ a: ConnectivityElement,
-        _ b: ConnectivityElement,
-        service: LayoutDRCService
-    ) -> Bool {
-        service.shouldConnect(
-            indexA: 0,
-            indexB: 1,
-            geometries: [a.geometry, b.geometry],
-            layers: [a.layer, b.layer],
-            isVia: [a.isVia, b.isVia],
-            viaDefs: [a.viaDefinition, b.viaDefinition],
-            viaCutRects: [a.viaCutRects, b.viaCutRects],
-            viaContactRectsByLayer: [a.viaContactRectsByLayer, b.viaContactRectsByLayer]
-        )
-    }
-
-    static func parallelArrays(for ordered: [ConnectivityElement]) -> ConnectivityParallelArrays {
-        ConnectivityParallelArrays(
-            geometries: ordered.map(\.geometry),
-            layers: ordered.map(\.layer),
-            isVia: ordered.map(\.isVia),
-            viaDefs: ordered.map(\.viaDefinition),
-            viaCutRects: ordered.map(\.viaCutRects),
-            viaContactRectsByLayer: ordered.map(\.viaContactRectsByLayer)
-        )
-    }
-
-    // MARK: - Components
-
-    /// Connected components of the contact graph, each member list sorted,
-    /// components ordered by their first member key.
-    static func components(
-        adjacency: [ConnectivityElementKey: Set<ConnectivityElementKey>],
-        elements: [ConnectivityElementKey: ConnectivityElement]
-    ) -> [[ConnectivityElementKey]] {
-        let keys = elements.keys.sorted()
-        var indexByKey: [ConnectivityElementKey: Int] = [:]
-        indexByKey.reserveCapacity(keys.count)
-        for (index, key) in keys.enumerated() { indexByKey[key] = index }
-
-        var unionFind = LayoutUnionFind(count: keys.count)
-        for (key, neighbours) in adjacency {
-            guard let a = indexByKey[key] else { continue }
-            for neighbour in neighbours {
-                guard let b = indexByKey[neighbour] else { continue }
-                unionFind.union(a, b)
-            }
-        }
-        return unionFind.components().values
-            .map { member in member.map { keys[$0] }.sorted() }
-            .sorted { $0[0] < $1[0] }
-    }
-
-    // MARK: - Verdict assembly
-
-    /// One conductor piece's verdict view. Split out so the live session
-    /// can cache per-component nets — a component's member geometry only
-    /// changes through an edit that dissolves the component, so a cached
-    /// net is always exactly what this function would recompute.
     static func net(
         for memberKeys: [ConnectivityElementKey],
         elements: [ConnectivityElementKey: ConnectivityElement]

@@ -11,8 +11,6 @@ struct IncrementalDRCApplyAnalysis {
     var editedKeysByLayer: [LayoutLayerID: Set<FlatShapeKey>] = [:]
     var idListChangedLayers: Set<LayoutLayerID> = []
     var openMustRecomputeNets: Set<UUID> = []
-    var shapeOpenContactsBefore: [UUID: (netID: UUID, contacts: Set<OpenContactKey>)] = [:]
-    var viaOpenContactsBefore: [UUID: (netID: UUID, contacts: Set<OpenContactKey>)] = [:]
 
     mutating func markShape(_ shape: LayoutShape, forcesOpenRecompute: Bool) {
         dirtyLayers.insert(shape.layer)
