@@ -75,6 +75,36 @@ struct ConductorPathCaptureTests {
         #expect(result.hierarchy.units == .defaultUnits && result.coordinateUnits.scale.databaseUnitsPerMicrometer == 2_000)
     }
 
+    @Test func retainedDatabaseUnitRouteDifferencesGenerateExactIntegerFootprints() throws {
+        // Retained DEF coordinates are 6500,3200 -> 6500,3300 at 1000 DBU/um.
+        // Subtracting the physical Double endpoints loses precision before grid admission.
+        let vertical = [LayoutPoint(x: 6.5, y: 3.2), .init(x: 6.5, y: 3.3)]
+        let horizontal = vertical.map { LayoutPoint(x: $0.y, y: $0.x) }
+        for isHorizontal in [false, true] {
+            let points = isHorizontal ? horizontal : vertical
+            for reversed in [false, true] {
+                for extended in [false, true] {
+                    let shape = path(reversed ? Array(points.reversed()) : points,
+                        width: 0.1, cap: extended ? .extend : .truncate)
+                    let result = try capture([shape])
+                    let band = try #require(result.footprints.first?.band)
+                    let low: Int32 = extended ? 6_300 : 6_400
+                    let high: Int32 = extended ? 6_700 : 6_600
+                    #expect(result.footprints.count == 1 && result.components.count == 1)
+                    #expect(band.minX == (isHorizontal ? low : 12_900))
+                    #expect(band.maxX == (isHorizontal ? high : 13_100))
+                    #expect(band.minY == (isHorizontal ? 12_900 : low))
+                    #expect(band.maxY == (isHorizontal ? 13_100 : high))
+                    #expect(areaSquareMicrometers(result) == (extended ? 0.02 : 0.01))
+                    #expect(result.coordinateUnits.scale.databaseUnitsPerMicrometer == 2_000)
+                    #expect(result.hierarchy.units.scale.databaseUnitsPerMicrometer == 1_000)
+                    #expect(result.hierarchy.shapes[0].geometry == shape.geometry)
+                    #expect(result.footprints[0].sourceID == shape.id && result.footprints[0].source == .shape(0))
+                }
+            }
+        }
+    }
+
     @Test func mixedGeometryUsesOneOwnedCoordinateScale() throws {
         let rectangle = LayoutShape(layer: metal, geometry: .rect(.init(origin: .init(x: 4, y: 1), size: .init(width: 1, height: 1))))
         let result = try capture([path([.zero, .init(x: 2, y: 0)]), rectangle])
@@ -181,7 +211,8 @@ struct ConductorPathCaptureTests {
         var emitted = 0, checks = 0
         let value = LayoutPath(points: (0..<10).map { .init(x: Double($0), y: 0) }, width: 1)
         #expect(throws: LayoutConductorCaptureError.cancelled) {
-            try RectilinearPathFootprint.emit(value, sourceID: UUID(), isCancelled: { checks += 1; return checks == 3 }) { _ in emitted += 1 }
+            try RectilinearPathFootprint.emit(value, sourceID: UUID(), coordinate: { Int32($0 * 2_000) },
+                isCancelled: { checks += 1; return checks == 3 }) { _, _, _, _ in emitted += 1 }
         }
         #expect(emitted == 2)
         let doc = document([path([.zero, .init(x: 2, y: 0), .init(x: 2, y: 2)])])

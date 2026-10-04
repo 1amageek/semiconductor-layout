@@ -131,8 +131,11 @@ extension LayoutConnectivityExtractor {
         func appendGeometry(_ geometry: LayoutGeometry, record: GeometryRecord) throws {
             try checkCancellation()
             if case .path(let path) = geometry {
-                try RectilinearPathFootprint.emit(path, sourceID: record.sourceID, isCancelled: isCancelled) { rect in
-                    try appendGeometry(.rect(rect), record: record)
+                try RectilinearPathFootprint.emit(path, sourceID: record.sourceID,
+                    coordinate: { try coordinate($0, id: record.sourceID) }, isCancelled: isCancelled) { x, y, maxX, maxY in
+                    try checkCancellation()
+                    try appendIntegerPolygon([IRPoint(x: x, y: y), IRPoint(x: maxX, y: y),
+                        IRPoint(x: maxX, y: maxY), IRPoint(x: x, y: maxY)], record: record)
                 }
                 return
             }

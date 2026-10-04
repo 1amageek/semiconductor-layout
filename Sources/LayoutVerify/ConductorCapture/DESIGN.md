@@ -67,6 +67,20 @@ reference. Overlap is intentional source coverage, not additional physical area.
 Input and generated rectangle work consume the existing decomposition budget;
 the emitter does not build an unbounded intermediate outline.
 
+Path footprint arithmetic admits original centerline coordinates, width and
+explicit cap distances through the native owner's existing coordinate predicate
+before computing differences. The admitted width must have an exact integer
+half on the selected output lattice. Segment lengths, signed cap adjustments
+and miter endpoints are calculated in Int64 from Int32 primitives; their bounded
+sum/difference intermediates fit Int64. Each positive rectangle is checked back
+to Int32 endpoints and streamed directly to integer polygon admission. No
+floating length or origin-plus-span is generated and readmitted. Thus a retained
+1000-DBU route from (6500, 3200) to (6500, 3300) keeps its exact physical coverage
+even though subtracting its micrometer Double endpoints loses precision.
+Original path values, cap semantics and source/occurrence identity are retained.
+Invalid halves, retractions or endpoint ranges fail explicitly; cancellation and
+generated-piece budgets retain their existing publication boundary.
+
 `LayoutConductorSnapshot.coordinateUnits` owns the integer footprint coordinate
 scale. It equals the captured document scale for polygon/rectangle-only input
 without selected pins. Selected pins and paths refine that scale by two to represent half-width boundaries
