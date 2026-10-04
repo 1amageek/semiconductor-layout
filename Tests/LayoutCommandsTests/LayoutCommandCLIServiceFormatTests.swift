@@ -37,6 +37,14 @@ struct LayoutCommandCLIServiceFormatTests {
     func failedInspectionReturnsFailedStatusAndExitCode() throws {
         let fixture = try Self.makeFixtureDirectory()
         defer { Self.removeTemporaryItem(fixture.directory) }
+        var document = Self.simpleDocument()
+        for index in document.cells[0].shapes.indices {
+            if case .path(var path) = document.cells[0].shapes[index].geometry {
+                path.endCap = .round
+                document.cells[0].shapes[index].geometry = .path(path)
+            }
+        }
+        try LayoutDocumentSerializer().encodeDocument(document).write(to: fixture.documentURL, options: .atomic)
         try LayoutDocumentSerializer().encodeTech(Self.strictM1Tech()).write(to: fixture.techURL, options: .atomic)
 
         let response = try LayoutCommandCLIService().runWithExitStatus(
@@ -58,7 +66,7 @@ struct LayoutCommandCLIServiceFormatTests {
         #expect((inspection.verification?.drc.errorCount ?? 0) > 0)
         #expect((inspection.verification?.drc.diagnosticCount ?? 0) > 0)
         #expect(inspection.verification?.drc.diagnostics.contains {
-            $0.code == "drc.geometry_operation_failed" && $0.severity == .error
+            $0.code == "drc.unsupported_exact_geometry" && $0.severity == .error
         } == true)
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionResultURL.path))
         #expect(FileManager.default.fileExists(atPath: fixture.inspectionManifestURL.path))
@@ -418,11 +426,11 @@ struct LayoutCommandCLIServiceFormatTests {
         })
         let verification = try #require(result.verification)
         #expect(result.status == verification.status)
-        #expect(verification.status == "failed")
+        #expect(verification.status == "passed")
         #expect(verification.topCellID == result.summary.topCellID)
         #expect(verification.drc.violationCount == verification.drc.violations.count)
         #expect(verification.drc.diagnosticCount == verification.drc.diagnostics.count)
-        #expect(verification.drc.diagnostics.contains { $0.severity == .error })
+        #expect(!verification.drc.diagnostics.contains { $0.severity == .error })
         #expect(verification.connectivity.extractedNetCount >= 0)
         #expect(verification.connectivity.openCount >= 0)
         #expect(verification.connectivity.shortCount >= 0)

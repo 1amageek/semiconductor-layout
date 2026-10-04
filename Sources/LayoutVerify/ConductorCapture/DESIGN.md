@@ -54,7 +54,9 @@ geometry fail explicitly under the current exact-kernel capability.
 Admitted canonical paths use orthogonal, nonzero centerline segments and square
 miter joins. A stroke is the union of segment rectangles and right-angle join
 squares; flush caps stop at the spine endpoint and extended caps add half the
-width. Circular caps, diagonals and immediate reversals fail rather than being
+width; explicit caps use their separate signed endpoint distances. Retraction
+that crosses an adjacent segment fails; a retracted endpoint entering an
+adjacent miter square is unsupported until clipping can preserve its cap plane. Circular caps, diagonals and immediate reversals fail rather than being
 approximated. Generated pieces retain the same occurrence and source-shape
 reference. Overlap is intentional source coverage, not additional physical area.
 Input and generated rectangle work consume the existing decomposition budget;
@@ -67,8 +69,8 @@ without rounding an odd database-unit width. Source hierarchy units remain
 unchanged. All footprints and pin bands use the one admitted output scale; its
 finite scale and Int32 endpoint constraints are checked before publication.
 Consumers convert numeric bands through `coordinateUnits`, never through the
-raw hierarchy scale. Standard custom extension preservation is a subsequent
-interchange contract and is not inferred from canonical half-width caps.
+raw hierarchy scale. Explicit extensions retain standard-format meaning through
+the [canonical path contract](../../LayoutCore/PathGeometry/DESIGN.md).
 
 Each band is one physical node. On the same layer, positive-area overlap or a
 shared edge of positive length connects; a corner does not. Across cut/metal

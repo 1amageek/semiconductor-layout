@@ -886,15 +886,36 @@ struct LayoutCommandRunnerTests {
         try expectPathSplitResult(result, fixture: fixture)
     }
 
+    @Test("Runner preserves outer custom caps without copying them to split faces")
+    func runnerSplitsCustomPathWithoutCreatingInternalExtensions() throws {
+        let root = try makeTemporaryRoot(prefix: "CustomPathSplit")
+        defer { removeTemporaryRoots([root]) }
+        let fixture = try writePathSplitFixture(root: root, cap: .custom(begin: 3, end: -0.5))
+        let result = try LayoutCommandRunner().run(request: pathSplitRequest(), baseURL: root)
+        #expect(result.status == "passed")
+        let output = try fixture.serializer.decodeDocument(Data(contentsOf: fixture.outputURL))
+        let cell = try #require(output.cell(withID: cellID))
+        guard case .path(let first) = try #require(cell.shapes.first { $0.id == firstSplitShapeID }).geometry,
+              case .path(let second) = try #require(cell.shapes.first { $0.id == secondSplitShapeID }).geometry else {
+            Issue.record("Expected split paths"); return
+        }
+        #expect(first.endCap == .custom(begin: 3, end: 0))
+        #expect(second.endCap == .custom(begin: 0, end: -0.5))
+        #expect(LayoutGeometryAnalysis.boundingBox(for: first).minX == -3)
+        #expect(LayoutGeometryAnalysis.boundingBox(for: first).maxX == 2)
+        #expect(LayoutGeometryAnalysis.boundingBox(for: second).maxY == 3.5)
+    }
+
     private struct PathSplitFixture {
         let outputURL: URL
         let sourcePath: LayoutPath
         let serializer: LayoutDocumentSerializer
     }
 
-    private func writePathSplitFixture(root: URL) throws -> PathSplitFixture {
+    private func writePathSplitFixture(root: URL, cap: LayoutPathEndCap? = nil) throws -> PathSplitFixture {
         let layer = LayoutLayerID(name: "M1", purpose: "drawing")
-        let path = testPath()
+        var path = testPath()
+        if let cap { path.endCap = cap }
         let serializer = LayoutDocumentSerializer()
         try serializer.encodeDocument(pathSplitDocument(layer: layer, path: path))
             .write(to: root.appendingPathComponent("input.json"), options: [.atomic])

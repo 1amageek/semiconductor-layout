@@ -71,7 +71,7 @@ extension LayoutConnectivityExtractor {
             case .polygon(let polygon):
                 for point in polygon.points { try validate(point, id: id) }
             case .path(let path):
-                guard path.points.count >= 2, path.width.isFinite, path.width > 0 else {
+                guard path.isValid else {
                     throw LayoutHierarchyCaptureError.invalidGeometry(id)
                 }
                 for point in path.points { try validate(point, id: id) }

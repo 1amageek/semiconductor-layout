@@ -2,7 +2,8 @@
 
 ## Purpose and Scope
 Canonical value-owned layout cells, geometry, nets, pins and instances. Parent:
-[package](../../DESIGN.md). Current change child: [ViaGeometry](ViaGeometry/DESIGN.md).
+[package](../../DESIGN.md). Children: [ViaGeometry](ViaGeometry/DESIGN.md) and
+[PathGeometry](PathGeometry/DESIGN.md).
 
 ## Responsibilities and Boundaries
 Own physical state and affine geometry semantics. Technology rules, electrical
@@ -13,6 +14,7 @@ models, verification and persistence operations are outside this module.
 |---|---|---|---|---|
 | [Package](../../DESIGN.md) | parent | Canonical physical state | Package composition | Preserve standard-format semantics |
 | [ViaGeometry](ViaGeometry/DESIGN.md) | child | Ordered local geometry placement | Hierarchical via footprints | Transform order is part of identity |
+| [PathGeometry](PathGeometry/DESIGN.md) | child | Signed endpoint extensions and miter outline | Shared path semantics | Magnification scales width and explicit extensions |
 | [LayoutVerify](../LayoutVerify/DESIGN.md) | used by | Geometry and hierarchy values | Physical contact consumers | Definition and pose must travel together |
 
 ## Architecture

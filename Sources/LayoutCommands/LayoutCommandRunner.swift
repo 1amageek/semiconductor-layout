@@ -1893,8 +1893,15 @@ public struct LayoutCommandRunner: LayoutCommandRunning {
             appendPoint(point, to: &second)
         }
 
-        let firstPath = LayoutPath(points: first, width: width, endCap: endCap)
-        let secondPath = LayoutPath(points: second, width: width, endCap: endCap)
+        let firstCap: LayoutPathEndCap, secondCap: LayoutPathEndCap
+        if case .custom(let begin, let end) = endCap {
+            firstCap = .custom(begin: begin, end: 0)
+            secondCap = .custom(begin: 0, end: end)
+        } else {
+            firstCap = endCap; secondCap = endCap
+        }
+        let firstPath = LayoutPath(points: first, width: width, endCap: firstCap)
+        let secondPath = LayoutPath(points: second, width: width, endCap: secondCap)
         guard firstPath.isValid, secondPath.isValid else { return nil }
         return (firstPath, secondPath)
     }

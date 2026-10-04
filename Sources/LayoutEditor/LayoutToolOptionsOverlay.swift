@@ -91,7 +91,7 @@ struct LayoutToolOptionsOverlay: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Picker("", selection: $viewModel.pathEndCap) {
-                ForEach(LayoutPathEndCap.allCases, id: \.self) { cap in
+                ForEach(LayoutPathEndCap.standardStyles, id: \.self) { cap in
                     Text(cap.displayLabel).tag(cap)
                 }
             }

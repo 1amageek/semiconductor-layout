@@ -92,6 +92,52 @@ struct ConductorPathCaptureTests {
         #expect(try capture([path(points, cap: .extend), other]).components.count == 1)
     }
 
+    @Test func signedCustomCapsControlPhysicalContactsWithoutHalfWidthSubstitution() throws {
+        let points = [LayoutPoint.zero, .init(x: 2, y: 0)]
+        let custom = path(points, cap: .custom(begin: 2, end: -0.5))
+        let result = try capture([custom])
+        #expect(areaSquareMicrometers(result) == 3.5)
+        #expect(covered(result, -1.75, 0) && !covered(result, 1.75, 0))
+        let left = LayoutShape(layer: metal, geometry: .rect(.init(origin: .init(x: -1.8, y: -0.1), size: .init(width: 0.1, height: 0.2))))
+        let right = LayoutShape(layer: metal, geometry: .rect(.init(origin: .init(x: 1.75, y: -0.1), size: .init(width: 0.1, height: 0.2))))
+        #expect(try capture([custom, left, right]).components.count == 2)
+        let reversed = path(Array(points.reversed()), cap: .custom(begin: -0.5, end: 2))
+        #expect(try capture([reversed]).footprints.map(\.band) == result.footprints.map(\.band))
+    }
+
+    @Test func customHierarchyScalesBothCapsAndRejectsInvalidRetractions() throws {
+        let child = LayoutCell(name: "CHILD", shapes: [path([.zero, .init(x: 2, y: 0)], cap: .custom(begin: 2, end: -0.5))])
+        let root = LayoutCell(name: "ROOT", instances: [.init(cellID: child.id, name: "scaled",
+            transform: .init(rotation: .deg90, magnification: 2))])
+        let doc = LayoutDocument(name: "caps", cells: [root, child], topCellID: root.id)
+        let result = try LayoutConnectivityExtractor().captureConductors(document: doc, tech: .standard(), conductiveLayers: [metal])
+        #expect(areaSquareMicrometers(result) == 14 && covered(result, 0, -3.5) && !covered(result, 0, 3.5))
+        let crossed = path([.zero, .init(x: 2, y: 0)], cap: .custom(begin: -1.5, end: -1))
+        #expect(throws: LayoutHierarchyCaptureError.invalidGeometry(crossed.id)) { try capture([crossed]) }
+        let clippedMiter = path([.zero, .init(x: 2, y: 0), .init(x: 2, y: 2)], cap: .custom(begin: -1.8, end: 0))
+        #expect(throws: LayoutConductorCaptureError.unsupportedGeometry(clippedMiter.id)) { try capture([clippedMiter]) }
+        let offGrid = path([.zero, .init(x: 2, y: 0)], cap: .custom(begin: 0.00025, end: 0))
+        #expect(throws: LayoutConductorCaptureError.invalidGridGeometry(offGrid.id)) { try capture([offGrid]) }
+    }
+
+    @Test func developmentDRCUsesCanonicalCapsAndRejectsUnsupportedOutline() throws {
+        let value = LayoutPath(points: [.zero, .init(x: 2, y: 0), .init(x: 2, y: 2)], width: 1,
+                               endCap: .custom(begin: 0.25, end: 1))
+        let boundary = try #require(LayoutDRCService().geometryToIRBoundary(.path(value), dbu: 1_000))
+        #expect(boundary.points.contains(.init(x: 2_500, y: -500)))
+        #expect(boundary.points.contains(.init(x: -250, y: 500)))
+        #expect(boundary.points.contains(.init(x: 1_500, y: 3_000)))
+        let outside = path([.zero, .init(x: 2, y: 0)], cap: .custom(begin: 1e10, end: 0))
+        #expect(LayoutDRCService().geometryToIRBoundary(outside.geometry, dbu: 1_000) == nil)
+        #expect(throws: LayoutDRCServiceError.self) {
+            try LayoutDRCService().runChecked(document: document([outside]), tech: .standard(), geometryMode: .development)
+        }
+        let circular = path([.zero, .init(x: 2, y: 0)], cap: .round)
+        #expect(throws: LayoutDRCServiceError.self) {
+            try LayoutDRCService().runChecked(document: document([circular]), tech: .standard(), geometryMode: .development)
+        }
+    }
+
     @Test func hierarchyScalesWidthAndRotatesTheCompleteStroke() throws {
         let child = LayoutCell(name: "CHILD", shapes: [path([.zero, .init(x: 2, y: 0)])])
         let root = LayoutCell(name: "ROOT", instances: [.init(cellID: child.id, name: "placed",
@@ -104,9 +150,11 @@ struct ConductorPathCaptureTests {
     }
 
     @Test func circularDiagonalZeroAndImmediateReversalPathsFailExplicitly() {
-        for shape in [path([.zero, .init(x: 1, y: 0)], cap: .round), path([.zero, .init(x: 1, y: 1)]),
-                      path([.zero, .zero]), path([.zero, .init(x: 1, y: 0), .zero])] {
+        for shape in [path([.zero, .init(x: 1, y: 0)], cap: .round), path([.zero, .init(x: 1, y: 1)])] {
             #expect(throws: LayoutConductorCaptureError.unsupportedGeometry(shape.id)) { try capture([shape]) }
+        }
+        for shape in [path([.zero, .zero]), path([.zero, .init(x: 1, y: 0), .zero])] {
+            #expect(throws: LayoutHierarchyCaptureError.invalidGeometry(shape.id)) { try capture([shape]) }
         }
         let invalid = path([.zero, .init(x: 1, y: 0)], width: .infinity)
         #expect(throws: LayoutHierarchyCaptureError.invalidGeometry(invalid.id)) { try capture([invalid]) }

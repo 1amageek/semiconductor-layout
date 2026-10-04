@@ -199,7 +199,7 @@ public struct LayoutGeometryExtractor: LayoutGeometryExtracting {
         case .polygon(let polygon):
             return "polygon|\(polygon.points.map(pointOrderKey).joined(separator: ";"))"
         case .path(let path):
-            return "path|\(path.points.map(pointOrderKey).joined(separator: ";"))|\(path.width)|\(path.endCap.rawValue)"
+            return "path|\(path.points.map(pointOrderKey).joined(separator: ";"))|\(path.width)|\(path.endCap.geometryOrderKey)"
         }
     }
 

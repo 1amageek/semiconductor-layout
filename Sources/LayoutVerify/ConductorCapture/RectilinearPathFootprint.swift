@@ -10,8 +10,26 @@ enum RectilinearPathFootprint {
             throw Failure.invalidGridGeometry(sourceID)
         }
         guard path.endCap != .round else { throw Failure.unsupportedGeometry(sourceID) }
+        let extensions: (begin: Double, end: Double)
+        do { extensions = try path.flatEndpointExtensions() }
+        catch LayoutPathGeometryError.degenerateSegment { throw Failure.unsupportedGeometry(sourceID) }
+        catch { throw Failure.invalidGridGeometry(sourceID) }
         let half = path.width / 2
         guard half > 0 else { throw Failure.invalidGridGeometry(sourceID) }
+        // A retracted cap entering the first/last miter requires clipping, not rectangle union.
+        if path.points.count > 2 {
+            let points = path.points
+            let firstLength = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
+            let lastLength = hypot(points[points.count - 1].x - points[points.count - 2].x,
+                                   points[points.count - 1].y - points[points.count - 2].y)
+            let firstTurns = (points[0].y == points[1].y) != (points[1].y == points[2].y)
+            let lastTurns = (points[points.count - 3].y == points[points.count - 2].y)
+                != (points[points.count - 2].y == points[points.count - 1].y)
+            guard !(firstTurns && extensions.begin < 0 && firstLength + extensions.begin < half),
+                  !(lastTurns && extensions.end < 0 && lastLength + extensions.end < half) else {
+                throw Failure.unsupportedGeometry(sourceID)
+            }
+        }
         var previousHorizontal: Bool?, previousDirection: Double?
         for index in 1..<path.points.count {
             if isCancelled() { throw Failure.cancelled }
@@ -30,8 +48,8 @@ enum RectilinearPathFootprint {
                                         size: .init(width: path.width, height: path.width)))
                 }
             }
-            let begin = index == 1 && path.endCap == .extend ? half : 0
-            let end = index == path.points.count - 1 && path.endCap == .extend ? half : 0
+            let begin = index == 1 ? extensions.begin : 0
+            let end = index == path.points.count - 1 ? extensions.end : 0
             if horizontal {
                 let a = first.x - direction * begin, b = second.x + direction * end
                 try rectangle(.init(origin: .init(x: min(a, b), y: first.y - half),

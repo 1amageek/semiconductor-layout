@@ -77,6 +77,25 @@ public struct LayoutDRCService {
         } catch let error as LayoutHierarchyCaptureError {
             throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
+        if geometryMode == .development {
+            var diagnostics: [LayoutDRCDiagnostic] = []
+            for shape in context.shapes {
+                guard case .path(let path) = shape.geometry else { continue }
+                do {
+                    let polygon = try path.flatOutline()
+                    guard polygon.points.allSatisfy({ point in
+                        let x = point.x * tech.units.scale.databaseUnitsPerMicrometer, y = point.y * tech.units.scale.databaseUnitsPerMicrometer
+                        return x.isFinite && y.isFinite && x.rounded() >= Double(Int32.min)
+                            && x.rounded() <= Double(Int32.max) && y.rounded() >= Double(Int32.min)
+                            && y.rounded() <= Double(Int32.max)
+                    }) else { throw LayoutPathGeometryError.invalidValue }
+                }
+                catch { diagnostics.append(exactGeometryDiagnostic(shape: shape, reason: "unsupported path outline: \(error)")) }
+            }
+            if !diagnostics.isEmpty {
+                throw LayoutDRCServiceError.unsupportedExactGeometry(diagnostics: diagnostics)
+            }
+        }
         if geometryMode == .exactOnly {
             let diagnostics = unsupportedExactGeometryDiagnostics(context: context, tech: tech)
             if !diagnostics.isEmpty {
@@ -1012,66 +1031,17 @@ public struct LayoutDRCService {
     }
 
     private func pathToIRBoundary(_ path: LayoutPath, dbu: Double) -> IRBoundary? {
-        guard path.points.count >= 2, path.width > 0 else { return nil }
-        let halfW = path.width / 2.0
-
-        if path.points.count == 2 {
-            let p0 = path.points[0]
-            let p1 = path.points[1]
-            let dx = p1.x - p0.x
-            let dy = p1.y - p0.y
-            let len = (dx * dx + dy * dy).squareRoot()
-            guard len > 0 else { return nil }
-            let nx = -dy / len * halfW
-            let ny = dx / len * halfW
-            let ext: Double = path.endCap == .extend ? halfW : 0
-            let ex = dx / len * ext
-            let ey = dy / len * ext
-
-            var pts = [
-                micronPointToIR(LayoutPoint(x: p0.x - ex + nx, y: p0.y - ey + ny), dbu: dbu),
-                micronPointToIR(LayoutPoint(x: p1.x + ex + nx, y: p1.y + ey + ny), dbu: dbu),
-                micronPointToIR(LayoutPoint(x: p1.x + ex - nx, y: p1.y + ey - ny), dbu: dbu),
-                micronPointToIR(LayoutPoint(x: p0.x - ex - nx, y: p0.y - ey - ny), dbu: dbu),
-            ]
-            pts.append(pts[0])
-            return IRBoundary(layer: 0, datatype: 0, points: pts)
-        }
-
-        var leftPoints: [IRPoint] = []
-        var rightPoints: [IRPoint] = []
-
-        for i in 0..<path.points.count {
-            let curr = path.points[i]
-            var nx = 0.0, ny = 0.0
-            var count = 0.0
-
-            if i > 0 {
-                let prev = path.points[i - 1]
-                let sdx = curr.x - prev.x, sdy = curr.y - prev.y
-                let slen = (sdx * sdx + sdy * sdy).squareRoot()
-                if slen > 0 { nx += -sdy / slen; ny += sdx / slen; count += 1 }
-            }
-            if i < path.points.count - 1 {
-                let next = path.points[i + 1]
-                let sdx = next.x - curr.x, sdy = next.y - curr.y
-                let slen = (sdx * sdx + sdy * sdy).squareRoot()
-                if slen > 0 { nx += -sdy / slen; ny += sdx / slen; count += 1 }
-            }
-            guard count > 0 else { continue }
-            nx /= count; ny /= count
-            let nlen = (nx * nx + ny * ny).squareRoot()
-            guard nlen > 0 else { continue }
-            nx /= nlen; ny /= nlen
-
-            leftPoints.append(micronPointToIR(LayoutPoint(x: curr.x + nx * halfW, y: curr.y + ny * halfW), dbu: dbu))
-            rightPoints.append(micronPointToIR(LayoutPoint(x: curr.x - nx * halfW, y: curr.y - ny * halfW), dbu: dbu))
-        }
-
-        var pts = leftPoints + rightPoints.reversed()
-        guard pts.count >= 3 else { return nil }
-        pts.append(pts[0])
-        return IRBoundary(layer: 0, datatype: 0, points: pts)
+        do {
+            let polygon = try path.flatOutline()
+            guard polygon.points.allSatisfy({ point in
+                let x = (point.x * dbu).rounded(), y = (point.y * dbu).rounded()
+                return x.isFinite && y.isFinite && x >= Double(Int32.min) && x <= Double(Int32.max)
+                    && y >= Double(Int32.min) && y <= Double(Int32.max)
+            }) else { return nil }
+            var points = polygon.points.map { micronPointToIR($0, dbu: dbu) }
+            points.append(points[0])
+            return IRBoundary(layer: 0, datatype: 0, points: points)
+        } catch { return nil } // runChecked rejects these paths before rule evaluation.
     }
 
     private func edgePairToRect(_ pair: IREdgePair, dbu: Double) -> LayoutRect {

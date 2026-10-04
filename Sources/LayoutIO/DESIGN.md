@@ -25,6 +25,11 @@ flowchart LR
 ```
 
 ## Contracts and Invariants
+Standard custom paths require both signed begin/end extension fields. They map
+to canonical explicit micrometer distances and export as custom path records;
+missing fields, nonfinite values and off-grid/overflow export fail before output.
+Other path styles cannot carry ignored custom fields.
+
 LayoutCore `mirrorX` negates the X coordinate; `mirrorY` negates Y.
 LayoutIR `mirrorX` reflects about the X axis, negating Y before rotation.
 Import maps that flag to canonical `mirrorY`. Export uses the XOR of canonical

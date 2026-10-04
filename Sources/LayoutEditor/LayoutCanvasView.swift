@@ -704,21 +704,11 @@ public struct LayoutCanvasView: View {
             let pattern = patternForLayer(batch.layer)
 
             // Combine full-tier geometry and box-tier rects into a single
-            // fill path so overlapping shapes on the same layer fill once,
-            // producing uniform color. Path geometries are converted to
-            // filled outlines via strokedPath().
+            // fill path so overlapping shapes on the same layer fill once.
+            // Flat path outlines come from the canonical geometry owner.
             var combinedFillPath = Path()
             for shape in batch.fullShapes {
-                if case .path = shape.geometry {
-                    let centerline = pathForShape(shape)
-                    let width = pathLineWidth(for: shape)
-                    let outline = centerline.strokedPath(StrokeStyle(
-                        lineWidth: width, lineCap: .butt, lineJoin: .miter
-                    ))
-                    combinedFillPath.addPath(outline)
-                } else {
-                    combinedFillPath.addPath(pathForShape(shape))
-                }
+                combinedFillPath.addPath(pathForShape(shape))
             }
             var boxPath = Path()
             for rect in batch.boxRects {
@@ -744,18 +734,7 @@ public struct LayoutCanvasView: View {
             // few pixels at most, so one combined stroke keeps them as
             // visible as individually stroked shapes used to be.
             for shape in batch.fullShapes {
-                switch shape.geometry {
-                case .path:
-                    let centerline = pathForShape(shape)
-                    let width = pathLineWidth(for: shape)
-                    let outline = centerline.strokedPath(StrokeStyle(
-                        lineWidth: width, lineCap: .butt, lineJoin: .miter
-                    ))
-                    context.stroke(outline, with: .color(color), lineWidth: strokeWidth)
-                default:
-                    let path = pathForShape(shape)
-                    context.stroke(path, with: .color(color), lineWidth: strokeWidth)
-                }
+                context.stroke(pathForShape(shape), with: .color(color), lineWidth: strokeWidth)
             }
             if !boxPath.isEmpty {
                 context.stroke(boxPath, with: .color(color), lineWidth: strokeWidth)
@@ -1531,21 +1510,31 @@ public struct LayoutCanvasView: View {
             path.closeSubpath()
             return path
         case .path(let layoutPath):
-            var path = Path()
-            guard let first = layoutPath.points.first else { return path }
-            path.move(to: CGPoint(x: first.x, y: first.y))
-            for point in layoutPath.points.dropFirst() {
-                path.addLine(to: CGPoint(x: point.x, y: point.y))
+            if layoutPath.endCap == .round {
+                var centerline = Path()
+                guard let first = layoutPath.points.first else { return centerline }
+                centerline.move(to: CGPoint(x: first.x, y: first.y))
+                for point in layoutPath.points.dropFirst() {
+                    centerline.addLine(to: CGPoint(x: point.x, y: point.y))
+                }
+                return centerline.strokedPath(StrokeStyle(lineWidth: layoutPath.width, lineCap: .round, lineJoin: .miter))
             }
-            return path
+            do {
+                let polygon = try layoutPath.flatOutline()
+                return pathForShape(.init(layer: shape.layer, geometry: .polygon(polygon)))
+            } catch {
+                // Invalid source paths remain visible as a crossed warning at the source endpoint.
+                var warning = Path()
+                if let first = layoutPath.points.first {
+                    let span = 4 / viewModel.zoom
+                    warning.move(to: CGPoint(x: first.x - span, y: first.y - span))
+                    warning.addLine(to: CGPoint(x: first.x + span, y: first.y + span))
+                    warning.move(to: CGPoint(x: first.x - span, y: first.y + span))
+                    warning.addLine(to: CGPoint(x: first.x + span, y: first.y - span))
+                }
+                return warning
+            }
         }
-    }
-
-    private func pathLineWidth(for shape: LayoutShape) -> CGFloat {
-        if case .path(let layoutPath) = shape.geometry {
-            return CGFloat(layoutPath.width)
-        }
-        return 1 / viewModel.zoom
     }
 
     private func colorForLayer(_ layer: LayoutLayerID) -> Color {

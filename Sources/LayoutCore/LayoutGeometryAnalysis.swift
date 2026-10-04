@@ -33,6 +33,13 @@ public enum LayoutGeometryAnalysis {
     }
 
     public static func boundingBox(for path: LayoutPath) -> LayoutRect {
+        if path.endCap != .round {
+            do {
+                if let rectangle = try path.flatRectangleIfAxisAligned() { return rectangle }
+                return boundingBox(for: try path.flatOutline())
+            }
+            catch { return .init(origin: .init(x: .nan, y: .nan), size: .init(width: .nan, height: .nan)) }
+        }
         guard let first = path.points.first else { return .zero }
         var minX = first.x
         var minY = first.y
@@ -97,8 +104,13 @@ public enum LayoutGeometryAnalysis {
     }
 
     public static func minimumDistance(between a: LayoutGeometry, and b: LayoutGeometry) -> Double {
-        let segmentsA = segments(for: a)
-        let segmentsB = segments(for: b)
+        guard let first = physicalGeometry(a), let second = physicalGeometry(b) else { return .nan }
+        if case .rect(let a) = first, case .rect(let b) = second {
+            return hypot(max(0, a.minX - b.maxX, b.minX - a.maxX),
+                         max(0, a.minY - b.maxY, b.minY - a.maxY))
+        }
+        let segmentsA = segments(for: first)
+        let segmentsB = segments(for: second)
         guard !segmentsA.isEmpty, !segmentsB.isEmpty else { return .infinity }
 
         var minDistance = Double.greatestFiniteMagnitude
@@ -109,8 +121,8 @@ public enum LayoutGeometryAnalysis {
             }
         }
 
-        let inflateA = pathInflation(for: a)
-        let inflateB = pathInflation(for: b)
+        let inflateA = pathInflation(for: first)
+        let inflateB = pathInflation(for: second)
         let adjusted = minDistance - inflateA - inflateB
         return max(0, adjusted)
     }
@@ -157,7 +169,12 @@ public enum LayoutGeometryAnalysis {
         case .polygon(let polygon):
             return contains(point, in: polygon)
         case .path(let path):
-            return distance(from: point, to: path) <= path.width / 2
+            if path.endCap == .round { return distance(from: point, to: path) <= path.width / 2 }
+            do {
+                if let rectangle = try path.flatRectangleIfAxisAligned() { return rectangle.contains(point) }
+                return contains(point, in: try path.flatOutline())
+            }
+            catch { return false }
         }
     }
 
@@ -168,7 +185,12 @@ public enum LayoutGeometryAnalysis {
         case .polygon(let polygon):
             return area(of: polygon)
         case .path(let path):
-            return length(of: path) * path.width
+            if path.endCap == .round { return length(of: path) * path.width }
+            do {
+                if let rectangle = try path.flatRectangleIfAxisAligned() { return area(of: .rect(rectangle)) }
+                return area(of: try path.flatOutline())
+            }
+            catch { return .nan }
         }
     }
 
@@ -315,6 +337,17 @@ public enum LayoutGeometryAnalysis {
 
     private static func isParallel(_ a: LayoutPoint, _ b: LayoutPoint) -> Bool {
         abs(a.x * b.y - a.y * b.x) < 1e-9
+    }
+
+    private static func physicalGeometry(_ geometry: LayoutGeometry) -> LayoutGeometry? {
+        if case .path(let path) = geometry, path.endCap != .round {
+            do {
+                if let rectangle = try path.flatRectangleIfAxisAligned() { return .rect(rectangle) }
+                return .polygon(try path.flatOutline())
+            }
+            catch { return nil }
+        }
+        return geometry
     }
 
     private static func pathInflation(for geometry: LayoutGeometry) -> Double {

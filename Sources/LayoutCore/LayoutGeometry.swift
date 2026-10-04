@@ -66,7 +66,7 @@ public extension LayoutGeometry {
             return .polygon(LayoutPolygon(points: points))
         case .path(let path):
             let points = path.points.map { transform.apply(to: $0) }
-            return .path(LayoutPath(points: points, width: path.width * abs(transform.magnification), endCap: path.endCap))
+            return .path(LayoutPath(points: points, width: path.width * abs(transform.magnification), endCap: path.endCap.scaled(by: abs(transform.magnification))))
         }
     }
 

@@ -144,6 +144,15 @@ public struct IRLayoutConverter: Sendable {
                     guard path.points.count >= 2, path.width > 0 else {
                         throw LayoutIOError.conversionFailed("Path in cell '\(cell.name)' has invalid geometry")
                     }
+                    if path.pathType == .customExtension {
+                        guard let begin = path.beginExtension, let end = path.endExtension,
+                              (Double(begin) / library.databaseUnitScale.databaseUnitsPerMicrometer).isFinite,
+                              (Double(end) / library.databaseUnitScale.databaseUnitsPerMicrometer).isFinite else {
+                            throw LayoutIOError.conversionFailed("Custom path requires both endpoint extensions")
+                        }
+                    } else if path.beginExtension != nil || path.endExtension != nil {
+                        throw LayoutIOError.conversionFailed("Non-custom path carries ignored endpoint extensions")
+                    }
                     try validateRouteViaReferences(
                         path,
                         layerMap: layerMap,
@@ -391,7 +400,10 @@ public struct IRLayoutConverter: Sendable {
         switch p.pathType {
         case .flush: endCap = .truncate
         case .round: endCap = .round
-        case .halfWidthExtend, .customExtension: endCap = .extend
+        case .halfWidthExtend: endCap = .extend
+        case .customExtension:
+            guard let begin = p.beginExtension, let end = p.endExtension else { return nil }
+            endCap = .custom(begin: Double(begin) / dbu, end: Double(end) / dbu)
         }
         return LayoutShape(
             id: id,
@@ -635,11 +647,17 @@ public struct IRLayoutConverter: Sendable {
                     properties: irProperties(from: shapeProperties)
                 )))
             case .path(let path):
+                guard path.isValid else { throw LayoutIOError.conversionFailed("Invalid canonical path") }
                 let irPathType: IRPathType
+                var beginExtension: Int32?, endExtension: Int32?
                 switch path.endCap {
                 case .truncate: irPathType = .flush
                 case .round: irPathType = .round
                 case .extend: irPathType = .halfWidthExtend
+                case .custom(let begin, let end):
+                    irPathType = .customExtension
+                    beginExtension = try checkedPathExtension(begin, dbu: dbu)
+                    endExtension = try checkedPathExtension(end, dbu: dbu)
                 }
                 elements.append(.path(IRPath(
                     layer: layer, datatype: datatype,
@@ -656,7 +674,8 @@ public struct IRLayoutConverter: Sendable {
                             context: "path shape '\(shape.id)' in cell '\(cell.name)'"
                         )
                     },
-                    properties: irProperties(from: shapeProperties)
+                    properties: irProperties(from: shapeProperties),
+                    beginExtension: beginExtension, endExtension: endExtension
                 )))
             }
         }
@@ -1094,6 +1113,15 @@ public struct IRLayoutConverter: Sendable {
             throw LayoutIOError.conversionFailed("Non-finite \(axis) coordinate for \(context)")
         }
         return try checkedDBUValue(value * dbu, context: "\(context) \(axis) coordinate")
+    }
+
+    private func checkedPathExtension(_ value: Double, dbu: Double) throws -> Int32 {
+        let raw = value * dbu
+        let rounded = raw.rounded()
+        guard raw.isFinite, abs(raw - rounded) <= 4 * raw.ulp else {
+            throw LayoutIOError.conversionFailed("Path extension is not on the output database grid")
+        }
+        return try checkedDBUValue(raw, context: "path endpoint extension")
     }
 
     private func checkedDBUValue(_ rawValue: Double, context: String) throws -> Int32 {
