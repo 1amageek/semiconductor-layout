@@ -4,6 +4,7 @@ import CircuiteFoundation
 import LayoutCore
 import LayoutTech
 import LayoutIR
+import DEF
 
 /// Converts between IRLibrary (GDSII/OASIS intermediate representation)
 /// and LayoutDocument (editor-native model).
@@ -203,7 +204,9 @@ public struct IRLayoutConverter: Sendable {
               via.transform.magnification == 1 else {
             throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) requires a finite orthogonal unit transform")
         }
-        for key in [Self.defRouteNetNamePropertyName, Self.defRouteLayerNamePropertyName] {
+        for key in [Self.defRouteNetNamePropertyName, Self.defRouteLayerNamePropertyName,
+                    Self.defRouteKindPropertyName, Self.defRouteStatusPropertyName,
+                    Self.defRouteWidthPropertyName, "def.route.shape"] {
             guard via.properties.filter({ propertyValue($0.value, for: key) != nil }).count <= 1 else {
                 throw LayoutIOError.conversionFailed("Named via '\(via.viaName)' for \(context) has ambiguous route property '\(key)'")
             }
@@ -357,7 +360,8 @@ public struct IRLayoutConverter: Sendable {
                     viaDefinitionID: via.viaName,
                     position: dbuToMicron(via.origin, dbu: dbu),
                     netID: routeNetID(from: properties, netIDByName: netIDByName),
-                    geometryTransforms: via.transform == .identity ? [] : [transform]
+                    geometryTransforms: via.transform == .identity ? [] : [transform],
+                    properties: properties
                 ))
             case .text(let t):
                 if let label = convertText(
@@ -736,6 +740,11 @@ public struct IRLayoutConverter: Sendable {
         }
 
         for via in cell.vias {
+            if includeDEFRouteMetadata {
+                elements.append(.via(try exportedDEFVia(via, cell: cell, dbu: dbu,
+                    reverseLayerMap: reverseLayerMap, netNameByID: netNameByID)))
+                continue
+            }
             // FIXME(INCOMPLETE_IMPLEMENTATION): Standard via interchange does not preserve local poses.
             // Production GDS/OASIS export must reject transformed vias until every layer footprint
             // and the complete local transform round-trip through the standard via bridge.
@@ -987,6 +996,89 @@ public struct IRLayoutConverter: Sendable {
             return layerID
         }
         return resolveLayer(gdsLayer: gdsLayer, gdsDatatype: gdsDatatype, layerMap: layerMap.ids)
+    }
+
+    private func exportedDEFVia(_ via: LayoutVia, cell: LayoutCell, dbu: Double,
+                                reverseLayerMap: ReverseLayerMap,
+                                netNameByID: [UUID: String]) throws -> IRVia {
+        let context = "via '\(via.id)' in cell '\(cell.name)'"
+        let tech = reverseLayerMap.tech
+        let masterCount = tech.vias.filter { $0.id == via.viaDefinitionID }.count
+            + tech.contacts.filter { $0.id == via.viaDefinitionID }.count
+        guard masterCount == 1, let definition = tech.viaDefinition(for: via.viaDefinitionID),
+              let netID = via.netID, let netName = netNameByID[netID],
+              !netName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LayoutIOError.conversionFailed("DEF \(context) requires a unique explicit master and declared net")
+        }
+        var properties = via.properties
+        let sourceIntent = properties.keys.contains { $0.hasPrefix("def.route.") }
+        let layerID: LayoutLayerID
+        if sourceIntent {
+            guard let kind = properties[Self.defRouteKindPropertyName],
+                  kind == "net" || kind == "specialNet",
+                  let status = properties[Self.defRouteStatusPropertyName], !status.isEmpty,
+                  properties[Self.defRouteNetNamePropertyName] == netName,
+                  let layerName = properties[Self.defRouteLayerNamePropertyName] else {
+                throw LayoutIOError.conversionFailed("DEF \(context) has incomplete or conflicting source route intent")
+            }
+            if kind == "net" {
+                guard DEFRouteWire.RouteStatus(rawValue: status) != nil else {
+                    throw LayoutIOError.conversionFailed("DEF \(context) has invalid normal route status")
+                }
+            } else {
+                guard DEFRouteSegment.RouteStatus(rawValue: status) != nil,
+                      let rawWidth = properties[Self.defRouteWidthPropertyName],
+                      let width = Int32(rawWidth), width > 0, width % 2 == 0 else {
+                    throw LayoutIOError.conversionFailed("DEF \(context) has invalid special route status or width")
+                }
+                if let shape = properties["def.route.shape"], DEFRouteSegment.RouteShape(rawValue: shape) == nil {
+                    throw LayoutIOError.conversionFailed("DEF \(context) has invalid special route shape")
+                }
+            }
+            let layers = tech.layers.filter {
+                ($0.id == definition.bottomLayer || $0.id == definition.topLayer)
+                    && ($0.id.name.caseInsensitiveCompare(layerName) == .orderedSame
+                        || $0.displayName.caseInsensitiveCompare(layerName) == .orderedSame)
+            }
+            guard layers.count == 1 else {
+                throw LayoutIOError.conversionFailed("DEF \(context) has an unresolved or ambiguous source route layer")
+            }
+            layerID = layers[0].id
+        } else {
+            // Native serialization policy uses declared canonical facts, not recovered source intent.
+            layerID = definition.bottomLayer
+            properties[Self.defRouteKindPropertyName] = "net"
+            properties[Self.defRouteStatusPropertyName] = "ROUTED"
+            properties[Self.defRouteNetNamePropertyName] = netName
+            properties[Self.defRouteLayerNamePropertyName] = defLayerName(for: layerID, reverseLayerMap: reverseLayerMap)
+        }
+        let (layer, _) = try exportedLayerPair(layerID, reverseLayerMap: reverseLayerMap, context: context)
+        guard layer > 0 else {
+            throw LayoutIOError.conversionFailed("DEF \(context) requires a positive declared routing layer")
+        }
+        var x = LayoutPoint(x: 1, y: 0), y = LayoutPoint(x: 0, y: 1)
+        for transform in via.geometryTransforms.reversed() {
+            guard transform.rotationDegrees.isFinite,
+                  transform.rotationDegrees.truncatingRemainder(dividingBy: 90) == 0,
+                  transform.magnification == 1, transform.translation == .zero else {
+                throw LayoutIOError.conversionFailed("DEF \(context) requires orthogonal unit local transforms without offsets")
+            }
+            x = transform.apply(to: x); y = transform.apply(to: y)
+        }
+        let angle: Double
+        switch (x.x, x.y) {
+        case (1, 0): angle = 0
+        case (0, 1): angle = 90
+        case (-1, 0): angle = 180
+        case (0, -1): angle = 270
+        default: throw LayoutIOError.conversionFailed("DEF \(context) has an unrepresentable local orientation")
+        }
+        let placement = IRVia(viaName: via.viaDefinitionID,
+            origin: try micronToDBU(via.position, dbu: dbu, context: context),
+            transform: IRTransform(mirrorX: x.x * y.y - x.y * y.x < 0, angle: angle),
+            routeLayer: layer, properties: irProperties(from: properties))
+        try validateTypedVia(placement, tech: tech, context: context)
+        return placement
     }
 
     private func routedShapeProperties(

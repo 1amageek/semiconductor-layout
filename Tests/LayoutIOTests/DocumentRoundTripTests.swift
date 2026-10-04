@@ -3,6 +3,8 @@ import Testing
 import LayoutCore
 import LayoutIO
 import LayoutTech
+import LayoutVerify
+import DEF
 
 /// Whole-document round-trip contracts, in one place:
 ///
@@ -168,7 +170,20 @@ struct DocumentRoundTripTests {
         #expect(output.contains("( 900 200 ) VIA1"))
         #expect(output.contains("SPECIALNETS 1"))
         #expect(output.contains("- VDD ( * VDD ) + USE POWER + ROUTED metal2 300 + SHAPE STRIPE"))
-        #expect(output.contains("( 1000 * ) VIA1"))
+        #expect(output.contains("( 1000 1000 ) VIA1"))
+        let parsed = try DEFLibraryReader.read(Data(output.utf8))
+        let special = try #require(parsed.specialNets.first { $0.name == "VDD" })
+        let placement = try #require(special.routing.first { $0.points.last?.viaName == "VIA1" })
+        #expect(placement.points.first?.x == 1000 && placement.points.first?.y == 1000)
+        #expect(placement.layerName == "metal2" && placement.width == 300 && placement.shape == .stripe)
+        let restored = try converter.importDocument(from: outputURL, format: .def)
+        #expect(restored.cells.first?.vias.count == importedTop.vias.count)
+        let before = try LayoutConnectivityExtractor().captureConductors(document: imported,
+            tech: tech, conductiveLayers: [Self.m1, Self.m2])
+        let after = try LayoutConnectivityExtractor().captureConductors(document: restored,
+            tech: tech, conductiveLayers: [Self.m1, Self.m2])
+        #expect(after.footprints.map(\.band) == before.footprints.map(\.band))
+        #expect(after.contacts == before.contacts)
     }
 
     @Test func defUnknownRouteViaFailsImport() throws {

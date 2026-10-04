@@ -5,6 +5,7 @@ public struct LayoutVia: Identifiable, Hashable, Sendable, Codable {
     public var viaDefinitionID: String
     public var position: LayoutPoint
     public var netID: UUID?
+    public var properties: [String: String]
     /// Outermost-first transforms of definition-local geometry, before placement translation.
     public let geometryTransforms: [LayoutTransform]
 
@@ -13,13 +14,15 @@ public struct LayoutVia: Identifiable, Hashable, Sendable, Codable {
         viaDefinitionID: String,
         position: LayoutPoint,
         netID: UUID? = nil,
-        geometryTransforms: [LayoutTransform] = []
+        geometryTransforms: [LayoutTransform] = [],
+        properties: [String: String] = [:]
     ) {
         self.id = id
         self.viaDefinitionID = viaDefinitionID
         self.position = position
         self.netID = netID
         self.geometryTransforms = geometryTransforms
+        self.properties = properties
     }
 
     /// Preserves the complete footprint when moving through an instance hierarchy.
@@ -37,7 +40,7 @@ public struct LayoutVia: Identifiable, Hashable, Sendable, Codable {
         }
         return LayoutVia(
             id: id, viaDefinitionID: viaDefinitionID, position: transformedPosition,
-            netID: netID, geometryTransforms: linearTransforms + geometryTransforms
+            netID: netID, geometryTransforms: linearTransforms + geometryTransforms, properties: properties
         )
     }
 

@@ -12,7 +12,7 @@ struct TypedViaPlacementIntegrationTests {
     private let top = LayoutLayerID(name: "metV", purpose: "drawing")
     private let cut = LayoutLayerID(name: "cutHV", purpose: "cut")
 
-    private func technology() -> LayoutTechDatabase {
+    func technology() -> LayoutTechDatabase {
         let layers = [bottom, top, cut].enumerated().map { index, id in
             LayoutLayerDefinition(id: id, displayName: id.name, gdsLayer: index + 1,
                 gdsDatatype: 0, color: .init(red: 0.3, green: 0.5, blue: 0.7))
@@ -31,7 +31,7 @@ struct TypedViaPlacementIntegrationTests {
         ], layerRules: [])
     }
 
-    private func source(routes: String, dbu: Int = 1000, special: Bool = false) -> Data {
+    func source(routes: String, dbu: Int = 1000, special: Bool = false) -> Data {
         let section = special ? "SPECIALNETS" : "NETS"
         return Data("""
         VERSION 5.8 ;

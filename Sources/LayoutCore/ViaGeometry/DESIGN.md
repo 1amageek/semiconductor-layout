@@ -6,7 +6,7 @@ Children: none.
 
 ## Responsibilities and Boundaries
 Preserve the definition ID, center, ordered local geometry transforms and net
-annotation as a `Sendable` value. Process definitions and connectivity policy
+annotation and generic source properties as a `Sendable` value. Process definitions and connectivity policy
 are owned by LayoutTech and LayoutVerify.
 
 ## Related Designs
@@ -29,7 +29,10 @@ flowchart LR
 - Hierarchy translations affect the center; hierarchy linear transforms affect
   the local geometry, including any existing local affine offsets.
 - Identity parent linear transforms are omitted; pure translations change only the center.
-- Definition and source IDs are preserved across occurrences.
+- Definition and source IDs and all generic properties are preserved across occurrences.
+- Properties are value-owned semantic annotations, as on LayoutShape; adapters own
+  source-format validation and serialization policy, not geometry consumers.
+- JSON requires the properties field; missing canonical state is a decoding failure.
 - Encoded via values retain the complete transform array; missing schema fields
   are not silently replaced during decoding.
 
