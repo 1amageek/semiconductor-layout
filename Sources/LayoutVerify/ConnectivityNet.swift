@@ -6,7 +6,7 @@ import LayoutCore
 /// touching shapes on their top/bottom layers, with no reliance on
 /// declared net labels.
 ///
-/// `declaredNetIDs` lists which document nets claim geometry inside this
+/// `declaredNets` lists which document nets claim geometry inside this
 /// piece — two or more means the piece physically shorts those nets, zero
 /// means floating metal.
 public struct ConnectivityNet: Equatable, Sendable {
@@ -18,10 +18,10 @@ public struct ConnectivityNet: Equatable, Sendable {
     public var viaIDs: [UUID]
     /// Document nets with at least one declared element inside this
     /// piece, sorted for deterministic comparison.
-    public var declaredNetIDs: [UUID]
+    public var declaredNets: [LayoutConductorSnapshot.NetReference]
     /// Union of the member bounding boxes.
     public var boundingBox: LayoutRect
-    /// Occurrence-exact member geometry (layer + box, vias excluded), in
+    /// Occurrence-exact metal/cut band geometry (layer + box), in
     /// canonical member order. Unlike `shapeIDs`, instance reuse does
     /// not alias: a child shape placed twice contributes two footprints.
     public var memberFootprints: [ConnectivityIslandFootprint]

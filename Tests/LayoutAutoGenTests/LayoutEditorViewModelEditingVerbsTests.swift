@@ -124,7 +124,8 @@ struct LayoutEditorViewModelEditingVerbsTests {
     }
 
     private func opens(_ viewModel: LayoutEditorViewModel, net: UUID) -> Bool {
-        viewModel.connectivityAnalysis?.opens.contains { $0.netID == net } ?? false
+        guard let analysis = viewModel.connectivityAnalysis else { return false }
+        return analysis.opens.contains { $0.netID == analysis.rootNetReference(for: net) }
     }
 
     private func geometry(

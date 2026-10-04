@@ -17,6 +17,18 @@ public struct ConnectivityAnalysis: Equatable, Sendable {
     /// Declared nets split across disconnected conductor pieces, ordered
     /// by net ID.
     public var opens: [ConnectivityOpen]
+    /// Owns the source-index and occurrence lifetime of this generation.
+    /// Nil is reserved for the empty presentation value and unmigrated internal
+    /// assembly paths, which must not publish production electrical results.
+    public var sourceSnapshot: LayoutConductorSnapshot? = nil
+
+    public func rootNetReference(for netID: UUID) -> LayoutConductorSnapshot.NetReference? {
+        guard let snapshot = sourceSnapshot,
+              let root = snapshot.hierarchy.occurrences.firstIndex(where: {
+                  $0.parentIndex == nil && $0.sourceCellID == snapshot.hierarchy.rootCellID
+              }) else { return nil }
+        return .init(occurrenceIndex: root, netID: netID)
+    }
 
     /// All suggested connections across every open net, for canvas
     /// rendering.

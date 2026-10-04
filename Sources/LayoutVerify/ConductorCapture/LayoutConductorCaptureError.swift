@@ -18,6 +18,9 @@ public enum LayoutConductorCaptureError: Error, Equatable, Sendable {
     case unsupportedGeometry(UUID)
     case invalidGridGeometry(UUID)
     case conflictingTerminalBinding(occurrenceIndex: Int, netID: UUID)
+    case invalidFootprintIndex(Int)
+    case incompatibleContactTopology
+    case incompatibleContactUnits
     case decompositionFailed(RectilinearDecompositionError)
     case cancelled
 }

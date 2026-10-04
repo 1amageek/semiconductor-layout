@@ -79,6 +79,15 @@ can connect through their actual shared metal. No contact is invented from a
 via's union bounding box. Overlapping bands remain separate source facts;
 RC consumers own union coverage to avoid double-counting.
 
+The public snapshot contact query uses this same integer predicate. It accepts
+two valid footprint indices only when captures retain equal technology values, identical cut adjacency
+and conductive-layer roles. Equal or integral-related coordinate scales are
+normalized with checked integer multiplication; other scales or overflow fail
+explicitly. Definition names and source UUIDs never establish contact. This
+query permits local consumer graph updates without recapturing unaffected
+geometry or duplicating the exact geometry algorithm. Its caller owns candidate
+probe admission; native full capture continues to charge its existing budget.
+
 A net reference is source UUID plus occurrence index. Repeated local nets remain
 independent unless a terminal binding explicitly maps them to a parent net.
 Bindings resolve parent-first; conflicting parent assignments to one local net

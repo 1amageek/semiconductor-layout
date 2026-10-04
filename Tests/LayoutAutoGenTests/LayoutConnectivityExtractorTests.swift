@@ -64,6 +64,11 @@ struct LayoutConnectivityExtractorTests {
                 )
             ]))
         }
+        let cuts = geometries[0].rects
+        geometries.append(LayoutViaLayerGeometry(layer: m1, rects: cuts))
+        if !includeTopConductor {
+            geometries.append(LayoutViaLayerGeometry(layer: m2, rects: cuts))
+        }
         tech.vias[0].layerGeometries = geometries
         return tech
     }
@@ -102,7 +107,7 @@ struct LayoutConnectivityExtractorTests {
         #expect(analysis.nets.count == 1)
         #expect(analysis.nets.first?.shapeIDs.count == 2)
         #expect(analysis.nets.first?.viaIDs == [via.id])
-        #expect(analysis.nets.first?.declaredNetIDs == [netA])
+        #expect(analysis.nets.first?.declaredNets == [analysis.rootNetReference(for: netA)!])
         #expect(analysis.shorts.isEmpty)
         #expect(analysis.opens.isEmpty)
     }
@@ -120,8 +125,8 @@ struct LayoutConnectivityExtractorTests {
 
         let open = try #require(analysis.opens.first)
         #expect(analysis.opens.count == 1)
-        #expect(open.netID == netA)
-        #expect(open.islands.count == 2)
+        #expect(open.netID == analysis.rootNetReference(for: netA))
+        #expect(open.islands.count == 3, "The separate second cut remains a third labeled island")
     }
 
     @Test func explicitViaTopConductorConnectsBeyondCutRects() throws {
@@ -152,7 +157,7 @@ struct LayoutConnectivityExtractorTests {
         #expect(analysis.nets.count == 2, "plan-view overlap without a via must not conduct")
         let open = try #require(analysis.opens.first)
         #expect(analysis.opens.count == 1)
-        #expect(open.netID == netA)
+        #expect(open.netID == analysis.rootNetReference(for: netA))
         #expect(open.islands.count == 2)
         let flyline = try #require(open.flylines.first)
         #expect(open.flylines.count == 1)
@@ -207,7 +212,7 @@ struct LayoutConnectivityExtractorTests {
         #expect(analysis.nets.count == 1)
         let short = try #require(analysis.shorts.first)
         #expect(analysis.shorts.count == 1)
-        #expect(Set(short.netIDs) == [netA, netB])
+        #expect(Set(short.netIDs.map(\.netID)) == [netA, netB])
         #expect(short.shapeIDs.count == 3, "the unlabeled bridge is part of the shorting conductor")
         #expect(analysis.opens.isEmpty)
     }
@@ -225,7 +230,7 @@ struct LayoutConnectivityExtractorTests {
         )
 
         let short = try #require(analysis.shorts.first)
-        #expect(Set(short.netIDs) == [netA, netB])
+        #expect(Set(short.netIDs.map(\.netID)) == [netA, netB])
         #expect(short.viaIDs == [via.id])
     }
 
@@ -238,7 +243,7 @@ struct LayoutConnectivityExtractorTests {
         )
 
         #expect(analysis.nets.count == 1)
-        #expect(analysis.nets.first?.declaredNetIDs.isEmpty == true)
+        #expect(analysis.nets.first?.declaredNets.isEmpty == true)
         #expect(analysis.shorts.isEmpty)
         #expect(analysis.opens.isEmpty)
     }
@@ -248,7 +253,8 @@ struct LayoutConnectivityExtractorTests {
             document: document(shapes: []),
             tech: makeTech()
         )
-        #expect(analysis == .empty)
+        #expect(analysis.nets.isEmpty && analysis.shorts.isEmpty && analysis.opens.isEmpty)
+        #expect(analysis.sourceSnapshot != nil)
     }
 
     @Test func missingTargetCellThrows() {

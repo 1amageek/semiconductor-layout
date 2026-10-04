@@ -10,7 +10,7 @@ import LayoutCore
 /// redundant edges.
 public struct Flyline: Equatable, Sendable {
     /// The open document net this flyline belongs to.
-    public var netID: UUID
+    public var netID: LayoutConductorSnapshot.NetReference
     /// Index into the open's `islands` of the piece the segment starts on.
     public var fromIslandIndex: Int
     /// Index into the open's `islands` of the piece the segment ends on.

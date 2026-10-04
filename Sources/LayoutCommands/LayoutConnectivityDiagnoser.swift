@@ -21,11 +21,16 @@ public struct LayoutConnectivityDiagnoser: Sendable {
         }
         let extractor = LayoutConnectivityExtractor()
         let analysis = try extractor.extract(document: document, tech: tech, cellID: topCellID)
-        let conductors = try extractor.flattenedConductors(document: document, tech: tech, cellID: topCellID)
-        let nameByNetID = Self.netNames(document: document)
+        guard let snapshot = analysis.sourceSnapshot else {
+            throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
+        }
+        let nameByNetID = Self.netNames(document: document, snapshot: snapshot)
 
         return LayoutConnectivityDiagnosisReport(
             topCellID: topCellID,
+            sourceDocumentID: snapshot.hierarchy.documentID,
+            occurrences: snapshot.hierarchy.occurrences,
+            pins: snapshot.hierarchy.pins,
             totals: LayoutConnectivityDiagnosisTotals(
                 netCount: Self.observedNetIDs(document: document, topCellID: topCellID, analysis: analysis).count,
                 extractedNetCount: analysis.nets.count,
@@ -36,11 +41,11 @@ public struct LayoutConnectivityDiagnoser: Sendable {
                 document: document,
                 topCellID: topCellID,
                 analysis: analysis,
-                pins: conductors.pins,
+                pins: snapshot.pins,
                 nameByNetID: nameByNetID
             ),
             opens: analysis.opens.map { open in
-                Self.openDiagnosis(open, nameByNetID: nameByNetID)
+                Self.openDiagnosis(open, snapshot: snapshot, nameByNetID: nameByNetID)
             },
             shorts: analysis.shorts.map { short in
                 LayoutConnectivityShortDiagnosis(
@@ -64,10 +69,15 @@ public struct LayoutConnectivityDiagnoser: Sendable {
         document: LayoutDocument,
         topCellID: UUID,
         analysis: ConnectivityAnalysis
-    ) -> Set<UUID> {
-        var netIDs = Set((document.cell(withID: topCellID)?.nets ?? []).map(\.id))
+    ) -> Set<LayoutConductorSnapshot.NetReference> {
+        var netIDs = Set((document.cell(withID: topCellID)?.nets ?? []).compactMap {
+            analysis.rootNetReference(for: $0.id)
+        })
         for net in analysis.nets {
-            netIDs.formUnion(net.declaredNetIDs)
+            netIDs.formUnion(net.declaredNets)
+        }
+        for pin in analysis.sourceSnapshot?.pins ?? [] {
+            if let net = pin.declaredNet { netIDs.insert(net) }
         }
         return netIDs
     }
@@ -76,18 +86,18 @@ public struct LayoutConnectivityDiagnoser: Sendable {
         document: LayoutDocument,
         topCellID: UUID,
         analysis: ConnectivityAnalysis,
-        pins: [LayoutPin],
-        nameByNetID: [UUID: String]
+        pins: [LayoutConductorSnapshot.Pin],
+        nameByNetID: [LayoutConductorSnapshot.NetReference: String]
     ) -> [LayoutConnectivityNetDiagnosis] {
-        var pinCounts: [UUID: Int] = [:]
+        var pinCounts: [LayoutConductorSnapshot.NetReference: Int] = [:]
         for pin in pins {
-            guard let netID = pin.netID else { continue }
+            guard let netID = pin.declaredNet else { continue }
             pinCounts[netID, default: 0] += 1
         }
-        var islandCounts: [UUID: Int] = [:]
-        var footprintCounts: [UUID: Int] = [:]
+        var islandCounts: [LayoutConductorSnapshot.NetReference: Int] = [:]
+        var footprintCounts: [LayoutConductorSnapshot.NetReference: Int] = [:]
         for net in analysis.nets {
-            for netID in net.declaredNetIDs {
+            for netID in net.declaredNets {
                 islandCounts[netID, default: 0] += 1
                 footprintCounts[netID, default: 0] += net.memberFootprints.count
             }
@@ -99,7 +109,7 @@ public struct LayoutConnectivityDiagnoser: Sendable {
                     netID: netID,
                     name: nameByNetID[netID],
                     islandCount: islandCount,
-                    isOpen: islandCount >= 2,
+                    isOpen: analysis.opens.contains { $0.netID == netID },
                     pinCount: pinCounts[netID] ?? 0,
                     footprintCount: footprintCounts[netID] ?? 0
                 )
@@ -108,7 +118,7 @@ public struct LayoutConnectivityDiagnoser: Sendable {
                 if lhs.name != rhs.name {
                     return (lhs.name ?? "") < (rhs.name ?? "")
                 }
-                return lhs.netID.uuidString < rhs.netID.uuidString
+                return lhs.netID < rhs.netID
             }
     }
 
@@ -116,11 +126,13 @@ public struct LayoutConnectivityDiagnoser: Sendable {
 
     private static func openDiagnosis(
         _ open: ConnectivityOpen,
-        nameByNetID: [UUID: String]
+        snapshot: LayoutConductorSnapshot,
+        nameByNetID: [LayoutConductorSnapshot.NetReference: String]
     ) -> LayoutConnectivityOpenDiagnosis {
         LayoutConnectivityOpenDiagnosis(
             netID: open.netID,
             name: nameByNetID[open.netID],
+            unconnectedPinIndices: open.unconnectedPinIndices.map { snapshot.pins[$0].sourcePinIndex },
             islands: open.islands.enumerated().map { index, island in
                 LayoutConnectivityIslandDiagnosis(
                     islandIndex: index,
@@ -168,14 +180,15 @@ public struct LayoutConnectivityDiagnoser: Sendable {
 
     // MARK: - Names
 
-    /// Net names across the whole document: flattened child geometry keeps
-    /// child-declared net IDs, so their names resolve too. Duplicate IDs keep
-    /// the first declaration in document order.
-    private static func netNames(document: LayoutDocument) -> [UUID: String] {
-        var names: [UUID: String] = [:]
-        for cell in document.cells {
-            for net in cell.nets where names[net.id] == nil {
-                names[net.id] = net.name
+    /// Names belong to resolved owning occurrences, including parent-bound nets.
+    private static func netNames(
+        document: LayoutDocument, snapshot: LayoutConductorSnapshot
+    ) -> [LayoutConductorSnapshot.NetReference: String] {
+        var names: [LayoutConductorSnapshot.NetReference: String] = [:]
+        for (index, occurrence) in snapshot.hierarchy.occurrences.enumerated() {
+            guard let cell = document.cell(withID: occurrence.sourceCellID) else { continue }
+            for net in cell.nets {
+                names[.init(occurrenceIndex: index, netID: net.id)] = net.name
             }
         }
         return names

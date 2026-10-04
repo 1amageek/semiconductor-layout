@@ -122,7 +122,7 @@ final class LiveConnectivityEquivalenceHarness {
             lines.append("open count: live=\(live.opens.count) batch=\(batch.opens.count)")
         }
         for (index, pair) in zip(live.nets, batch.nets).enumerated() where pair.0 != pair.1 {
-            lines.append("net[\(index)]: live shapes=\(pair.0.shapeIDs.count) vias=\(pair.0.viaIDs.count) declared=\(pair.0.declaredNetIDs.count); batch shapes=\(pair.1.shapeIDs.count) vias=\(pair.1.viaIDs.count) declared=\(pair.1.declaredNetIDs.count)")
+            lines.append("net[\(index)]: live shapes=\(pair.0.shapeIDs.count) vias=\(pair.0.viaIDs.count) declared=\(pair.0.declaredNets.count); batch shapes=\(pair.1.shapeIDs.count) vias=\(pair.1.viaIDs.count) declared=\(pair.1.declaredNets.count)")
         }
         for (index, pair) in zip(live.opens, batch.opens).enumerated() where pair.0 != pair.1 {
             lines.append("open[\(index)] net \(pair.0.netID): live islands=\(pair.0.islands.count) flylines=\(pair.0.flylines.count); batch islands=\(pair.1.islands.count) flylines=\(pair.1.flylines.count)")

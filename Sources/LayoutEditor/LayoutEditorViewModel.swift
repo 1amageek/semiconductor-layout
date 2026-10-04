@@ -560,7 +560,7 @@ public final class LayoutEditorViewModel {
         let obstacles = (connectivityAnalysis?.nets ?? [])
             .filter { net in
                 guard let netID = anchor.netID else { return true }
-                return !net.declaredNetIDs.contains(netID)
+                return !net.declaredNets.contains { $0 == connectivityAnalysis?.rootNetReference(for: netID) }
             }
             .flatMap(\.memberFootprints)
             .filter { $0.layer == anchor.layer }

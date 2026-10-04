@@ -375,8 +375,8 @@ struct LayoutFinishNetCommandRunnerTests {
         let documentURL = root.appendingPathComponent("artifacts/layout.json")
         let document = try serializer.decodeDocument(Data(contentsOf: documentURL))
         let analysis = try LayoutConnectivityExtractor().extract(document: document, tech: tech, cellID: cellID)
-        #expect(analysis.flylines.filter { $0.netID == netID }.isEmpty)
-        #expect(analysis.opens.filter { $0.netID == netID }.isEmpty)
+        #expect(analysis.flylines.filter { $0.netID == analysis.rootNetReference(for: netID) }.isEmpty)
+        #expect(analysis.opens.filter { $0.netID == analysis.rootNetReference(for: netID) }.isEmpty)
     }
 
     private func expectAutoRouteReport(root: URL) throws -> Data {

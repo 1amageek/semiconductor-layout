@@ -9,6 +9,10 @@ public struct LayoutDRCService {
 
     public init() {}
 
+    private func requireCapturedPieceMigration() throws {
+        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
+    }
+
     public func run(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
@@ -61,6 +65,10 @@ public struct LayoutDRCService {
         } catch let error as LayoutHierarchyCaptureError {
             throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Batch DRC open checks still aggregate
+        // one via into one node. run/runChecked must fail until actual native
+        // band components and scoped pin labels drive electrical violations.
+        try requireCapturedPieceMigration()
         let geometryDiagnostics = LayoutDerivedLayerMaterializer().unsupportedGeometryDiagnostics(
             document: document,
             tech: tech,

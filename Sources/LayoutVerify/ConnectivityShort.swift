@@ -9,7 +9,7 @@ import LayoutCore
 /// through unlabeled geometry and connections mediated by vias.
 public struct ConnectivityShort: Equatable, Sendable {
     /// The shorted document nets, sorted, always at least two.
-    public var netIDs: [UUID]
+    public var netIDs: [LayoutConductorSnapshot.NetReference]
     /// IDs of the shapes forming the shorting conductor piece, unique and
     /// sorted.
     public var shapeIDs: [UUID]

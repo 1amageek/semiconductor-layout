@@ -16,8 +16,16 @@ extension LayoutEditorViewModel {
             return false
         }
         guard let analysis = connectivityAnalysis,
-              let open = analysis.opens.first(where: { $0.netID == netID }),
-              let flyline = open.flylines.first else {
+              let open = analysis.opens.first(where: { $0.netID == analysis.rootNetReference(for: netID) }) else {
+            handleError(LayoutEditorError.netAlreadyConnected(netID))
+            return false
+        }
+        if !open.unconnectedPinIndices.isEmpty, let snapshot = analysis.sourceSnapshot {
+            let ids = open.unconnectedPinIndices.map { snapshot.hierarchy.pins[snapshot.pins[$0].sourcePinIndex].id }
+            handleError(LayoutEditorError.unconnectedPinOpen(netID: netID, pinIDs: ids))
+            return false
+        }
+        guard let flyline = open.flylines.first else {
             handleError(LayoutEditorError.netAlreadyConnected(netID))
             return false
         }
@@ -32,7 +40,7 @@ extension LayoutEditorViewModel {
                 .filter { $0.layer == activeLayer }
                 .map(\.boundingBox)
         }
-        let flylinesBefore = analysis.flylines.count { $0.netID == netID }
+        let flylinesBefore = analysis.flylines.count { $0.netID == analysis.rootNetReference(for: netID) }
         // DRC regression is judged by violation IDENTITY, not count: a
         // route that fixes two opens while creating one short would pass
         // a count check. The net's own residual open is exempt — its
@@ -174,7 +182,7 @@ extension LayoutEditorViewModel {
         }
         commitRoute()
 
-        let flylinesAfter = connectivityAnalysis?.flylines.count { $0.netID == netID } ?? 0
+        let flylinesAfter = connectivityAnalysis?.flylines.count { $0.netID == connectivityAnalysis?.rootNetReference(for: netID) } ?? 0
         let regressed = violations.contains { violation in
             guard !identitiesBefore.contains(ViolationIdentity(of: violation)) else { return false }
             return !(violation.kind == .disconnectedOpen && violation.netIDs == [netID])
@@ -222,7 +230,7 @@ extension LayoutEditorViewModel {
             size: LayoutSize(width: 2 * radius, height: 2 * radius)
         )
         let inflated = (connectivityAnalysis?.nets ?? [])
-            .filter { !$0.declaredNetIDs.contains(netID) }
+            .filter { !$0.declaredNets.contains { $0 == connectivityAnalysis?.rootNetReference(for: netID) } }
             .flatMap(\.memberFootprints)
             .filter { $0.layer == layer }
             .map(\.boundingBox)
@@ -270,16 +278,16 @@ extension LayoutEditorViewModel {
             // and short local hops still succeed after them — the
             // opposite order lets short nets fence off the long ones.
             let candidates = (connectivityAnalysis?.flylines ?? [])
-                .filter { !failed.contains($0.netID) }
+                .filter { !failed.contains($0.netID.netID) && $0.netID == connectivityAnalysis?.rootNetReference(for: $0.netID.netID) }
             guard let flyline = candidates.max(by: { lhs, rhs in
                 let lhsSpan = abs(lhs.start.x - lhs.end.x) + abs(lhs.start.y - lhs.end.y)
                 let rhsSpan = abs(rhs.start.x - rhs.end.x) + abs(rhs.start.y - rhs.end.y)
                 return lhsSpan < rhsSpan
             }) else { break }
-            if finishNet(flyline.netID) {
+            if finishNet(flyline.netID.netID) {
                 completed += 1
             } else {
-                failed.insert(flyline.netID)
+                failed.insert(flyline.netID.netID)
             }
         }
         return completed

@@ -59,12 +59,12 @@ struct LayoutEditorViewModelLiveConnectivityTests {
     /// fixture nets together.
     private func shortsNetANetB(_ analysis: ConnectivityAnalysis?, _ fixture: Fixture) -> Bool {
         analysis?.shorts.contains {
-            Set($0.netIDs).isSuperset(of: [fixture.rich.netA, fixture.rich.netB])
+            Set($0.netIDs.map(\.netID)).isSuperset(of: [fixture.rich.netA, fixture.rich.netB])
         } ?? false
     }
 
     private func opensNetB(_ analysis: ConnectivityAnalysis?, _ fixture: Fixture) -> Bool {
-        analysis?.opens.contains { $0.netID == fixture.rich.netB } ?? false
+        analysis?.opens.contains { $0.netID.netID == fixture.rich.netB } ?? false
     }
 
     // MARK: - Discrete edits
@@ -216,7 +216,7 @@ struct LayoutEditorViewModelLiveConnectivityTests {
         let bridged = try #require(viewModel.highlightedNet)
         #expect(bridged.shapeIDs.contains(fixture.rich.wireA.id))
         #expect(bridged.shapeIDs.contains(fixture.rich.padB.id))
-        #expect(Set(bridged.declaredNetIDs).isSuperset(of: [fixture.rich.netA, fixture.rich.netB]))
+        #expect(Set(bridged.declaredNets.map(\.netID)).isSuperset(of: [fixture.rich.netA, fixture.rich.netB]))
 
         // A via anchor resolves through its member list the same way.
         viewModel.highlightNet(ofVia: fixture.rich.viaB.id)

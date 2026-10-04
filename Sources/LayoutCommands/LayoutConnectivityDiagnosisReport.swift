@@ -1,5 +1,6 @@
 import Foundation
 import LayoutCore
+import LayoutVerify
 
 /// Connectivity verdict of one diagnosed cell, in the terms an agent needs to
 /// decide the next routing step: per declared net whether it is whole, and for
@@ -8,6 +9,11 @@ import LayoutCore
 public struct LayoutConnectivityDiagnosisReport: Codable, Sendable, Equatable {
     /// Cell the analysis flattened, resolved like `--inspect-document`.
     public let topCellID: UUID
+    public let sourceDocumentID: UUID
+    /// Capture-local NetReference indices resolve through this owned table.
+    public let occurrences: [LayoutHierarchySnapshot.Occurrence]
+    /// Open pin indices resolve to these owned hierarchy-order source pins.
+    public let pins: [LayoutPin]
     public let totals: LayoutConnectivityDiagnosisTotals
     /// One row per declared net observed in the design, sorted by name then ID.
     public let nets: [LayoutConnectivityNetDiagnosis]
@@ -18,12 +24,18 @@ public struct LayoutConnectivityDiagnosisReport: Codable, Sendable, Equatable {
 
     public init(
         topCellID: UUID,
+        sourceDocumentID: UUID,
+        occurrences: [LayoutHierarchySnapshot.Occurrence],
+        pins: [LayoutPin],
         totals: LayoutConnectivityDiagnosisTotals,
         nets: [LayoutConnectivityNetDiagnosis],
         opens: [LayoutConnectivityOpenDiagnosis],
         shorts: [LayoutConnectivityShortDiagnosis]
     ) {
         self.topCellID = topCellID
+        self.sourceDocumentID = sourceDocumentID
+        self.occurrences = occurrences
+        self.pins = pins
         self.totals = totals
         self.nets = nets
         self.opens = opens
@@ -50,14 +62,14 @@ public struct LayoutConnectivityDiagnosisTotals: Codable, Sendable, Equatable {
 
 public struct LayoutConnectivityNetDiagnosis: Codable, Sendable, Equatable {
     /// Declared document net ID.
-    public let netID: UUID
+    public let netID: LayoutConductorSnapshot.NetReference
     /// Declared net name; nil when the ID appears in geometry but no cell
     /// declares a net with that ID.
     public let name: String?
     /// Number of disconnected conductor pieces carrying this net's geometry.
     /// 1 means fully connected, 0 means the net has no geometry at all.
     public let islandCount: Int
-    /// True exactly when `islandCount >= 2`, matching the extractor's opens.
+    /// True when native facts report disconnected islands or unconnected pins.
     public let isOpen: Bool
     /// Flattened pins bound to this net.
     public let pinCount: Int
@@ -65,7 +77,7 @@ public struct LayoutConnectivityNetDiagnosis: Codable, Sendable, Equatable {
     public let footprintCount: Int
 
     public init(
-        netID: UUID,
+        netID: LayoutConductorSnapshot.NetReference,
         name: String?,
         islandCount: Int,
         isOpen: Bool,
@@ -82,8 +94,10 @@ public struct LayoutConnectivityNetDiagnosis: Codable, Sendable, Equatable {
 }
 
 public struct LayoutConnectivityOpenDiagnosis: Codable, Sendable, Equatable {
-    public let netID: UUID
+    public let netID: LayoutConductorSnapshot.NetReference
     public let name: String?
+    /// Indices into the report-owned hierarchy-order source pin table.
+    public let unconnectedPinIndices: [Int]
     /// The disconnected conductor pieces; flyline island indices refer into
     /// this array.
     public let islands: [LayoutConnectivityIslandDiagnosis]
@@ -91,13 +105,15 @@ public struct LayoutConnectivityOpenDiagnosis: Codable, Sendable, Equatable {
     public let flylines: [LayoutConnectivityFlylineDiagnosis]
 
     public init(
-        netID: UUID,
+        netID: LayoutConductorSnapshot.NetReference,
         name: String?,
+        unconnectedPinIndices: [Int],
         islands: [LayoutConnectivityIslandDiagnosis],
         flylines: [LayoutConnectivityFlylineDiagnosis]
     ) {
         self.netID = netID
         self.name = name
+        self.unconnectedPinIndices = unconnectedPinIndices
         self.islands = islands
         self.flylines = flylines
     }
@@ -193,10 +209,10 @@ public struct LayoutConnectivityShortDiagnosis: Codable, Sendable, Equatable {
 }
 
 public struct LayoutConnectivityNetReference: Codable, Sendable, Equatable {
-    public let netID: UUID
+    public let netID: LayoutConductorSnapshot.NetReference
     public let name: String?
 
-    public init(netID: UUID, name: String?) {
+    public init(netID: LayoutConductorSnapshot.NetReference, name: String?) {
         self.netID = netID
         self.name = name
     }

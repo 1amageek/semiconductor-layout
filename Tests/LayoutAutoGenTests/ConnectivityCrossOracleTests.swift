@@ -85,7 +85,7 @@ struct ConnectivityCrossOracleTests {
         for violation in drcShorts {
             let pair = Set(violation.netIDs)
             #expect(
-                extracted.shorts.contains { pair.isSubset(of: Set($0.netIDs)) },
+                extracted.shorts.contains { pair.isSubset(of: Set($0.netIDs.map(\.netID))) },
                 "every pairwise short must be inside an extracted short"
             )
         }
@@ -110,7 +110,7 @@ struct ConnectivityCrossOracleTests {
 
         #expect(drcShorts.isEmpty, "different layers never trip the same-layer pairwise check")
         #expect(extracted.shorts.count == 1, "the extractor must see the short through the via")
-        #expect(Set(extracted.shorts.first?.netIDs ?? []) == [netA, netB])
+        #expect(Set(extracted.shorts.first?.netIDs.map(\.netID) ?? []) == [netA, netB])
     }
 
     @Test func unlabeledBridgeShortIsInvisibleToThePairwiseCheck() throws {
@@ -129,7 +129,7 @@ struct ConnectivityCrossOracleTests {
 
         #expect(drcShorts.isEmpty, "nil-net contacts never trip the pairwise check")
         #expect(extracted.shorts.count == 1, "the extractor must see the short through the bridge")
-        #expect(Set(extracted.shorts.first?.netIDs ?? []) == [netA, netB])
+        #expect(Set(extracted.shorts.first?.netIDs.map(\.netID) ?? []) == [netA, netB])
     }
 
     @Test func extractedOpensMatchDRCOpensOnFullyLabeledDesign() throws {
@@ -150,7 +150,7 @@ struct ConnectivityCrossOracleTests {
         )
 
         #expect(!drcOpenNets.isEmpty, "the twice-instantiated child net must be open")
-        #expect(Set(extracted.opens.map(\.netID)) == drcOpenNets)
+        #expect(Set(extracted.opens.map { $0.netID.netID }) == drcOpenNets)
         for open in extracted.opens {
             #expect(open.islands.count == 2, "one island per child instance")
             #expect(open.flylines.count == 1)
@@ -180,6 +180,6 @@ struct ConnectivityCrossOracleTests {
 
         #expect(drcOpenNets == [netA], "the declared subgraph alone is disconnected")
         #expect(extracted.opens.isEmpty, "physically the net is one conductor piece")
-        #expect(Set(extracted.opens.map(\.netID)).isSubset(of: drcOpenNets))
+        #expect(Set(extracted.opens.map { $0.netID.netID }).isSubset(of: drcOpenNets))
     }
 }

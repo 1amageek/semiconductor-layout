@@ -4,10 +4,8 @@ import LayoutTech
 
 /// Label-free connectivity extraction over the flattened design.
 ///
-/// Every flattened shape and via is a conductor element; two elements are
-/// fused exactly when ``LayoutDRCService/shouldConnect`` says they touch
-/// electrically — the same predicate the DRC open check uses, so the two
-/// engines can never disagree about contact. Connected components of that
+/// Every captured band is a conductor element; native integer layer/cut
+/// contacts establish its component membership. Connected components of that
 /// contact graph are the extracted nets; comparing their members' declared
 /// net labels yields shorts (one piece, several labels) and opens (one
 /// label, several pieces) including the via-mediated and
@@ -55,37 +53,16 @@ public struct LayoutConnectivityExtractor {
     public func extract(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
-        cellID: UUID? = nil
+        cellID: UUID? = nil,
+        limits: LayoutConductorCaptureLimits = .default
     ) throws -> ConnectivityAnalysis {
-        guard let targetCell = service.resolveCell(document: document, cellID: cellID) else {
+        guard service.resolveCell(document: document, cellID: cellID) != nil else {
             throw LayoutConnectivityExtractionError.targetCellNotFound
         }
 
-        var shapes: [LayoutShape] = []
-        var vias: [LayoutVia] = []
-        var pins: [LayoutPin] = []
-        var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        try service.flatten(
-            cell: targetCell,
-            document: document,
-            tech: tech,
-            shapes: &shapes,
-            vias: &vias,
-            pins: &pins,
-            terminalConflicts: &conflicts
-        )
-
-        let elements = Self.makeElements(
-            topShapes: Array(shapes.prefix(targetCell.shapes.count)),
-            childShapes: Array(shapes.dropFirst(targetCell.shapes.count)),
-            topVias: Array(vias.prefix(targetCell.vias.count)),
-            childVias: Array(vias.dropFirst(targetCell.vias.count)),
-            tech: tech,
-            service: service
-        )
-        let adjacency = Self.contactAdjacency(elements: elements, service: service)
-        let components = Self.components(adjacency: adjacency, elements: elements)
-        return Self.assemble(components: components, elements: elements, pins: pins)
+        let snapshot = try captureConductors(document: document, tech: tech,
+            conductiveLayers: Self.productionConductiveLayers(tech, limits: limits), cellID: cellID, limits: limits)
+        return try Self.analysis(from: snapshot)
     }
 
     // MARK: - Element table
@@ -138,6 +115,9 @@ public struct LayoutConnectivityExtractor {
         )
     }
 
+    // FIXME(INCOMPLETE_IMPLEMENTATION): Legacy live/device preparation aggregates
+    // every cut of one via. Those public consumers fail at their entry points;
+    // this helper must be removed when they migrate to native individual bands.
     static func makeViaElement(
         _ via: LayoutVia,
         key: ConnectivityElementKey,
@@ -306,6 +286,9 @@ public struct LayoutConnectivityExtractor {
     /// shorts, opens and flylines exactly like declared geometry — the
     /// pin marker itself never conducts, it only NAMES the conductor
     /// under it. Pins over empty space tag nothing.
+    // FIXME(INCOMPLETE_IMPLEMENTATION): Legacy live assembly uses pin centers and
+    // loses occurrence scope. Live initialization is explicitly disabled until
+    // full pin bands and native scoped references replace this naming path.
     static func tagPinNets(
         nets: [ConnectivityNet],
         pins: [LayoutPin],
@@ -315,7 +298,8 @@ public struct LayoutConnectivityExtractor {
         guard !boundPins.isEmpty else { return nets }
         var tagged = nets
         for pin in boundPins {
-            guard let netID = pin.netID else { continue }
+            guard let sourceNetID = pin.netID else { continue }
+            let netID = LayoutConductorSnapshot.NetReference(occurrenceIndex: 0, netID: sourceNetID)
             for index in tagged.indices {
                 guard tagged[index].boundingBox.contains(pin.position) else { continue }
                 let sitsOnMember = tagged[index].memberKeys.contains { key in
@@ -324,9 +308,9 @@ public struct LayoutConnectivityExtractor {
                     return LayoutGeometryAnalysis.contains(pin.position, in: element.geometry)
                 }
                 guard sitsOnMember else { continue }
-                if !tagged[index].declaredNetIDs.contains(netID) {
-                    tagged[index].declaredNetIDs.append(netID)
-                    tagged[index].declaredNetIDs.sort { $0.isCanonicallyOrderedBefore($1) }
+                if !tagged[index].declaredNets.contains(netID) {
+                    tagged[index].declaredNets.append(netID)
+                    tagged[index].declaredNets.sort()
                 }
                 break
             }
@@ -344,7 +328,7 @@ public struct LayoutConnectivityExtractor {
     ) -> ConnectivityNet {
         var shapeIDs: Set<UUID> = []
         var viaIDs: Set<UUID> = []
-        var declared: Set<UUID> = []
+        var declared: Set<LayoutConductorSnapshot.NetReference> = []
         var box: LayoutRect?
         var footprints: [ConnectivityIslandFootprint] = []
         for key in memberKeys {
@@ -352,7 +336,7 @@ public struct LayoutConnectivityExtractor {
                 continue
             }
             if element.isVia { viaIDs.insert(element.elementID) } else { shapeIDs.insert(element.elementID) }
-            if let netID = element.netID { declared.insert(netID) }
+            if let net = element.declaredNet { declared.insert(net) }
             if let layer = element.layer {
                 footprints.append(ConnectivityIslandFootprint(layer: layer, boundingBox: element.boundingBox))
             }
@@ -360,7 +344,7 @@ public struct LayoutConnectivityExtractor {
         }
         guard let boundingBox = box else {
             return ConnectivityNet(
-                shapeIDs: [], viaIDs: [], declaredNetIDs: [],
+                shapeIDs: [], viaIDs: [], declaredNets: [],
                 boundingBox: LayoutRect(origin: .zero, size: LayoutSize(width: 0, height: 0)),
                 memberFootprints: [],
                 memberKeys: memberKeys
@@ -369,7 +353,7 @@ public struct LayoutConnectivityExtractor {
         return ConnectivityNet(
             shapeIDs: shapeIDs.sorted { $0.isCanonicallyOrderedBefore($1) },
             viaIDs: viaIDs.sorted { $0.isCanonicallyOrderedBefore($1) },
-            declaredNetIDs: declared.sorted { $0.isCanonicallyOrderedBefore($1) },
+            declaredNets: declared.sorted(),
             boundingBox: boundingBox,
             memberFootprints: footprints,
             memberKeys: memberKeys
@@ -384,25 +368,25 @@ public struct LayoutConnectivityExtractor {
         elements: [ConnectivityElementKey: ConnectivityElement]
     ) -> ConnectivityAnalysis {
         var shorts: [ConnectivityShort] = []
-        var componentIndicesByNet: [UUID: [Int]] = [:]
+        var componentIndicesByNet: [LayoutConductorSnapshot.NetReference: [Int]] = [:]
 
         for (componentIndex, net) in nets.enumerated() {
-            if net.declaredNetIDs.count >= 2 {
+            if net.declaredNets.count >= 2 {
                 shorts.append(ConnectivityShort(
-                    netIDs: net.declaredNetIDs,
+                    netIDs: net.declaredNets,
                     shapeIDs: net.shapeIDs,
                     viaIDs: net.viaIDs,
                     region: net.boundingBox,
                     memberKeys: net.memberKeys
                 ))
             }
-            for netID in net.declaredNetIDs {
+            for netID in net.declaredNets {
                 componentIndicesByNet[netID, default: []].append(componentIndex)
             }
         }
 
         var opens: [ConnectivityOpen] = []
-        for netID in componentIndicesByNet.keys.sorted(by: { $0.isCanonicallyOrderedBefore($1) }) {
+        for netID in componentIndicesByNet.keys.sorted() {
             guard let componentIndices = componentIndicesByNet[netID] else { continue }
             guard componentIndices.count >= 2 else { continue }
             let islands = componentIndices.map { index -> ConnectivityIsland in
@@ -433,7 +417,7 @@ public struct LayoutConnectivityExtractor {
     /// islands; ties resolve to the first candidate in canonical member
     /// order, so the geometry is deterministic.
     static func flylines(
-        netID: UUID,
+        netID: LayoutConductorSnapshot.NetReference,
         islands: [ConnectivityIsland],
         elements: [ConnectivityElementKey: ConnectivityElement]
     ) -> [Flyline] {

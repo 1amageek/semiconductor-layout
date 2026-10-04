@@ -48,7 +48,7 @@ struct LiveConnectivitySessionTests {
             context: "remove via B"
         )
         let open = try #require(
-            broken.analysis.opens.first { $0.netID == fixture.netB },
+            broken.analysis.opens.first { $0.netID.netID == fixture.netB },
             "without its via, net B's M2 pad is stranded"
         )
         #expect(open.islands.count == 2)
@@ -59,7 +59,7 @@ struct LiveConnectivitySessionTests {
             LayoutEditDelta(addedVias: [viaB]),
             context: "re-add via B"
         )
-        #expect(!restored.analysis.opens.contains { $0.netID == fixture.netB })
+        #expect(!restored.analysis.opens.contains { $0.netID.netID == fixture.netB })
     }
 
     @Test func addedViaCreatesShortAcrossLayersLive() throws {
@@ -84,7 +84,7 @@ struct LiveConnectivitySessionTests {
             context: "add stray pad over wire A"
         )
         #expect(
-            !before.analysis.shorts.contains { Set($0.netIDs).isSuperset(of: [fixture.netA, fixture.netB]) },
+            !before.analysis.shorts.contains { Set($0.netIDs.map(\.netID)).isSuperset(of: [fixture.netA, fixture.netB]) },
             "plan-view overlap without a via must not short"
         )
 
@@ -98,7 +98,7 @@ struct LiveConnectivitySessionTests {
             context: "land a via on the stray pad"
         )
         #expect(
-            shorted.analysis.shorts.contains { Set($0.netIDs).isSuperset(of: [fixture.netA, fixture.netB]) },
+            shorted.analysis.shorts.contains { Set($0.netIDs.map(\.netID)).isSuperset(of: [fixture.netA, fixture.netB]) },
             "the via fuses wire A and the net-B pad into one conductor"
         )
 
@@ -107,7 +107,7 @@ struct LiveConnectivitySessionTests {
             context: "remove the bridging via"
         )
         #expect(
-            !cleared.analysis.shorts.contains { Set($0.netIDs).isSuperset(of: [fixture.netA, fixture.netB]) }
+            !cleared.analysis.shorts.contains { Set($0.netIDs.map(\.netID)).isSuperset(of: [fixture.netA, fixture.netB]) }
         )
     }
 
@@ -140,7 +140,7 @@ struct LiveConnectivitySessionTests {
         let session = try LiveConnectivitySession(document: document, tech: tech)
         let batch = try LayoutConnectivityExtractor().extract(document: document, tech: tech)
 
-        let open = try #require(session.currentAnalysis.opens.first { $0.netID == net })
+        let open = try #require(session.currentAnalysis.opens.first { $0.netID.netID == net })
         #expect(open.islands.count == 2)
         #expect(session.currentAnalysis == batch)
     }
@@ -174,7 +174,7 @@ struct LiveConnectivitySessionTests {
             LayoutEditDelta(addedShapes: [stubLeft, stubRight]),
             context: "add disjoint net C stubs"
         )
-        let openC = try #require(open.analysis.opens.first { $0.netID == netC })
+        let openC = try #require(open.analysis.opens.first { $0.netID.netID == netC })
         #expect(openC.islands.count == 2)
         #expect(abs((openC.flylines.first?.length ?? 0) - 2) < 1e-9)
 
@@ -191,7 +191,7 @@ struct LiveConnectivitySessionTests {
             context: "bridge the stubs"
         )
         #expect(
-            !closed.analysis.opens.contains { $0.netID == netC },
+            !closed.analysis.opens.contains { $0.netID.netID == netC },
             "the bridge fuses both stubs into one conductor piece"
         )
     }

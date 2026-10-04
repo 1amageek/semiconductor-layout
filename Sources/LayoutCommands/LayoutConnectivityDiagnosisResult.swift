@@ -18,7 +18,7 @@ public struct LayoutConnectivityDiagnosisResult: Codable, Sendable, Equatable {
         technologyArtifact: ArtifactReference? = nil,
         diagnosis: LayoutConnectivityDiagnosisReport
     ) {
-        self.schemaVersion = .v2
+        self.schemaVersion = .v3
         self.status = diagnosis.totals.openCount == 0 && diagnosis.totals.shortCount == 0
             ? "passed"
             : "failed"

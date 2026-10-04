@@ -40,6 +40,10 @@ public struct DeviceExtractor: Sendable {
 
     public init() {}
 
+    private func requireCapturedPieceMigration() throws {
+        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
+    }
+
     public func extract(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
@@ -49,6 +53,11 @@ public struct DeviceExtractor: Sendable {
         guard let targetCell = service.resolveCell(document: document, cellID: cellID) else {
             throw DeviceExtractionError.targetCellNotFound
         }
+        _ = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
+        // FIXME(INCOMPLETE_IMPLEMENTATION): DeviceExtractor.buildConnectivity still
+        // joins all cuts of one via. LVS/device callers must not publish results
+        // until prepared channel/slab conductors use validated individual bands.
+        try requireCapturedPieceMigration()
 
         var shapes: [LayoutShape] = []
         var vias: [LayoutVia] = []

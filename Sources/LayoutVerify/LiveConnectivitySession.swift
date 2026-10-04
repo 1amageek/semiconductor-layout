@@ -130,7 +130,17 @@ public final class LiveConnectivitySession {
         cellID: UUID? = nil
     ) throws {
         self.tech = tech
+        _ = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
+        // FIXME(INCOMPLETE_IMPLEMENTATION): LiveConnectivitySession still replaces
+        // one source node per delta. Editor live connectivity must not publish
+        // results until captured bands replace all source pieces atomically and
+        // affected-component locality is verified against native batch capture.
+        try Self.requireCapturedPieceMigration()
         try configure(document: document, cellID: cellID)
+    }
+
+    private static func requireCapturedPieceMigration() throws {
+        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
     }
 
     /// Current connectivity snapshot; always exact for the geometry the

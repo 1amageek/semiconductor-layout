@@ -4,4 +4,6 @@ import Foundation
 public enum LayoutConnectivityExtractionError: Error, Equatable, Sendable {
     /// The document has no resolvable target cell.
     case targetCellNotFound
+    case ambiguousSourceIdentity(UUID)
+    case consumerMigrationIncomplete
 }

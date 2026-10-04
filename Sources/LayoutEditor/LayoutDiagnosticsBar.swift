@@ -181,7 +181,7 @@ public struct LayoutDiagnosticsBar: View {
                         .foregroundStyle(.yellow)
                         .font(.caption)
                         .frame(width: 16)
-                    Text("Open: net split into \(open.islands.count) islands (\(open.flylines.count) flyline\(open.flylines.count == 1 ? "" : "s"))")
+                    Text("Open: \(open.islands.count) islands, \(open.unconnectedPinIndices.count) unconnected pins (\(open.flylines.count) flylines)")
                         .font(.caption)
                         .lineLimit(1)
                     Spacer()

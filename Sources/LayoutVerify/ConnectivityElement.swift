@@ -2,15 +2,10 @@ import Foundation
 import LayoutCore
 import LayoutTech
 
-/// One conductor element of the flattened design as the connectivity
-/// engine sees it: the geometry that participates in contact tests plus
-/// the metadata needed to derive verdicts.
-///
-/// Vias are indexed by the bounding box of their conducting cut plugs and
-/// keep the individual cut rectangles for the exact contact test. The
-/// layer is `nil` for vias because their contact rule is "touches a shape
-/// on the via definition's top or bottom layer", evaluated through
-/// `LayoutDRCService.shouldConnect`.
+/// One captured physical band and the metadata needed to derive verdicts.
+/// The snapshot/index owns exact contact semantics; geometry and bounds are
+/// display/index values. Legacy aggregate preparation remains behind failed
+/// public migration gates until its consumers use captured pieces.
 struct ConnectivityElement: Sendable {
     var key: ConnectivityElementKey
     /// Original element UUID, for highlighting in the editor. Child
@@ -27,4 +22,8 @@ struct ConnectivityElement: Sendable {
     var viaCutRects: [LayoutRect]
     var viaContactRectsByLayer: [LayoutLayerID: [LayoutRect]]
     var boundingBox: LayoutRect
+    /// Exact contact authority. Bounds and source UUIDs do not establish contact.
+    var conductorCapture: LayoutConductorSnapshot? = nil
+    var footprintIndex: Int? = nil
+    var declaredNet: LayoutConductorSnapshot.NetReference? = nil
 }

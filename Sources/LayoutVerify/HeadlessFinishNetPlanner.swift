@@ -7,6 +7,7 @@ public enum HeadlessFinishNetPlannerError: Error, Sendable, Equatable {
     case targetCellNotFound(UUID)
     case invalidRouteWidth(Double)
     case netAlreadyConnected(UUID)
+    case unconnectedPinOpen(netID: UUID, pinIDs: [UUID])
     case routeWindowMiss(UUID)
     case routeBlocked(UUID, [LayoutViolation])
     case routeShapeIDCollision(UUID)
@@ -147,10 +148,14 @@ public struct HeadlessFinishNetPlanner: Sendable {
         let targetCell = try requireTargetCell(document: document, cellID: cellID)
         let extractor = LayoutConnectivityExtractor()
         let analysisBefore = try extractor.extract(document: document, tech: tech, cellID: cellID)
-        guard let open = analysisBefore.opens.first(where: { $0.netID == netID }),
-              let flyline = open.flylines.first else {
+        guard let open = analysisBefore.opens.first(where: { $0.netID == analysisBefore.rootNetReference(for: netID) }) else {
             throw HeadlessFinishNetPlannerError.netAlreadyConnected(netID)
         }
+        if !open.unconnectedPinIndices.isEmpty, let snapshot = analysisBefore.sourceSnapshot {
+            let ids = open.unconnectedPinIndices.map { snapshot.hierarchy.pins[snapshot.pins[$0].sourcePinIndex].id }
+            throw HeadlessFinishNetPlannerError.unconnectedPinOpen(netID: netID, pinIDs: ids)
+        }
+        guard let flyline = open.flylines.first else { throw HeadlessFinishNetPlannerError.netAlreadyConnected(netID) }
         let drcBefore = LayoutDRCService().run(document: document, tech: tech, cellID: cellID)
         let effectiveWidth = try validatedRouteWidth(width, layer: layer, tech: tech)
         let routeWindow = routeWindow(start: flyline.start, end: flyline.end)
@@ -219,8 +224,8 @@ public struct HeadlessFinishNetPlanner: Sendable {
     ) throws -> CandidateEvaluation {
         let candidateDocument = try apply(delta: delta, to: document, cellID: cellID)
         let analysisAfter = try context.extractor.extract(document: candidateDocument, tech: tech, cellID: cellID)
-        let opensBefore = context.analysisBefore.flylines.count { $0.netID == netID }
-        let opensAfter = analysisAfter.flylines.count { $0.netID == netID }
+        let opensBefore = context.analysisBefore.flylines.count { $0.netID == context.analysisBefore.rootNetReference(for: netID) }
+        let opensAfter = analysisAfter.flylines.count { $0.netID == analysisAfter.rootNetReference(for: netID) }
         guard opensAfter < opensBefore else {
             throw HeadlessFinishNetPlannerError.routeDidNotReduceOpen(
                 netID: netID,
@@ -329,7 +334,7 @@ public struct HeadlessFinishNetPlanner: Sendable {
         window: LayoutRect
     ) -> [LayoutRect] {
         analysis.nets
-            .filter { !$0.declaredNetIDs.contains(netID) }
+            .filter { !$0.declaredNets.contains { $0 == analysis.rootNetReference(for: netID) } }
             .flatMap(\.memberFootprints)
             .filter { $0.layer == layer }
             .map(\.boundingBox)

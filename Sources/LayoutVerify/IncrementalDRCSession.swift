@@ -109,7 +109,16 @@ public final class IncrementalDRCSession {
         cellID: UUID? = nil
     ) throws {
         self.tech = tech
+        _ = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Incremental DRC open contacts still
+        // use aggregate source-via nodes. Editor incremental DRC must fail until
+        // local updates preserve native individual bands and scoped labels.
+        try Self.requireCapturedPieceMigration()
         try configure(document: document, cellID: cellID)
+    }
+
+    private static func requireCapturedPieceMigration() throws {
+        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
     }
 
     /// Current violation snapshot. Kinds in ``staleKinds`` are carried

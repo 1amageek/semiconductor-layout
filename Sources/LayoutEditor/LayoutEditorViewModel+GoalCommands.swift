@@ -19,7 +19,7 @@ extension LayoutEditorViewModel {
         case .finishNet(let netID):
             succeeded = finishNet(netID)
         case .finishAllNets:
-            succeeded = finishAllNets() > 0 || connectivityAnalysis?.flylines.isEmpty == true
+            succeeded = finishAllNets() > 0 || connectivityAnalysis?.opens.isEmpty == true
         case .annotateNetsFromLabels:
             succeeded = annotateNetsFromLabels() != nil
         case .placeIntentDevice(let deviceID, let point):

@@ -90,6 +90,10 @@ extension LayoutDRCService {
         }
     }
 
+    private func requireCapturedTerminalMigration() throws {
+        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
+    }
+
     // FIXME(INCOMPLETE_IMPLEMENTATION): Legacy terminal resolution groups each via
     // as one node and does not establish independent cut-array components. Batch
     // DRC, connectivity, device extraction and live sessions call it through flatten.
@@ -103,6 +107,7 @@ extension LayoutDRCService {
         guard !terminalNetIDs.isEmpty else {
             return TerminalConnectivity(shapeNetIDs: [:], viaNetIDs: [:], conflicts: [])
         }
+        try requireCapturedTerminalMigration()
 
         var geometries: [LayoutGeometry] = []
         var layers: [LayoutLayerID?] = []

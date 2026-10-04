@@ -125,7 +125,8 @@ let package = Package(
                 .product(name: "CircuiteFoundationCrypto", package: "CircuiteFoundation"),
                 .product(name: "CircuiteFoundationFoundation", package: "CircuiteFoundation"),
                 .product(name: "CircuiteFoundationFileSystem", package: "CircuiteFoundation"),
-            ]
+            ],
+            exclude: ["DESIGN.md"]
         ),
         .executableTarget(
             name: "LayoutCommandCLI",

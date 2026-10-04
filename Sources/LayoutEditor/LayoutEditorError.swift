@@ -15,6 +15,7 @@ public enum LayoutEditorError: Error, Sendable {
     case routeWindowMiss
     /// finish-net was asked for a net that has no remaining open.
     case netAlreadyConnected(UUID)
+    case unconnectedPinOpen(netID: UUID, pinIDs: [UUID])
     /// finish-net found a path but it would create the named violation.
     case finishNetBlocked(String)
     /// finish-net committed, but the post-commit gate (net progress and
@@ -38,6 +39,8 @@ extension LayoutEditorError: LocalizedError {
             return "No clear route exists inside the auto-complete window"
         case .netAlreadyConnected(let id):
             return "Net \(id) has no remaining open to finish"
+        case .unconnectedPinOpen(let netID, let pinIDs):
+            return "Net \(netID) has unconnected pins requiring a conductor landing: \(pinIDs)"
         case .finishNetBlocked(let reason):
             return "finish-net blocked: \(reason)"
         case .finishNetRegressed:

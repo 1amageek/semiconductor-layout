@@ -255,11 +255,6 @@ extension LayoutConnectivityExtractor {
             guard probes < limits.maximumContactProbes else { throw Failure.limitExceeded(.contactProbes) }
             probes += 1
         }
-        func overlaps(_ first: RectilinearBand, _ second: RectilinearBand, sameLayer: Bool) -> Bool {
-            let x = Int64(min(first.maxX, second.maxX)) - Int64(max(first.minX, second.minX))
-            let y = Int64(min(first.maxY, second.maxY)) - Int64(max(first.minY, second.minY))
-            return sameLayer ? (x > 0 && y >= 0 || x >= 0 && y > 0) : (x > 0 && y > 0)
-        }
         var unionFind = LayoutUnionFind(count: footprints.count)
         var contacts: [Snapshot.Contact] = []
         // ponytail: dense overlap has quadratic candidate work; the explicit probe
@@ -277,7 +272,7 @@ extension LayoutConnectivityExtractor {
                 let same = first.layer == second.layer
                 let cross = first.isCut && !second.isCut && adjacency[first.layer]?.contains(second.layer) == true
                     || second.isCut && !first.isCut && adjacency[second.layer]?.contains(first.layer) == true
-                guard (same || cross), overlaps(first.band, second.band, sameLayer: same) else { continue }
+                guard (same || cross), try Snapshot.bandsTouch(first.band, second.band, sameLayer: same) else { continue }
                 contacts.append(Snapshot.Contact(firstFootprint: min(firstIndex, secondIndex), secondFootprint: max(firstIndex, secondIndex)))
                 unionFind.union(firstIndex, secondIndex)
             }
@@ -308,7 +303,7 @@ extension LayoutConnectivityExtractor {
                     if footprint.band.minX > band.maxX { break }
                     try chargeProbe()
                     guard !footprint.isCut, footprint.layer == source.layer,
-                          overlaps(band, footprint.band, sameLayer: false) else { continue }
+                          try Snapshot.bandsTouch(band, footprint.band, sameLayer: false) else { continue }
                     componentSet.insert(componentByFootprint[index])
                 }
             }
@@ -340,7 +335,8 @@ extension LayoutConnectivityExtractor {
             return components.count > 1 || !unconnected.isEmpty ? Snapshot.Open(net: net, componentIndices: components, unconnectedPinIndices: unconnected) : nil
         }
         try checkCancellation()
-        return Snapshot(hierarchy: hierarchy, coordinateUnits: coordinateUnits, conductiveLayers: conductiveLayers, footprints: footprints,
+        return Snapshot(hierarchy: hierarchy, coordinateUnits: coordinateUnits, conductiveLayers: conductiveLayers,
+            adjacentConductorLayersByCut: adjacency, contactTechnology: tech, footprints: footprints,
             contacts: contacts, components: components, pins: pins, opens: opens,
             shortComponentIndices: components.indices.filter { components[$0].declaredNets.count > 1 })
     }
