@@ -4,7 +4,7 @@ import MaskGeometry
 
 public enum LayoutConductorCaptureError: Error, Equatable, Sendable {
     public enum Resource: Sendable, Equatable {
-        case technologyRecords, footprints, contactProbes
+        case technologyRecords, footprints, contactProbes, spatialIndexEntries
     }
     case invalidLimits
     case invalidCoordinateUnits
@@ -19,6 +19,9 @@ public enum LayoutConductorCaptureError: Error, Equatable, Sendable {
     case invalidGridGeometry(UUID)
     case conflictingTerminalBinding(occurrenceIndex: Int, netID: UUID)
     case invalidFootprintIndex(Int)
+    case invalidPinIndex(Int)
+    case invalidComposition
+    case invalidSpatialBounds
     case incompatibleContactTopology
     case incompatibleContactUnits
     case decompositionFailed(RectilinearDecompositionError)

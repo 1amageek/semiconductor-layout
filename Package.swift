@@ -8,7 +8,7 @@ let circuiteFoundationDependency: Package.Dependency = .package(
 
 let swiftMaskDataDependency: Package.Dependency = .package(
     url: "https://github.com/1amageek/swift-mask-data.git",
-    revision: "6c6fbdd444bb2fb8878d129bd0d5e82bbfd2ab53"
+    revision: "5fd36b536abd3521a2a0949552a51c0fcddb5007"
 )
 
 let signoffToolSupportDependency: Package.Dependency = .package(

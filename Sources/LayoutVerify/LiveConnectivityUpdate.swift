@@ -14,16 +14,36 @@ public struct LiveConnectivityUpdate: Sendable {
     public var recomputedComponentCount: Int
     /// Wall-clock time spent inside `apply(_:)`.
     public var duration: Duration
+    /// Native geometry bands decomposed for edited sources only.
+    public var capturedFootprintCount: Int
+    /// Footprint/pin candidate inspections for edited sources, including filtered pins.
+    public var contactProbeCount: Int
+    /// Complete snapshot bands materialized independently of local graph work.
+    public var materializedFootprintCount: Int
+    /// Cell visits during removal, insertion and local candidate enumeration.
+    public var spatialCellVisitCount: Int
+    /// Retained index entries; bounded separately from exact contact probes.
+    public var storedSpatialEntryCount: Int
 
     public init(
         analysis: ConnectivityAnalysis,
         recomputedElementCount: Int,
         recomputedComponentCount: Int,
-        duration: Duration
+        duration: Duration,
+        capturedFootprintCount: Int = 0,
+        contactProbeCount: Int = 0,
+        materializedFootprintCount: Int = 0,
+        spatialCellVisitCount: Int = 0,
+        storedSpatialEntryCount: Int = 0
     ) {
         self.analysis = analysis
         self.recomputedElementCount = recomputedElementCount
         self.recomputedComponentCount = recomputedComponentCount
         self.duration = duration
+        self.capturedFootprintCount = capturedFootprintCount
+        self.contactProbeCount = contactProbeCount
+        self.materializedFootprintCount = materializedFootprintCount
+        self.spatialCellVisitCount = spatialCellVisitCount
+        self.storedSpatialEntryCount = storedSpatialEntryCount
     }
 }

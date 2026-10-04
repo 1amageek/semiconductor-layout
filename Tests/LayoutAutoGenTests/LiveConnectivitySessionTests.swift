@@ -141,7 +141,7 @@ struct LiveConnectivitySessionTests {
         let batch = try LayoutConnectivityExtractor().extract(document: document, tech: tech)
 
         let open = try #require(session.currentAnalysis.opens.first { $0.netID.netID == net })
-        #expect(open.islands.count == 2)
+        #expect(open.islands.count == 3)
         #expect(session.currentAnalysis == batch)
     }
 
@@ -215,8 +215,7 @@ struct LiveConnectivitySessionTests {
             document: fixture.document,
             tech: fixture.tech
         )
-        let total = harness.session.currentAnalysis.nets
-            .reduce(0) { $0 + $1.shapeIDs.count + $1.viaIDs.count }
+        let total = try #require(harness.session.currentAnalysis.sourceSnapshot).footprints.count
 
         // Nudging wire A re-partitions only net A's conductor piece, not
         // the whole design.
@@ -287,17 +286,13 @@ struct LiveConnectivitySessionTests {
         }
     }
 
-    @Test func childIdentifierCollisionIsRejected() throws {
+    @Test func rootSourceUUIDDoesNotCollapseChildPieces() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
-        let session = try LiveConnectivitySession(document: fixture.document, tech: fixture.tech)
-        let colliding = LayoutShape(
-            id: fixture.childShapeID,
-            layer: fixture.m1,
-            geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 1)))
-        )
-        #expect(throws: LiveConnectivitySessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
-            try session.apply(LayoutEditDelta(addedShapes: [colliding]))
-        }
+        let harness = try LiveConnectivityEquivalenceHarness(document: fixture.document, tech: fixture.tech)
+        let colliding = LayoutShape(id: fixture.childShapeID, layer: fixture.m1,
+            geometry: .rect(LayoutRect(origin: LayoutPoint(x: 100, y: 100), size: LayoutSize(width: 1, height: 1))))
+        let update = try harness.applyAndVerify(LayoutEditDelta(addedShapes: [colliding]), context: "root and child source UUID reuse")
+        #expect(update.analysis.nets.filter { $0.shapeIDs.contains(fixture.childShapeID) }.count == 3)
     }
 
     @Test func failedRebuildDoesNotPoisonSubsequentDeltas() throws {
@@ -309,15 +304,8 @@ struct LiveConnectivitySessionTests {
         let removable = try #require(harness.topShapes.dropFirst().first)
         var invalid = harness.document
         let topIndex = try #require(invalid.cells.firstIndex(where: { $0.id == invalid.topCellID }))
-        invalid.cells[topIndex].shapes = [
-            LayoutShape(
-                id: fixture.childShapeID,
-                layer: fixture.m1,
-                geometry: .rect(LayoutRect(origin: .zero, size: LayoutSize(width: 1, height: 1)))
-            )
-        ]
-
-        #expect(throws: LiveConnectivitySessionError.hierarchyIdentifierCollision(fixture.childShapeID)) {
+        invalid.cells[topIndex].shapes = [fixture.wireA, fixture.wireA]
+        #expect(throws: LayoutHierarchyCaptureError.duplicateObjectID(cellID: invalid.cells[topIndex].id, objectID: fixture.wireA.id)) {
             try harness.session.rebuild(document: invalid)
         }
 
@@ -445,20 +433,23 @@ struct LiveConnectivitySessionTests {
     private static func randomRect(rng: inout SplitMix64) -> LayoutRect {
         LayoutRect(
             origin: LayoutPoint(
-                x: Double.random(in: 0..<7, using: &rng),
-                y: Double.random(in: 0..<7, using: &rng)
+                x: Double(Int.random(in: 0..<56, using: &rng)) / 8,
+                y: Double(Int.random(in: 0..<56, using: &rng)) / 8
             ),
             size: LayoutSize(
-                width: Double.random(in: 0.3..<1.6, using: &rng),
-                height: Double.random(in: 0.3..<1.6, using: &rng)
+                width: Double(Int.random(in: 3..<13, using: &rng)) / 8,
+                height: Double(Int.random(in: 3..<13, using: &rng)) / 8
             )
         )
     }
 
+    // Binary-exact grid coordinates keep this success differential fixture
+    // independent of cancellation error in translated decimal via enclosures.
+    // Explicit rejected-grid and failure-state fixtures are owned separately.
     private static func randomPoint(rng: inout SplitMix64) -> LayoutPoint {
         LayoutPoint(
-            x: Double.random(in: 0..<8, using: &rng),
-            y: Double.random(in: 0..<8, using: &rng)
+            x: Double(Int.random(in: 8..<72, using: &rng)) / 8,
+            y: Double(Int.random(in: 8..<72, using: &rng)) / 8
         )
     }
 
@@ -475,7 +466,7 @@ struct LiveConnectivitySessionTests {
         m2: LayoutLayerID,
         via1: LayoutLayerID
     ) -> LayoutTechDatabase {
-        LayoutTechDatabase(
+        var tech = LayoutTechDatabase(
             units: .defaultUnits,
             layers: [m1, m2, via1].enumerated().map { index, id in
                 LayoutLayerDefinition(
@@ -511,5 +502,9 @@ struct LiveConnectivitySessionTests {
             ],
             layerRules: []
         )
+        let cuts = tech.vias[0].layerGeometries[0].rects
+        tech.vias[0].layerGeometries.append(LayoutViaLayerGeometry(layer: m1, rects: cuts))
+        tech.vias[0].layerGeometries.append(LayoutViaLayerGeometry(layer: m2, rects: cuts))
+        return tech
     }
 }

@@ -50,6 +50,9 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
         public let sourcePinIndex: Int
         public let declaredNet: NetReference?
         public let bands: [RectilinearBand]
+        /// Actual contacted bands; component membership alone cannot preserve
+        /// pin labeling when a live edit splits a formerly connected component.
+        public let footprintIndices: [Int]
         /// A pin labels each contacted component without conducting between them.
         public let componentIndices: [Int]
     }
@@ -67,6 +70,8 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
     let adjacentConductorLayersByCut: [LayoutLayerID: Set<LayoutLayerID>]
     let contactTechnology: LayoutTechDatabase
     public let footprints: [Footprint]
+    /// Source ownership for each decomposition polygon ordinal.
+    let polygonSources: [Source]
     public let contacts: [Contact]
     public let components: [Component]
     public let pins: [Pin]
@@ -92,8 +97,39 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
               adjacentConductorLayersByCut == other.adjacentConductorLayersByCut else {
             throw LayoutConductorCaptureError.incompatibleContactTopology
         }
+        let (firstMultiplier, secondMultiplier) = try coordinateMultipliers(with: other.coordinateUnits)
+        let first = footprints[firstIndex], second = other.footprints[secondIndex]
+        let sameLayer = first.layer == second.layer
+        let adjacent = first.isCut && !second.isCut && adjacentConductorLayersByCut[first.layer]?.contains(second.layer) == true
+            || second.isCut && !first.isCut && adjacentConductorLayersByCut[second.layer]?.contains(first.layer) == true
+        guard sameLayer || adjacent else { return false }
+        return try Self.bandsTouch(first.band, multiplier: firstMultiplier,
+                                   second.band, multiplier: secondMultiplier, sameLayer: sameLayer)
+    }
+
+    /// Tests a pin's complete area without turning that area into a conductor.
+    public func hasPinContact(
+        pinAt pinIndex: Int, with other: LayoutConductorSnapshot, footprintAt footprintIndex: Int
+    ) throws -> Bool {
+        guard pins.indices.contains(pinIndex) else { throw LayoutConductorCaptureError.invalidPinIndex(pinIndex) }
+        guard other.footprints.indices.contains(footprintIndex) else {
+            throw LayoutConductorCaptureError.invalidFootprintIndex(footprintIndex)
+        }
+        guard contactTechnology == other.contactTechnology, conductiveLayers == other.conductiveLayers,
+              adjacentConductorLayersByCut == other.adjacentConductorLayersByCut else {
+            throw LayoutConductorCaptureError.incompatibleContactTopology
+        }
+        let pin = pins[pinIndex], footprint = other.footprints[footprintIndex]
+        let (pinMultiplier, footprintMultiplier) = try coordinateMultipliers(with: other.coordinateUnits)
+        guard !footprint.isCut, hierarchy.pins[pin.sourcePinIndex].layer == footprint.layer else { return false }
+        for band in pin.bands where try Self.bandsTouch(band, multiplier: pinMultiplier,
+            footprint.band, multiplier: footprintMultiplier, sameLayer: false) { return true }
+        return false
+    }
+
+    func coordinateMultipliers(with otherUnits: LayoutUnits) throws -> (Int64, Int64) {
         let firstScale = coordinateUnits.scale.databaseUnitsPerMicrometer
-        let secondScale = other.coordinateUnits.scale.databaseUnitsPerMicrometer
+        let secondScale = otherUnits.scale.databaseUnitsPerMicrometer
         let commonScale = max(firstScale, secondScale)
         func multiplier(for scale: Double) throws -> Int64 {
             let ratio = commonScale / scale
@@ -116,15 +152,7 @@ public struct LayoutConductorSnapshot: Sendable, Equatable {
             }
             return result
         }
-        let firstMultiplier = try multiplier(for: firstScale)
-        let secondMultiplier = try multiplier(for: secondScale)
-        let first = footprints[firstIndex], second = other.footprints[secondIndex]
-        let sameLayer = first.layer == second.layer
-        let adjacent = first.isCut && !second.isCut && adjacentConductorLayersByCut[first.layer]?.contains(second.layer) == true
-            || second.isCut && !first.isCut && adjacentConductorLayersByCut[second.layer]?.contains(first.layer) == true
-        guard sameLayer || adjacent else { return false }
-        return try Self.bandsTouch(first.band, multiplier: firstMultiplier,
-                                   second.band, multiplier: secondMultiplier, sameLayer: sameLayer)
+        return try (multiplier(for: firstScale), multiplier(for: secondScale))
     }
 
     /// One predicate owns both full-capture and local-update contact semantics.

@@ -18,8 +18,4 @@ public enum LiveConnectivitySessionError: Error, Equatable, Sendable {
     /// One element ID appeared in more than one of added/updated/removed
     /// within a single delta, making the intended end state ambiguous.
     case conflictingDeltaEntry(UUID)
-    /// A direct element of the target cell shares its ID with an element
-    /// contributed by an instantiated child cell, so ID-keyed component
-    /// bookkeeping would be ambiguous.
-    case hierarchyIdentifierCollision(UUID)
 }

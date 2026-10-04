@@ -47,7 +47,7 @@ contact or join pieces belonging to one source object.
 | Consumer | Prior aggregate assumption | Required boundary | State |
 |---|---|---|---|
 | Batch connectivity | One shape/via source is one node | Native snapshot bands, contacts and pin labels | Migrated |
-| Live connectivity | One delta source key replaces one node | Prepare all replacement bands before atomic local graph replacement | Explicitly unavailable pending migration |
+| Live connectivity | Source keys identify invalidation only | Exact edited bands, cached pin incidence, local partition and complete current native snapshot | Migrated; batch-identical generation and atomic failure proof |
 | Device connectivity | One cut/via source is one node | Native bands for prepared channel/slab and conductor geometry | Explicitly unavailable pending migration |
 | Batch DRC opens | One via index joins all its cuts | Actual per-band components | Explicitly unavailable pending migration |
 | Incremental DRC opens | One via contact key is an electrical node | Source keys invalidate work; bands establish electrical connectivity | Explicitly unavailable pending migration |
@@ -64,6 +64,12 @@ cut/layer adjacency before contact. Unsupported exact geometry or incompatible
 captures fail with typed errors. No alternate float geometry algorithm is used.
 Live edits preserve the previous complete generation if preparation fails;
 successful edits repartition only components touched by old or new contacts.
+The [native composition boundary](ConductorCapture/DESIGN.md) owns current
+source/pin/occurrence tables, polygon reindexing and full-profile scale admission.
+Full snapshot allocation/copy and footprint-handle rebinding are linear in the
+admitted fact count, with additional bounded canonical sorting; local
+geometry decomposition, contact probes and repartition work are distinct costs.
+The live session must not claim that every per-element operation is local.
 
 Live sessions remain synchronous, single-owner values. Immutable snapshots may
 be shared; this migration introduces no shared mutable state or Metal execution.

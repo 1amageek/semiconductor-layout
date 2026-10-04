@@ -12,6 +12,21 @@ extension LayoutConnectivityExtractor {
         limits: LayoutConductorCaptureLimits = .default,
         isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> LayoutConductorSnapshot {
+        try captureNativeConductors(document: document, tech: tech, conductiveLayers: conductiveLayers,
+            cellID: cellID, limits: limits, isCancelled: isCancelled).snapshot
+    }
+
+    /// Internal preparation retains the full profile and hierarchy while
+    /// decomposing only the selected source geometry. It is never published
+    /// as a complete production analysis before current-generation composition.
+    func captureNativeConductors(
+        document: LayoutDocument, tech: LayoutTechDatabase,
+        conductiveLayers: Set<LayoutLayerID>, cellID: UUID? = nil,
+        limits: LayoutConductorCaptureLimits = .default,
+        hierarchy suppliedHierarchy: LayoutHierarchySnapshot? = nil,
+        selectingSources selection: Set<LayoutConductorSnapshot.Source>? = nil,
+        isCancelled: () -> Bool = { Task.isCancelled }
+    ) throws -> (snapshot: LayoutConductorSnapshot, probeCount: Int) {
         typealias Snapshot = LayoutConductorSnapshot
         typealias Failure = LayoutConductorCaptureError
         guard limits.maximumTechnologyRecords >= 0, limits.maximumFootprints >= 0,
@@ -58,7 +73,7 @@ extension LayoutConnectivityExtractor {
                 cutSize: contact.cutSize, enclosure: contact.enclosure, cutSpacing: contact.cutSpacing))
         }
         for layer in conductiveLayers where adjacency[layer] != nil { throw Failure.ambiguousLayerRole(layer) }
-        let hierarchy = try captureHierarchy(document: document, cellID: cellID,
+        let hierarchy = try suppliedHierarchy ?? captureHierarchy(document: document, cellID: cellID,
                                              limits: limits.hierarchy, isCancelled: isCancelled)
         var aliases: [[UUID: Snapshot.NetReference]] = []
         func resolved(_ net: UUID, occurrence: Int) -> Snapshot.NetReference {
@@ -95,21 +110,8 @@ extension LayoutConnectivityExtractor {
         var records: [GeometryRecord] = []
         var polygons: [IRBoundary] = []
         var inputEntries = 0
-        var requiresHalfGrid = false
-        for shape in hierarchy.shapes {
-            try checkCancellation()
-            guard conductiveLayers.contains(shape.layer) || adjacency[shape.layer] != nil else { continue }
-            if case .path = shape.geometry { requiresHalfGrid = true }
-        }
-        let coordinateUnits: LayoutUnits
-        if requiresHalfGrid {
-            do {
-                coordinateUnits = LayoutUnits(scale: try .init(
-                    databaseUnitsPerMicrometer: hierarchy.units.scale.databaseUnitsPerMicrometer * 2))
-            } catch {
-                throw Failure.invalidCoordinateUnits
-            }
-        } else { coordinateUnits = hierarchy.units }
+        let coordinateUnits = try Self.captureCoordinateUnits(hierarchy: hierarchy,
+            conductiveLayers: conductiveLayers, cutLayers: Set(adjacency.keys), isCancelled: isCancelled)
         let dbu = coordinateUnits.scale.databaseUnitsPerMicrometer
         func coordinate(_ value: Double, id: UUID) throws -> Int32 {
             let scaled = value * dbu
@@ -163,6 +165,7 @@ extension LayoutConnectivityExtractor {
         for (occurrenceIndex, occurrence) in hierarchy.occurrences.enumerated() {
             try checkCancellation()
             for index in occurrence.shapeRange {
+                if let selection, !selection.contains(.shape(index)) { continue }
                 let shape = hierarchy.shapes[index]
                 guard conductiveLayers.contains(shape.layer) || adjacency[shape.layer] != nil else { continue }
                 if let metals = adjacency[shape.layer],
@@ -173,6 +176,7 @@ extension LayoutConnectivityExtractor {
                     id: shape.id, layer: shape.layer, net: shape.netID))
             }
             for index in occurrence.viaRange {
+                if let selection, !selection.contains(.via(index)) { continue }
                 try checkCancellation()
                 let via = hierarchy.vias[index]
                 guard let definition = definitions[via.viaDefinitionID] else { throw Failure.missingViaDefinition(via.viaDefinitionID) }
@@ -221,6 +225,7 @@ extension LayoutConnectivityExtractor {
                 }
             }
             for index in occurrence.pinRange {
+                if let selection, !selection.contains(.pin(index)) { continue }
                 let pin = hierarchy.pins[index]
                 guard conductiveLayers.contains(pin.layer) else { throw Failure.unknownLayer(pin.layer) }
                 let net: Snapshot.NetReference?
@@ -290,13 +295,12 @@ extension LayoutConnectivityExtractor {
             groups[component].append(index)
             componentByFootprint.append(component)
         }
-        var nets = groups.map { Set($0.compactMap { footprints[$0].declaredNet }) }
-        var componentPins = Array(repeating: [Int](), count: groups.count)
         var pins: [Snapshot.Pin] = []
         for source in records {
             guard case .pin(let pinIndex) = source.source else { continue }
             try checkCancellation()
             var componentSet: Set<Int> = []
+            var footprintSet: Set<Int> = []
             for band in pinBands[pinIndex] {
                 for index in ordered {
                     let footprint = footprints[index]
@@ -305,21 +309,66 @@ extension LayoutConnectivityExtractor {
                     guard !footprint.isCut, footprint.layer == source.layer,
                           try Snapshot.bandsTouch(band, footprint.band, sameLayer: false) else { continue }
                     componentSet.insert(componentByFootprint[index])
+                    footprintSet.insert(index)
                 }
             }
             let components = componentSet.sorted()
-            let outputPin = pins.count
-            for component in components {
-                componentPins[component].append(outputPin)
-                if let net = source.net { nets[component].insert(net) }
-            }
             pins.append(Snapshot.Pin(occurrenceIndex: source.occurrence, sourcePinIndex: pinIndex,
-                declaredNet: source.net, bands: pinBands[pinIndex], componentIndices: components))
+                declaredNet: source.net, bands: pinBands[pinIndex], footprintIndices: footprintSet.sorted(), componentIndices: components))
+        }
+        try checkCancellation()
+        let snapshot = try Self.finishCapturedSnapshot(hierarchy: hierarchy, coordinateUnits: coordinateUnits,
+            conductiveLayers: conductiveLayers, adjacency: adjacency, tech: tech, footprints: footprints,
+            polygonSources: records.map(\.source), contacts: contacts, groups: groups, pins: pins,
+            isCancelled: isCancelled)
+        return (snapshot, probes)
+    }
+
+    static func captureCoordinateUnits(
+        hierarchy: LayoutHierarchySnapshot, conductiveLayers: Set<LayoutLayerID>, cutLayers: Set<LayoutLayerID>,
+        isCancelled: () -> Bool = { Task.isCancelled }
+    ) throws -> LayoutUnits {
+        for shape in hierarchy.shapes {
+            if isCancelled() { throw LayoutConductorCaptureError.cancelled }
+            guard conductiveLayers.contains(shape.layer) || cutLayers.contains(shape.layer) else { continue }
+            if case .path = shape.geometry {
+                do { return LayoutUnits(scale: try .init(
+                    databaseUnitsPerMicrometer: hierarchy.units.scale.databaseUnitsPerMicrometer * 2)) }
+                catch { throw LayoutConductorCaptureError.invalidCoordinateUnits }
+            }
+        }
+        return hierarchy.units
+    }
+
+    /// Shared reduction of native full capture and a verified live partition.
+    static func finishCapturedSnapshot(
+        hierarchy: LayoutHierarchySnapshot, coordinateUnits: LayoutUnits, conductiveLayers: Set<LayoutLayerID>,
+        adjacency: [LayoutLayerID: Set<LayoutLayerID>], tech: LayoutTechDatabase,
+        footprints: [LayoutConductorSnapshot.Footprint], polygonSources: [LayoutConductorSnapshot.Source],
+        contacts: [LayoutConductorSnapshot.Contact], groups: [[Int]], pins: [LayoutConductorSnapshot.Pin],
+        isCancelled: () -> Bool = { Task.isCancelled }
+    ) throws -> LayoutConductorSnapshot {
+        typealias Snapshot = LayoutConductorSnapshot
+        func checkCancellation() throws { if isCancelled() { throw LayoutConductorCaptureError.cancelled } }
+        var nets = try groups.map { indices in
+            try checkCancellation()
+            return Set(indices.compactMap { footprints[$0].declaredNet })
+        }
+        var componentPins = Array(repeating: [Int](), count: groups.count)
+        for (pinIndex, pin) in pins.enumerated() {
+            try checkCancellation()
+            for component in pin.componentIndices {
+                componentPins[component].append(pinIndex)
+                if let net = pin.declaredNet { nets[component].insert(net) }
+            }
         }
         func netOrder(_ first: Snapshot.NetReference, _ second: Snapshot.NetReference) -> Bool {
             first.occurrenceIndex == second.occurrenceIndex ? first.netID.isCanonicallyOrderedBefore(second.netID) : first.occurrenceIndex < second.occurrenceIndex
         }
-        let components = groups.indices.map { Snapshot.Component(footprintIndices: groups[$0], declaredNets: nets[$0].sorted(by: netOrder), pinIndices: componentPins[$0]) }
+        let components = try groups.indices.map { index in
+            try checkCancellation()
+            return Snapshot.Component(footprintIndices: groups[index], declaredNets: nets[index].sorted(by: netOrder), pinIndices: componentPins[index])
+        }
         var netComponents: [Snapshot.NetReference: [Int]] = [:]
         var unconnectedPins: [Snapshot.NetReference: [Int]] = [:]
         for index in components.indices {
@@ -327,17 +376,18 @@ extension LayoutConnectivityExtractor {
             for net in components[index].declaredNets { netComponents[net, default: []].append(index) }
         }
         for index in pins.indices where pins[index].componentIndices.isEmpty {
+            try checkCancellation()
             if let net = pins[index].declaredNet { unconnectedPins[net, default: []].append(index) }
         }
         let declared = Set(netComponents.keys).union(unconnectedPins.keys).sorted(by: netOrder)
-        let opens = declared.compactMap { net -> Snapshot.Open? in
+        let opens = try declared.compactMap { net -> Snapshot.Open? in
+            try checkCancellation()
             let components = netComponents[net, default: []], unconnected = unconnectedPins[net, default: []]
             return components.count > 1 || !unconnected.isEmpty ? Snapshot.Open(net: net, componentIndices: components, unconnectedPinIndices: unconnected) : nil
         }
-        try checkCancellation()
         return Snapshot(hierarchy: hierarchy, coordinateUnits: coordinateUnits, conductiveLayers: conductiveLayers,
             adjacentConductorLayersByCut: adjacency, contactTechnology: tech, footprints: footprints,
-            contacts: contacts, components: components, pins: pins, opens: opens,
+            polygonSources: polygonSources, contacts: contacts, components: components, pins: pins, opens: opens,
             shortComponentIndices: components.indices.filter { components[$0].declaredNets.count > 1 })
     }
 }

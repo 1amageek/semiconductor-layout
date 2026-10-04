@@ -263,61 +263,6 @@ public struct LayoutConnectivityExtractor {
 
     // MARK: - Verdict assembly
 
-    /// Derives the full analysis from canonically ordered components. Both
-    /// engines call this with identical inputs for identical designs, so
-    /// the emitted analyses are bit-identical.
-    static func assemble(
-        components: [[ConnectivityElementKey]],
-        elements: [ConnectivityElementKey: ConnectivityElement],
-        pins: [LayoutPin] = []
-    ) -> ConnectivityAnalysis {
-        analysis(
-            nets: tagPinNets(
-                nets: components.map { net(for: $0, elements: elements) },
-                pins: pins,
-                elements: elements
-            ),
-            elements: elements
-        )
-    }
-
-    /// Folds pin-declared nets into the islands the pins sit on: a bound
-    /// instance terminal (or a net-carrying top pin) participates in
-    /// shorts, opens and flylines exactly like declared geometry — the
-    /// pin marker itself never conducts, it only NAMES the conductor
-    /// under it. Pins over empty space tag nothing.
-    // FIXME(INCOMPLETE_IMPLEMENTATION): Legacy live assembly uses pin centers and
-    // loses occurrence scope. Live initialization is explicitly disabled until
-    // full pin bands and native scoped references replace this naming path.
-    static func tagPinNets(
-        nets: [ConnectivityNet],
-        pins: [LayoutPin],
-        elements: [ConnectivityElementKey: ConnectivityElement]
-    ) -> [ConnectivityNet] {
-        let boundPins = pins.filter { $0.netID != nil }
-        guard !boundPins.isEmpty else { return nets }
-        var tagged = nets
-        for pin in boundPins {
-            guard let sourceNetID = pin.netID else { continue }
-            let netID = LayoutConductorSnapshot.NetReference(occurrenceIndex: 0, netID: sourceNetID)
-            for index in tagged.indices {
-                guard tagged[index].boundingBox.contains(pin.position) else { continue }
-                let sitsOnMember = tagged[index].memberKeys.contains { key in
-                    guard let element = elements[key],
-                          element.layer == pin.layer else { return false }
-                    return LayoutGeometryAnalysis.contains(pin.position, in: element.geometry)
-                }
-                guard sitsOnMember else { continue }
-                if !tagged[index].declaredNets.contains(netID) {
-                    tagged[index].declaredNets.append(netID)
-                    tagged[index].declaredNets.sort()
-                }
-                break
-            }
-        }
-        return tagged
-    }
-
     /// One conductor piece's verdict view. Split out so the live session
     /// can cache per-component nets — a component's member geometry only
     /// changes through an edit that dissolves the component, so a cached

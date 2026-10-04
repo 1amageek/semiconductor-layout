@@ -10,7 +10,7 @@ Capture every occurrence through HierarchyCapture, admit exact grid geometry,
 retain all selected floating metal and each via layer/cut footprint, construct
 physical contacts and report scoped declared-net and terminal facts. The caller
 supplies conductive layer roles; display metadata does not define conductivity.
-Pins label contacted components and never conduct or join disconnected islands.
+Pins retain the actual contacted footprint indices as source facts, label contacted components and never conduct or join disconnected islands. Component membership alone is insufficient to reconstruct pin incidence after a split.
 
 ## Related Designs
 | Design | Relationship | Contract Used | Summary | Cautions |
@@ -88,6 +88,47 @@ query permits local consumer graph updates without recapturing unaffected
 geometry or duplicating the exact geometry algorithm. Its caller owns candidate
 probe admission; native full capture continues to charge its existing budget.
 
+### Current-generation composition for live edits
+The live migration composes a complete current snapshot, never a historical
+identity baseline presented as current geometry. The native owner captures the
+pending document's hierarchy and chooses coordinate units from the entire
+selected source set. Edited sources alone are decomposed on that profile.
+Removing the last path therefore requires all retained bands and pin bands to
+remain exactly representable on the ordinary grid; failure preserves the prior
+generation. An unchanged path can permit a half-grid edited rectangle.
+
+Composition consumes validated owned footprint references, the consumer's
+existing contact graph/partition, and cached exact pin-contact facts. The owner
+checks source UUID, occurrence range and source kind against the current
+hierarchy. It emits source records in occurrence order, then shape, via and pin
+order, retaining each source's polygon and scanline-band order. The checked
+MaskGeometry band relocation boundary supplies exact coordinate normalization
+and current polygon ordinals; its implementation must be verified before this
+composition path is enabled. The selected dependency revision `5fd36b536abd3521a2a0949552a51c0fcddb5007` passed the relocation owner's 159-method MaskGeometry proof. Component, scoped-label, pin and open reduction is
+shared with full capture. The consumer owns the invariant that its cached
+contacts and local partition equal the full native graph.
+
+The pending complete snapshot and analysis are built before session mutation.
+Installation rebinds every live footprint handle to that one current snapshot,
+so partial captures cannot retain a full historical hierarchy per edit. A
+returned previous analysis continues to own its previous immutable snapshot.
+Pin indices and occurrence references always address the snapshot returned with
+the same analysis. No equality field is removed to accommodate incremental work.
+
+Full hierarchy/snapshot allocation, copy and handle rebinding are linear in the
+admitted current source, footprint, pin and contact facts; canonical ordinal
+ordering additionally sorts bounded index lists. Decomposition, geometric contact probes
+and repartitioning remain local to edited sources and affected components. These
+costs are reported separately. The existing caller-owned hierarchy/decomposition
+limits bound actual preparation work; footprint and contact ceilings additionally
+bound the complete retained snapshot. Cancellation and budget failures publish
+no candidate generation. The synchronous session owns temporary preparation
+values and releases them after atomic installation or failure.
+Spatial cell enumeration and retained index entries are admitted against the
+caller contact-probe ceiling as well. Huge valid source boxes therefore fail
+explicitly before an unbounded cell walk or session mutation. Display boxes
+continue to prune candidates only; this admission adds no geometry inference.
+
 A net reference is source UUID plus occurrence index. Repeated local nets remain
 independent unless a terminal binding explicitly maps them to a parent net.
 Bindings resolve parent-first; conflicting parent assignments to one local net
@@ -116,8 +157,8 @@ owns disjoint cut arrays, via-via metal contact, floating metal, concave holes,
 scoped hierarchy labels, pins, opens, shorts, exact grid rejection, limits and
 cancellation. The dependency revision must include the verified bounded band API.
 Native macOS evidence does not qualify WASM/Embedded or process/corner RC.
-Legacy batch/live/device consumers must migrate their aggregate-via identity
-before their electrical results can inherit this snapshot's topology guarantee.
+[LiveProductionConnectivityTests](../../../Tests/LayoutAutoGenTests/LiveProductionConnectivityTests.swift) and [LiveConnectivitySessionTests](../../../Tests/LayoutAutoGenTests/LiveConnectivitySessionTests.swift) own full-generation equality, scoped occurrence/pin identity, exact profile changes, atomic geometry/budget/cancellation failure, and separately measured local versus materialization costs. A 200-band one-source edit captured and repartitioned one band, inspected zero contact candidates and visited 12 spatial cells while materializing all 200 bands.
+The remaining device/DRC consumers are tracked by the parent consumer matrix and retain explicit unavailable gates until migrated.
 [ConductorPathCaptureTests](../../../Tests/LayoutAutoGenTests/ConductorPathCaptureTests.swift) additionally owns analytical stroke coverage,
 caps/joins, half-grid output units, hierarchy, contacts and resource/cancel failure.
 Changing coordinate units invalidates PEXNative conversion assumptions and

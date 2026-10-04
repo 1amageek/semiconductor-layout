@@ -2,653 +2,293 @@ import Foundation
 import LayoutCore
 import LayoutTech
 
-/// Incremental connectivity extraction over geometry edits to one cell.
-///
-/// The session keeps the flattened conductor element table, the full
-/// contact graph, and its connected-component partition. An edit
-/// re-evaluates geometry contact only for the edited elements, then
-/// re-partitions only the affected key set:
-///
-/// - the members of every component that contained an edited element
-///   before the edit, and
-/// - the members of every component an edited element touches after the
-///   edit.
-///
-/// No contact between two unedited elements changes, and every contact of
-/// an edited element stays inside that set, so unioning the induced
-/// subgraph locally reproduces the global partition exactly. Verdict
-/// assembly then runs through the same canonical-order path as
-/// ``LayoutConnectivityExtractor``, so the analysis is bit-identical to a
-/// batch extraction of the same design.
-///
-/// Structural changes (pins, instances, child cells, technology) are not
-/// expressible as deltas; call ``rebuild(document:cellID:)``.
-///
-/// The session is single-owner mutable state and is not thread-safe.
+/// Incremental exact connectivity for geometry edits to one owning cell.
+/// Native decomposition and contact probes cover edited sources only, and
+/// only touched components are repartitioned. Complete current hierarchy and
+/// snapshot materialization, canonical ordering and handle rebinding are
+/// separate bounded costs. Preparation never mutates the published generation.
+/// Structural edits require rebuild. This synchronous session has one owner
+/// and is not Sendable; its immutable returned analyses may be shared.
 public final class LiveConnectivitySession {
-    private let service = LayoutDRCService()
     private let tech: LayoutTechDatabase
+    private let limits: LayoutConductorCaptureLimits
+    private var state: State
 
-    // Flattened design. The target cell's own elements come first in
-    // flatten order and are the editable region; contributions from
-    // instantiated child cells are constant across deltas.
-    private var topShapes: [LayoutShape] = []
-    private var topVias: [LayoutVia] = []
-    private var childShapes: [LayoutShape] = []
-    private var childVias: [LayoutVia] = []
-    private var childShapeIDs: Set<UUID> = []
-    private var childViaIDs: Set<UUID> = []
-    /// Flattened pins (structural between rebuilds); net-carrying pins
-    /// tag their islands' declared nets in every emitted analysis.
-    private var flatPins: [LayoutPin] = []
-
-    // Conductor element table, contact graph, and the persistent spatial
-    // index that prunes edited-element contact re-tests. The index is
-    // maintained across deltas — old boxes leave before the element table
-    // mutates, new boxes enter after — so apply() never pays an O(n)
-    // rebuild of any per-element structure.
-    private var elements: [ConnectivityElementKey: ConnectivityElement] = [:]
-    private var adjacency: [ConnectivityElementKey: Set<ConnectivityElementKey>] = [:]
-    private var contactIndex = ConnectivityContactIndex(cellSize: 1.0)
-
-    // Connected-component partition; member lists stay sorted. Each
-    // component caches its assembled net: member geometry can only change
-    // through an edit, and every edit dissolves the touched components, so
-    // a cached net always equals a fresh `LayoutConnectivityExtractor.net`.
-    private var membersByComponentID: [Int: [ConnectivityElementKey]] = [:]
-    private var componentIDByKey: [ConnectivityElementKey: Int] = [:]
-    private var netByComponentID: [Int: ConnectivityNet] = [:]
-    private var nextComponentID = 0
-
-    // Editable element positions, maintained across deltas so apply()
-    // does not pay an O(n) dictionary rebuild per edit. Updates keep
-    // positions, adds append; removals shift positions and trigger the
-    // only full rebuild.
-    private var shapeIndexByID: [UUID: Int] = [:]
-    private var viaIndexByID: [UUID: Int] = [:]
-
-    private struct SessionConfiguration {
-        var topShapes: [LayoutShape]
-        var topVias: [LayoutVia]
-        var childShapes: [LayoutShape]
-        var childVias: [LayoutVia]
-        var childShapeIDs: Set<UUID>
-        var childViaIDs: Set<UUID>
-        var flatPins: [LayoutPin]
+    private struct State {
+        var document: LayoutDocument
+        var cellID: UUID
+        var snapshot: LayoutConductorSnapshot
+        var analysis: ConnectivityAnalysis
         var elements: [ConnectivityElementKey: ConnectivityElement]
         var adjacency: [ConnectivityElementKey: Set<ConnectivityElementKey>]
         var contactIndex: ConnectivityContactIndex
-        var partition: PartitionState
+        var membersByComponent: [Int: [ConnectivityElementKey]]
+        var componentByKey: [ConnectivityElementKey: Int]
+        var nextComponentID: Int
+        var pinContacts: [Int: Set<ConnectivityElementKey>]
+        var sourceKeys: [ConnectivityElementKey: Set<ConnectivityElementKey>]
         var shapeIndexByID: [UUID: Int]
         var viaIndexByID: [UUID: Int]
     }
 
-    private struct FlattenedLayout {
-        var topShapes: [LayoutShape]
-        var topVias: [LayoutVia]
-        var childShapes: [LayoutShape]
-        var childVias: [LayoutVia]
-        var childShapeIDs: Set<UUID>
-        var childViaIDs: Set<UUID>
-        var flatPins: [LayoutPin]
-    }
-
-    private struct PartitionState {
-        var membersByComponentID: [Int: [ConnectivityElementKey]] = [:]
-        var componentIDByKey: [ConnectivityElementKey: Int] = [:]
-        var netByComponentID: [Int: ConnectivityNet] = [:]
-        var nextComponentID = 0
-    }
-
-    private struct DeltaElementKeys {
-        var removedKeys: [ConnectivityElementKey]
-        var updatedKeys: [ConnectivityElementKey]
-        var addedKeys: [ConnectivityElementKey]
-
-        var preEditKeys: [ConnectivityElementKey] { removedKeys + updatedKeys }
-        var survivingEditedKeys: [ConnectivityElementKey] { updatedKeys + addedKeys }
-    }
-
-    private struct ShapeUpdate {
-        var index: Int
-        var shape: LayoutShape
-    }
-
-    private struct ViaUpdate {
-        var index: Int
-        var via: LayoutVia
-    }
-
-    private struct ResolvedEditableGeometryEdit {
-        var shapeUpdates: [ShapeUpdate]
-        var viaUpdates: [ViaUpdate]
-    }
-
-    public init(
-        document: LayoutDocument,
-        tech: LayoutTechDatabase,
-        cellID: UUID? = nil
-    ) throws {
+    public init(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
+                limits: LayoutConductorCaptureLimits = .default) throws {
         self.tech = tech
-        _ = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): LiveConnectivitySession still replaces
-        // one source node per delta. Editor live connectivity must not publish
-        // results until captured bands replace all source pieces atomically and
-        // affected-component locality is verified against native batch capture.
-        try Self.requireCapturedPieceMigration()
-        try configure(document: document, cellID: cellID)
+        self.limits = limits
+        self.state = try Self.makeState(document: document, tech: tech, cellID: cellID, limits: limits)
     }
 
-    private static func requireCapturedPieceMigration() throws {
-        throw LayoutConnectivityExtractionError.consumerMigrationIncomplete
+    public var currentAnalysis: ConnectivityAnalysis { state.analysis }
+
+    public func rebuild(document: LayoutDocument, cellID: UUID? = nil) throws -> ConnectivityAnalysis {
+        let prepared = try Self.makeState(document: document, tech: tech, cellID: cellID, limits: limits)
+        state = prepared
+        return state.analysis
     }
 
-    /// Current connectivity snapshot; always exact for the geometry the
-    /// session has been fed.
-    public var currentAnalysis: ConnectivityAnalysis {
-        LayoutConnectivityExtractor.analysis(
-            nets: LayoutConnectivityExtractor.tagPinNets(
-                nets: netsInCanonicalOrder(),
-                pins: flatPins,
-                elements: elements
-            ),
-            elements: elements
-        )
-    }
-
-    /// Applies a geometry delta, re-tests contact for the edited elements,
-    /// re-partitions the affected components, and returns the exact
-    /// analysis.
     public func apply(_ delta: LayoutEditDelta) throws -> LiveConnectivityUpdate {
-        let clock = ContinuousClock()
-        let start = clock.now
-
-        try validate(delta, shapeIndexByID: shapeIndexByID, viaIndexByID: viaIndexByID)
-        let keys = Self.makeDeltaElementKeys(delta)
-        let geometryEdit = try resolveEditableGeometryEdit(delta)
-        var dissolvedComponentIDs = componentIDs(containing: keys.preEditKeys)
-        let oldContactsByUpdatedKey = contactSnapshot(for: keys.updatedKeys)
-
-        removePreEditGraphEntries(keys.preEditKeys, removedKeys: keys.removedKeys)
-        applyEditableGeometry(delta, resolvedEdit: geometryEdit)
-        updateElementTable(delta, addedKeys: keys.addedKeys)
-        refreshContacts(for: keys.survivingEditedKeys)
-
-        if let update = refreshIfContactsUnchanged(
-            keys: keys,
-            oldContactsByUpdatedKey: oldContactsByUpdatedKey,
-            dissolvedComponentIDs: dissolvedComponentIDs,
-            duration: clock.now - start
-        ) {
-            return update
+        let clock = ContinuousClock(), start = clock.now
+        try Self.validate(delta, shapeIndexByID: state.shapeIndexByID, viaIndexByID: state.viaIndexByID)
+        if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+        if delta.isEmpty {
+            return LiveConnectivityUpdate(analysis: state.analysis, recomputedElementCount: 0,
+                recomputedComponentCount: 0, duration: clock.now - start,
+                storedSpatialEntryCount: state.contactIndex.storedEntryCount)
         }
-
-        dissolvedComponentIDs.formUnion(componentIDs(touchedByPostEditContacts: keys.survivingEditedKeys))
-        let affectedKeys = dissolveComponents(
-            dissolvedComponentIDs,
-            survivingEditedKeys: keys.survivingEditedKeys
-        )
-        let rebuiltComponentCount = repartition(affectedKeys: affectedKeys)
-        return makeUpdate(
-            recomputedElementCount: affectedKeys.count,
-            recomputedComponentCount: rebuiltComponentCount,
-            duration: clock.now - start
-        )
-    }
-
-    private static func makeDeltaElementKeys(_ delta: LayoutEditDelta) -> DeltaElementKeys {
-        DeltaElementKeys(
-            removedKeys: delta.removedShapeIDs.map { .shape(.top($0)) } +
-                delta.removedViaIDs.map { .via(.top($0)) },
-            updatedKeys: delta.updatedShapes.map { .shape(.top($0.id)) } +
-                delta.updatedVias.map { .via(.top($0.id)) },
-            addedKeys: delta.addedShapes.map { .shape(.top($0.id)) } +
-                delta.addedVias.map { .via(.top($0.id)) }
-        )
-    }
-
-    private func resolveEditableGeometryEdit(_ delta: LayoutEditDelta) throws -> ResolvedEditableGeometryEdit {
-        var shapeUpdates: [ShapeUpdate] = []
-        for shape in delta.updatedShapes {
-            guard let index = shapeIndexByID[shape.id], topShapes.indices.contains(index) else {
-                throw LiveConnectivitySessionError.unknownShapeID(shape.id)
+        let additions = delta.addedShapes.count.addingReportingOverflow(delta.addedVias.count)
+        guard !additions.overflow, additions.partialValue <= limits.hierarchy.maximumObjects else {
+            throw LayoutHierarchyCaptureError.limitExceeded(.objects)
+        }
+        // Value copies retain the complete old state while preparation mutates
+        // the candidate. Full-generation materialization is a deliberate bounded
+        // copy cost, distinct from local geometric contact and partition work.
+        var pending = state
+        try Self.mirror(delta, into: &pending.document, cellID: state.cellID)
+        let extractor = LayoutConnectivityExtractor()
+        let hierarchy = try extractor.captureHierarchy(document: pending.document, cellID: state.cellID,
+            limits: limits.hierarchy)
+        guard let root = hierarchy.occurrences.firstIndex(where: {
+            $0.parentIndex == nil && $0.sourceCellID == hierarchy.rootCellID
+        }) else { throw LayoutConductorCaptureError.invalidComposition }
+        let occurrence = hierarchy.occurrences[root]
+        let editedShapeIDs = Set((delta.updatedShapes + delta.addedShapes).map(\.id))
+        let editedViaIDs = Set((delta.updatedVias + delta.addedVias).map(\.id))
+        var selected: Set<LayoutConductorSnapshot.Source> = []
+        for index in occurrence.shapeRange where editedShapeIDs.contains(hierarchy.shapes[index].id) { selected.insert(.shape(index)) }
+        for index in occurrence.viaRange where editedViaIDs.contains(hierarchy.vias[index].id) { selected.insert(.via(index)) }
+        let replacementPreparation = try extractor.captureNativeConductors(document: pending.document, tech: tech,
+            conductiveLayers: state.snapshot.conductiveLayers, cellID: state.cellID, limits: limits,
+            hierarchy: hierarchy, selectingSources: selected)
+        let replacement = replacementPreparation.snapshot
+        let captured = try LayoutConnectivityExtractor.capturedElements(replacement)
+        let replacedSources = Set(delta.updatedShapes.map { ConnectivityElementKey.shape(.top($0.id)) }
+            + delta.addedShapes.map { .shape(.top($0.id)) }
+            + delta.updatedVias.map { .via(.top($0.id)) }
+            + delta.addedVias.map { .via(.top($0.id)) })
+        let retiredSources = Set(delta.removedShapeIDs.map { ConnectivityElementKey.shape(.top($0)) }
+            + delta.updatedShapes.map { .shape(.top($0.id)) }
+            + delta.removedViaIDs.map { .via(.top($0)) }
+            + delta.updatedVias.map { .via(.top($0.id)) })
+        let retired = retiredSources.reduce(into: Set<ConnectivityElementKey>()) {
+            $0.formUnion(state.sourceKeys[$1, default: []])
+        }
+        let remaining = state.elements.count - retired.count
+        guard remaining >= 0, captured.keys.count <= limits.maximumFootprints - remaining else {
+            throw LayoutConductorCaptureError.limitExceeded(.footprints)
+        }
+        var spatialVisits = 0
+        func countSpatialVisits(_ count: Int) throws {
+            let sum = spatialVisits.addingReportingOverflow(count)
+            guard !sum.overflow else { throw LayoutConductorCaptureError.limitExceeded(.spatialIndexEntries) }
+            spatialVisits = sum.partialValue
+        }
+        var touchedComponents: Set<Int> = []
+        for key in retired {
+            if let component = state.componentByKey[key] { touchedComponents.insert(component) }
+            guard let element = state.elements[key] else { throw LayoutConductorCaptureError.invalidComposition }
+            try countSpatialVisits(pending.contactIndex.remove(key, boundingBox: element.boundingBox))
+            for neighbour in pending.adjacency[key, default: []] { pending.adjacency[neighbour]?.remove(key) }
+            pending.adjacency.removeValue(forKey: key)
+            pending.elements.removeValue(forKey: key)
+        }
+        for source in retiredSources { pending.sourceKeys.removeValue(forKey: source) }
+        // Admit all future entries before any new bounding-box walk. Otherwise
+        // many individually legal boxes could exceed the global storage/work
+        // ceiling before insertion discovers the aggregate failure.
+        var futureEntries = pending.contactIndex.storedEntryCount
+        for element in captured.elements.values {
+            let cost = try pending.contactIndex.entryCost(near: element.boundingBox)
+            guard cost <= limits.maximumContactProbes - futureEntries else {
+                throw LayoutConductorCaptureError.limitExceeded(.spatialIndexEntries)
             }
-            shapeUpdates.append(ShapeUpdate(index: index, shape: shape))
+            futureEntries += cost
         }
-        var viaUpdates: [ViaUpdate] = []
-        for via in delta.updatedVias {
-            guard let index = viaIndexByID[via.id], topVias.indices.contains(index) else {
-                throw LiveConnectivitySessionError.unknownViaID(via.id)
+        for source in pending.pinContacts.keys {
+            pending.pinContacts[source]?.subtract(retired)
+        }
+        for (key, element) in captured.elements {
+            pending.elements[key] = element
+            pending.adjacency[key] = []
+            pending.sourceKeys[key.sourceKey, default: []].insert(key)
+        }
+        for contact in replacement.contacts {
+            let first = captured.keys[contact.firstFootprint], second = captured.keys[contact.secondFootprint]
+            pending.adjacency[first, default: []].insert(second)
+            pending.adjacency[second, default: []].insert(first)
+        }
+        var probes = replacementPreparation.probeCount
+        func chargeProbe() throws {
+            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            guard probes < limits.maximumContactProbes else { throw LayoutConductorCaptureError.limitExceeded(.contactProbes) }
+            probes += 1
+        }
+        for key in captured.keys {
+            guard let element = pending.elements[key], let first = element.footprintIndex else {
+                throw LayoutConductorCaptureError.invalidComposition
             }
-            viaUpdates.append(ViaUpdate(index: index, via: via))
-        }
-        return ResolvedEditableGeometryEdit(shapeUpdates: shapeUpdates, viaUpdates: viaUpdates)
-    }
-
-    private func componentIDs(containing keys: [ConnectivityElementKey]) -> Set<Int> {
-        var componentIDs: Set<Int> = []
-        for key in keys {
-            if let componentID = componentIDByKey[key] {
-                componentIDs.insert(componentID)
+            let candidates = try pending.contactIndex.candidates(near: element.boundingBox)
+            try countSpatialVisits(candidates.cellVisits)
+            for otherKey in candidates.keys where otherKey != key {
+                // The index contains preserved pieces only during preparation.
+                // New-new contacts already come from the native partial capture.
+                guard let other = pending.elements[otherKey], let owner = other.conductorCapture,
+                      let second = other.footprintIndex else { throw LayoutConductorCaptureError.invalidComposition }
+                try chargeProbe()
+                if try replacement.hasElectricalContact(footprintAt: first, with: owner, footprintAt: second) {
+                    pending.adjacency[key, default: []].insert(otherKey)
+                    pending.adjacency[otherKey, default: []].insert(key)
+                    if let component = state.componentByKey[otherKey] { touchedComponents.insert(component) }
+                }
             }
-        }
-        return componentIDs
-    }
-
-    private func contactSnapshot(
-        for keys: [ConnectivityElementKey]
-    ) -> [ConnectivityElementKey: Set<ConnectivityElementKey>] {
-        var snapshot: [ConnectivityElementKey: Set<ConnectivityElementKey>] = [:]
-        for key in keys {
-            snapshot[key] = adjacency[key] ?? []
-        }
-        return snapshot
-    }
-
-    private func removePreEditGraphEntries(
-        _ keys: [ConnectivityElementKey],
-        removedKeys: [ConnectivityElementKey]
-    ) {
-        for key in keys {
-            if let element = elements[key] {
-                contactIndex.remove(key, boundingBox: element.boundingBox)
-            }
-            for neighbour in adjacency[key] ?? [] {
-                adjacency[neighbour]?.remove(key)
-            }
-            adjacency[key] = []
-        }
-        for key in removedKeys {
-            adjacency.removeValue(forKey: key)
-            elements.removeValue(forKey: key)
-        }
-    }
-
-    private func applyEditableGeometry(
-        _ delta: LayoutEditDelta,
-        resolvedEdit: ResolvedEditableGeometryEdit
-    ) {
-        for update in resolvedEdit.shapeUpdates {
-            topShapes[update.index] = update.shape
-        }
-        if !delta.removedShapeIDs.isEmpty {
-            let removed = Set(delta.removedShapeIDs)
-            topShapes.removeAll { removed.contains($0.id) }
-        }
-        topShapes.append(contentsOf: delta.addedShapes)
-        if delta.removedShapeIDs.isEmpty {
-            for (offset, shape) in delta.addedShapes.enumerated() {
-                shapeIndexByID[shape.id] = topShapes.count - delta.addedShapes.count + offset
-            }
-        } else {
-            rebuildShapeIndex()
-        }
-
-        for update in resolvedEdit.viaUpdates {
-            topVias[update.index] = update.via
-        }
-        if !delta.removedViaIDs.isEmpty {
-            let removed = Set(delta.removedViaIDs)
-            topVias.removeAll { removed.contains($0.id) }
-        }
-        topVias.append(contentsOf: delta.addedVias)
-        if delta.removedViaIDs.isEmpty {
-            for (offset, via) in delta.addedVias.enumerated() {
-                viaIndexByID[via.id] = topVias.count - delta.addedVias.count + offset
-            }
-        } else {
-            rebuildViaIndex()
-        }
-    }
-
-    private func updateElementTable(_ delta: LayoutEditDelta, addedKeys: [ConnectivityElementKey]) {
-        for shape in delta.updatedShapes + delta.addedShapes {
-            elements[.shape(.top(shape.id))] = LayoutConnectivityExtractor.makeShapeElement(
-                shape, key: .shape(.top(shape.id))
-            )
-        }
-        for via in delta.updatedVias + delta.addedVias {
-            elements[.via(.top(via.id))] = LayoutConnectivityExtractor.makeViaElement(
-                via, key: .via(.top(via.id)), tech: tech, service: service
-            )
-        }
-        for key in addedKeys { adjacency[key] = [] }
-    }
-
-    private func refreshContacts(for keys: [ConnectivityElementKey]) {
-        for key in keys {
-            guard let element = elements[key] else {
-                continue
-            }
-            contactIndex.insert(key, boundingBox: element.boundingBox)
-        }
-        for key in keys {
-            guard let element = elements[key] else { continue }
-            let contacts = LayoutConnectivityExtractor.contacts(
-                of: element,
-                candidates: contactIndex.candidates(near: element.boundingBox),
-                elements: elements,
-                service: service
-            )
-            for neighbour in contacts {
-                adjacency[key, default: []].insert(neighbour)
-                adjacency[neighbour, default: []].insert(key)
-            }
-        }
-    }
-
-    private func refreshIfContactsUnchanged(
-        keys: DeltaElementKeys,
-        oldContactsByUpdatedKey: [ConnectivityElementKey: Set<ConnectivityElementKey>],
-        dissolvedComponentIDs: Set<Int>,
-        duration: Duration
-    ) -> LiveConnectivityUpdate? {
-        guard keys.removedKeys.isEmpty && keys.addedKeys.isEmpty else { return nil }
-        let contactsUnchanged = keys.updatedKeys.allSatisfy {
-            (adjacency[$0] ?? []) == (oldContactsByUpdatedKey[$0] ?? [])
-        }
-        guard contactsUnchanged else { return nil }
-
-        var refreshedElementCount = 0
-        for componentID in dissolvedComponentIDs {
-            guard let members = membersByComponentID[componentID] else {
-                continue
-            }
-            refreshedElementCount += members.count
-            netByComponentID[componentID] = LayoutConnectivityExtractor.net(
-                for: members,
-                elements: elements
-            )
-        }
-        return makeUpdate(
-            recomputedElementCount: refreshedElementCount,
-            recomputedComponentCount: 0,
-            duration: duration
-        )
-    }
-
-    private func componentIDs(touchedByPostEditContacts keys: [ConnectivityElementKey]) -> Set<Int> {
-        var componentIDs: Set<Int> = []
-        for key in keys {
-            for neighbour in adjacency[key] ?? [] {
-                if let componentID = componentIDByKey[neighbour] {
-                    componentIDs.insert(componentID)
+            for pinIndex in state.snapshot.pins.indices {
+                let pin = state.snapshot.pins[pinIndex]
+                let sourcePin = state.snapshot.hierarchy.pins[pin.sourcePinIndex]
+                let bounds = LayoutGeometryAnalysis.boundingBox(for: state.snapshot.hierarchy.pinGeometries[pin.sourcePinIndex])
+                try chargeProbe()
+                guard element.layer == sourcePin.layer, bounds.intersects(element.boundingBox) else { continue }
+                if try state.snapshot.hasPinContact(pinAt: pinIndex, with: replacement, footprintAt: first) {
+                    pending.pinContacts[pin.sourcePinIndex, default: []].insert(key)
                 }
             }
         }
-        return componentIDs
-    }
-
-    private func dissolveComponents(
-        _ componentIDs: Set<Int>,
-        survivingEditedKeys: [ConnectivityElementKey]
-    ) -> Set<ConnectivityElementKey> {
-        var affectedKeys: Set<ConnectivityElementKey> = Set(survivingEditedKeys)
-        for componentID in componentIDs {
-            guard let members = membersByComponentID[componentID] else {
-                continue
-            }
-            for member in members {
-                componentIDByKey.removeValue(forKey: member)
-                if elements[member] != nil { affectedKeys.insert(member) }
-            }
-            membersByComponentID.removeValue(forKey: componentID)
-            netByComponentID.removeValue(forKey: componentID)
+        for element in captured.elements.values {
+            try countSpatialVisits(pending.contactIndex.insert(element.key, boundingBox: element.boundingBox))
         }
-        return affectedKeys
+        var affected = Set(captured.keys)
+        for component in touchedComponents {
+            guard let members = pending.membersByComponent.removeValue(forKey: component) else {
+                throw LayoutConductorCaptureError.invalidComposition
+            }
+            for key in members {
+                pending.componentByKey.removeValue(forKey: key)
+                if pending.elements[key] != nil { affected.insert(key) }
+            }
+        }
+        let local = try Self.localComponents(keys: affected, adjacency: pending.adjacency)
+        for members in local {
+            let id = pending.nextComponentID
+            let next = id.addingReportingOverflow(1)
+            guard !next.overflow else { throw LayoutConductorCaptureError.invalidComposition }
+            pending.nextComponentID = next.partialValue
+            pending.membersByComponent[id] = members
+            for key in members { pending.componentByKey[key] = id }
+        }
+        let snapshot = try LayoutConnectivityExtractor.composeConductors(hierarchy: hierarchy,
+            template: state.snapshot, replacement: replacement, replacementSources: replacedSources,
+            elements: pending.elements, adjacency: pending.adjacency,
+            componentMembers: Array(pending.membersByComponent.values), pinContacts: pending.pinContacts, limits: limits)
+        let rebound = try LayoutConnectivityExtractor.capturedElements(snapshot)
+        pending.snapshot = snapshot
+        pending.analysis = try LayoutConnectivityExtractor.analysis(from: snapshot)
+        pending.elements = rebound.elements
+        guard let cell = pending.document.cell(withID: state.cellID) else { throw LiveConnectivitySessionError.targetCellNotFound }
+        pending.shapeIndexByID = Dictionary(uniqueKeysWithValues: cell.shapes.enumerated().map { ($0.element.id, $0.offset) })
+        pending.viaIndexByID = Dictionary(uniqueKeysWithValues: cell.vias.enumerated().map { ($0.element.id, $0.offset) })
+        if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+        state = pending
+        return LiveConnectivityUpdate(analysis: pending.analysis, recomputedElementCount: affected.count,
+            recomputedComponentCount: local.count, duration: clock.now - start,
+            capturedFootprintCount: captured.keys.count, contactProbeCount: probes,
+            materializedFootprintCount: snapshot.footprints.count,
+            spatialCellVisitCount: spatialVisits, storedSpatialEntryCount: pending.contactIndex.storedEntryCount)
     }
 
-    private func makeUpdate(
-        recomputedElementCount: Int,
-        recomputedComponentCount: Int,
-        duration: Duration
-    ) -> LiveConnectivityUpdate {
-        LiveConnectivityUpdate(
-            analysis: currentAnalysis,
-            recomputedElementCount: recomputedElementCount,
-            recomputedComponentCount: recomputedComponentCount,
-            duration: duration
-        )
-    }
-
-    /// Full re-extraction from a fresh document — the explicit path for
-    /// structural changes a delta cannot express (pins, instances, child
-    /// cells). The technology database stays fixed for the session.
-    public func rebuild(document: LayoutDocument, cellID: UUID? = nil) throws -> ConnectivityAnalysis {
-        try configure(document: document, cellID: cellID)
-        return currentAnalysis
-    }
-
-    // MARK: - Setup
-
-    private func configure(document: LayoutDocument, cellID: UUID?) throws {
-        let configuration = try makeConfiguration(document: document, cellID: cellID)
-        install(configuration)
-    }
-
-    private func makeConfiguration(document: LayoutDocument, cellID: UUID?) throws -> SessionConfiguration {
-        let flattened = try makeFlattenedLayout(document: document, cellID: cellID)
-        try Self.validateConfigurationIDs(flattened)
-        let elements = LayoutConnectivityExtractor.makeElements(
-            topShapes: flattened.topShapes,
-            childShapes: flattened.childShapes,
-            topVias: flattened.topVias,
-            childVias: flattened.childVias,
-            tech: tech,
-            service: service
-        )
-        let adjacency = LayoutConnectivityExtractor.contactAdjacency(elements: elements, service: service)
-        return SessionConfiguration(
-            topShapes: flattened.topShapes,
-            topVias: flattened.topVias,
-            childShapes: flattened.childShapes,
-            childVias: flattened.childVias,
-            childShapeIDs: flattened.childShapeIDs,
-            childViaIDs: flattened.childViaIDs,
-            flatPins: flattened.flatPins,
-            elements: elements,
-            adjacency: adjacency,
-            contactIndex: Self.makeContactIndex(elements: elements),
-            partition: Self.makePartitionState(adjacency: adjacency, elements: elements),
-            shapeIndexByID: Self.makeShapeIndex(flattened.topShapes),
-            viaIndexByID: Self.makeViaIndex(flattened.topVias)
-        )
-    }
-
-    private func makeFlattenedLayout(document: LayoutDocument, cellID: UUID?) throws -> FlattenedLayout {
-        guard let targetCell = service.resolveCell(document: document, cellID: cellID) else {
+    private static func makeState(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID?,
+                                  limits: LayoutConductorCaptureLimits) throws -> State {
+        guard let cell = LayoutDRCService().resolveCell(document: document, cellID: cellID) else {
             throw LiveConnectivitySessionError.targetCellNotFound
         }
-
-        var shapes: [LayoutShape] = []
-        var vias: [LayoutVia] = []
-        var pins: [LayoutPin] = []
-        var conflicts: [LayoutDRCService.TerminalConnectivityConflict] = []
-        try service.flatten(
-            cell: targetCell,
-            document: document,
-            tech: tech,
-            shapes: &shapes,
-            vias: &vias,
-            pins: &pins,
-            terminalConflicts: &conflicts
-        )
-
-        // Flatten appends the target cell's own elements before recursing
-        // into instances, so a count split separates editable from constant.
-        let topShapes = Array(shapes.prefix(targetCell.shapes.count))
-        let childShapes = Array(shapes.dropFirst(targetCell.shapes.count))
-        let topVias = Array(vias.prefix(targetCell.vias.count))
-        let childVias = Array(vias.dropFirst(targetCell.vias.count))
-        let childShapeIDs = Set(childShapes.map(\.id))
-        let childViaIDs = Set(childVias.map(\.id))
-
-        return FlattenedLayout(
-            topShapes: topShapes,
-            topVias: topVias,
-            childShapes: childShapes,
-            childVias: childVias,
-            childShapeIDs: childShapeIDs,
-            childViaIDs: childViaIDs,
-            flatPins: pins
-        )
-    }
-
-    private static func validateConfigurationIDs(_ flattened: FlattenedLayout) throws {
-        try validateUniqueTopShapeIDs(flattened.topShapes)
-        try validateUniqueTopViaIDs(flattened.topVias)
-
-        // Key-based component bookkeeping needs editable IDs distinct from
-        // child contributions; duplicates among multi-instanced children
-        // are fine because child occurrences key by position.
-        for shape in flattened.topShapes where flattened.childShapeIDs.contains(shape.id) {
-            throw LiveConnectivitySessionError.hierarchyIdentifierCollision(shape.id)
+        let snapshot = try LayoutConnectivityExtractor().captureConductors(document: document, tech: tech,
+            conductiveLayers: LayoutConnectivityExtractor.productionConductiveLayers(tech, limits: limits),
+            cellID: cell.id, limits: limits)
+        let captured = try LayoutConnectivityExtractor.capturedElements(snapshot)
+        var adjacency = Dictionary(uniqueKeysWithValues: captured.keys.map { ($0, Set<ConnectivityElementKey>()) })
+        for contact in snapshot.contacts {
+            let first = captured.keys[contact.firstFootprint], second = captured.keys[contact.secondFootprint]
+            adjacency[first, default: []].insert(second)
+            adjacency[second, default: []].insert(first)
         }
-        for via in flattened.topVias where flattened.childViaIDs.contains(via.id) {
-            throw LiveConnectivitySessionError.hierarchyIdentifierCollision(via.id)
+        var index = ConnectivityContactIndex(cellSize: ShapeGridIndex.defaultCellSize(for: captured.elements.values.map(\.boundingBox)),
+            maximumEntries: limits.maximumContactProbes)
+        for element in captured.elements.values { try index.insert(element.key, boundingBox: element.boundingBox) }
+        var members: [Int: [ConnectivityElementKey]] = [:], componentByKey: [ConnectivityElementKey: Int] = [:]
+        for (id, component) in snapshot.components.enumerated() {
+            let keys = component.footprintIndices.map { captured.keys[$0] }.sorted()
+            members[id] = keys
+            for key in keys { componentByKey[key] = id }
         }
-    }
-
-    private static func makeContactIndex(
-        elements: [ConnectivityElementKey: ConnectivityElement]
-    ) -> ConnectivityContactIndex {
-        // Cell size is chosen once per generation from the initial design;
-        // pruning quality may drift as edits accumulate, correctness never
-        // does, and rebuild() re-derives it.
-        var contactIndex = ConnectivityContactIndex(
-            cellSize: ShapeGridIndex.defaultCellSize(for: elements.values.map(\.boundingBox))
-        )
-        for element in elements.values {
-            contactIndex.insert(element.key, boundingBox: element.boundingBox)
+        var pinContacts: [Int: Set<ConnectivityElementKey>] = [:]
+        for pin in snapshot.pins {
+            pinContacts[pin.sourcePinIndex] = Set(pin.footprintIndices.map { captured.keys[$0] })
         }
-        return contactIndex
+        var sourceKeys: [ConnectivityElementKey: Set<ConnectivityElementKey>] = [:]
+        for key in captured.keys { sourceKeys[key.sourceKey, default: []].insert(key) }
+        return State(document: document, cellID: cell.id, snapshot: snapshot,
+            analysis: try LayoutConnectivityExtractor.analysis(from: snapshot), elements: captured.elements,
+            adjacency: adjacency, contactIndex: index, membersByComponent: members, componentByKey: componentByKey,
+            nextComponentID: snapshot.components.count, pinContacts: pinContacts, sourceKeys: sourceKeys,
+            shapeIndexByID: Dictionary(uniqueKeysWithValues: cell.shapes.enumerated().map { ($0.element.id, $0.offset) }),
+            viaIndexByID: Dictionary(uniqueKeysWithValues: cell.vias.enumerated().map { ($0.element.id, $0.offset) }))
     }
 
-    private func install(_ configuration: SessionConfiguration) {
-        topShapes = configuration.topShapes
-        topVias = configuration.topVias
-        childShapes = configuration.childShapes
-        childVias = configuration.childVias
-        childShapeIDs = configuration.childShapeIDs
-        childViaIDs = configuration.childViaIDs
-        flatPins = configuration.flatPins
-        elements = configuration.elements
-        adjacency = configuration.adjacency
-        contactIndex = configuration.contactIndex
-        membersByComponentID = configuration.partition.membersByComponentID
-        componentIDByKey = configuration.partition.componentIDByKey
-        netByComponentID = configuration.partition.netByComponentID
-        nextComponentID = configuration.partition.nextComponentID
-        shapeIndexByID = configuration.shapeIndexByID
-        viaIndexByID = configuration.viaIndexByID
-    }
-
-    private func rebuildShapeIndex() {
-        shapeIndexByID = Self.makeShapeIndex(topShapes)
-    }
-
-    private func rebuildViaIndex() {
-        viaIndexByID = Self.makeViaIndex(topVias)
-    }
-
-    private static func makeShapeIndex(_ shapes: [LayoutShape]) -> [UUID: Int] {
-        Dictionary(uniqueKeysWithValues: shapes.enumerated().map { ($0.element.id, $0.offset) })
-    }
-
-    private static func makeViaIndex(_ vias: [LayoutVia]) -> [UUID: Int] {
-        Dictionary(uniqueKeysWithValues: vias.enumerated().map { ($0.element.id, $0.offset) })
-    }
-
-    private static func validateUniqueTopShapeIDs(_ shapes: [LayoutShape]) throws {
-        var seen: Set<UUID> = []
-        for shape in shapes {
-            guard seen.insert(shape.id).inserted else {
-                throw LiveConnectivitySessionError.duplicateShapeID(shape.id)
+    private static func localComponents(keys: Set<ConnectivityElementKey>,
+                                        adjacency: [ConnectivityElementKey: Set<ConnectivityElementKey>]) throws -> [[ConnectivityElementKey]] {
+        let ordered = keys.sorted()
+        let indexByKey = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($0.element, $0.offset) })
+        var union = LayoutUnionFind(count: ordered.count)
+        for (index, key) in ordered.enumerated() {
+            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            for neighbour in adjacency[key, default: []] {
+                guard let other = indexByKey[neighbour] else { throw LayoutConductorCaptureError.invalidComposition }
+                union.union(index, other)
             }
         }
+        return union.components().values.map { $0.map { ordered[$0] }.sorted() }.sorted { $0[0] < $1[0] }
     }
 
-    private static func validateUniqueTopViaIDs(_ vias: [LayoutVia]) throws {
-        var seen: Set<UUID> = []
-        for via in vias {
-            guard seen.insert(via.id).inserted else {
-                throw LiveConnectivitySessionError.duplicateViaID(via.id)
-            }
+    private static func mirror(_ delta: LayoutEditDelta, into document: inout LayoutDocument, cellID: UUID) throws {
+        guard let cellIndex = document.cells.firstIndex(where: { $0.id == cellID }) else {
+            throw LiveConnectivitySessionError.targetCellNotFound
         }
-    }
-
-    private static func makePartitionState(
-        adjacency: [ConnectivityElementKey: Set<ConnectivityElementKey>],
-        elements: [ConnectivityElementKey: ConnectivityElement]
-    ) -> PartitionState {
-        var state = PartitionState()
-        for members in LayoutConnectivityExtractor.components(adjacency: adjacency, elements: elements) {
-            let componentID = state.nextComponentID
-            state.nextComponentID += 1
-            state.membersByComponentID[componentID] = members
-            for key in members { state.componentIDByKey[key] = componentID }
-            state.netByComponentID[componentID] = LayoutConnectivityExtractor.net(
-                for: members,
-                elements: elements
-            )
+        var cell = document.cells[cellIndex]
+        for shape in delta.updatedShapes {
+            guard let index = cell.shapes.firstIndex(where: { $0.id == shape.id }) else { throw LiveConnectivitySessionError.unknownShapeID(shape.id) }
+            cell.shapes[index] = shape
         }
-        return state
-    }
-
-    // MARK: - Partition maintenance
-
-    /// Re-derives connected components for the affected key set via a
-    /// local union-find. The affected set is closed under adjacency by
-    /// construction, so this reproduces the global partition.
-    private func repartition(affectedKeys: Set<ConnectivityElementKey>) -> Int {
-        guard !affectedKeys.isEmpty else { return 0 }
-        let localKeys = affectedKeys.sorted()
-        var localIndexByKey: [ConnectivityElementKey: Int] = [:]
-        localIndexByKey.reserveCapacity(localKeys.count)
-        for (index, key) in localKeys.enumerated() { localIndexByKey[key] = index }
-
-        var unionFind = LayoutUnionFind(count: localKeys.count)
-        for (index, key) in localKeys.enumerated() {
-            guard let neighbours = adjacency[key] else {
-                continue
-            }
-            for neighbour in neighbours {
-                guard let neighbourIndex = localIndexByKey[neighbour] else {
-                    continue
-                }
-                unionFind.union(index, neighbourIndex)
-            }
+        let removedShapes = Set(delta.removedShapeIDs)
+        cell.shapes.removeAll { removedShapes.contains($0.id) }
+        cell.shapes.append(contentsOf: delta.addedShapes)
+        for via in delta.updatedVias {
+            guard let index = cell.vias.firstIndex(where: { $0.id == via.id }) else { throw LiveConnectivitySessionError.unknownViaID(via.id) }
+            cell.vias[index] = via
         }
-
-        let locals = unionFind.components().values
-            .map { member in member.map { localKeys[$0] }.sorted() }
-            .sorted { $0[0] < $1[0] }
-        for members in locals {
-            install(componentMembers: members)
-        }
-        return locals.count
+        let removedVias = Set(delta.removedViaIDs)
+        cell.vias.removeAll { removedVias.contains($0.id) }
+        cell.vias.append(contentsOf: delta.addedVias)
+        document.cells[cellIndex] = cell
     }
 
-    private func install(componentMembers: [ConnectivityElementKey]) {
-        let componentID = nextComponentID
-        nextComponentID += 1
-        membersByComponentID[componentID] = componentMembers
-        for key in componentMembers { componentIDByKey[key] = componentID }
-        netByComponentID[componentID] = LayoutConnectivityExtractor.net(
-            for: componentMembers,
-            elements: elements
-        )
-    }
-
-    /// All cached nets in canonical component order; member lists are kept
-    /// sorted, so this matches the batch extractor's output exactly.
-    private func netsInCanonicalOrder() -> [ConnectivityNet] {
-        netByComponentID.values.sorted { $0.memberKeys[0] < $1.memberKeys[0] }
-    }
-
-    // MARK: - Validation
-
-    private func validate(
+    private static func validate(
         _ delta: LayoutEditDelta,
         shapeIndexByID: [UUID: Int],
         viaIndexByID: [UUID: Int]
@@ -657,7 +297,7 @@ public final class LiveConnectivitySession {
         try validateViaDelta(delta, viaIndexByID: viaIndexByID)
     }
 
-    private func validateShapeDelta(
+    private static func validateShapeDelta(
         _ delta: LayoutEditDelta,
         shapeIndexByID: [UUID: Int]
     ) throws {
@@ -668,9 +308,6 @@ public final class LiveConnectivitySession {
             }
             guard shapeIndexByID[shape.id] == nil else {
                 throw LiveConnectivitySessionError.duplicateShapeID(shape.id)
-            }
-            guard !childShapeIDs.contains(shape.id) else {
-                throw LiveConnectivitySessionError.hierarchyIdentifierCollision(shape.id)
             }
         }
         for shape in delta.updatedShapes {
@@ -691,7 +328,7 @@ public final class LiveConnectivitySession {
         }
     }
 
-    private func validateViaDelta(
+    private static func validateViaDelta(
         _ delta: LayoutEditDelta,
         viaIndexByID: [UUID: Int]
     ) throws {
@@ -702,9 +339,6 @@ public final class LiveConnectivitySession {
             }
             guard viaIndexByID[via.id] == nil else {
                 throw LiveConnectivitySessionError.duplicateViaID(via.id)
-            }
-            guard !childViaIDs.contains(via.id) else {
-                throw LiveConnectivitySessionError.hierarchyIdentifierCollision(via.id)
             }
         }
         for via in delta.updatedVias {
