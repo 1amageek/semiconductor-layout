@@ -125,3 +125,8 @@ Native occurrence-exact contact facts are owned by
 [ConductorCapture](Sources/LayoutVerify/ConductorCapture/DESIGN.md). Legacy
 aggregate-via identities require migration before their electrical results can
 inherit this topology guarantee.
+
+Source-bound DEF root terminal preservation in standard mask output is owned by
+[LayoutIO](Sources/LayoutIO/DESIGN.md). The caller supplies actual pin metal and
+canonical net incidence; the adapter guarantees exact paired geometry/text
+admission. Host composition and actual TOP LVS proof remain upper-layer owners.

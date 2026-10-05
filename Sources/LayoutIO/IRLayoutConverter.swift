@@ -41,7 +41,7 @@ public struct IRLayoutConverter: Sendable {
             guard let cellID = cellNameToID[irCell.name] else {
                 throw LayoutIOError.conversionFailed("Missing cell identifier for imported cell '\(irCell.name)'")
             }
-            let cell = convertCell(irCell, cellID: cellID, dbu: dbu, layerMap: layerMap, cellNameToID: cellNameToID)
+            let cell = try convertCell(irCell, cellID: cellID, dbu: dbu, layerMap: layerMap, cellNameToID: cellNameToID)
             cells.append(cell)
         }
 
@@ -312,7 +312,7 @@ public struct IRLayoutConverter: Sendable {
         dbu: Double,
         layerMap: LayerMap,
         cellNameToID: [String: UUID]
-    ) -> LayoutCell {
+    ) throws -> LayoutCell {
         var shapes: [LayoutShape] = []
         var vias: [LayoutVia] = []
         var labels: [LayoutLabel] = []
@@ -364,6 +364,7 @@ public struct IRLayoutConverter: Sendable {
                     properties: properties
                 ))
             case .text(let t):
+                if propertyValue(t.properties, for: "def.pin.id") != nil { continue }
                 if let label = convertText(
                     t,
                     dbu: dbu,
@@ -399,6 +400,7 @@ public struct IRLayoutConverter: Sendable {
             shapes: shapes,
             vias: vias,
             labels: labels,
+            pins: try importedSourceBoundPorts(irCell, dbu: dbu, layerMap: layerMap, netIDByName: netIDByName),
             instances: instances,
             nets: nets,
             properties: cellProperties
@@ -657,6 +659,181 @@ public struct IRLayoutConverter: Sendable {
         return LayoutVia(viaDefinitionID: viaDefinitionID, position: rect.center)
     }
 
+    // Standard mask records preserve only terminals bound to actual DEF source metal.
+    // Geometry is reused, never synthesized from a point or a default pin width.
+    private func appendSourceBoundPorts(
+        _ cell: LayoutCell, dbu: Double, reverseLayerMap: ReverseLayerMap,
+        elements: inout [IRElement]
+    ) throws {
+        let sourceShapes = cell.shapes.filter { $0.properties["def.pin.name"] != nil }
+        var names: Set<String> = []
+        var identities: Set<UUID> = []
+        for shape in sourceShapes {
+            guard let name = shape.properties["def.pin.name"],
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  names.insert(name.uppercased()).inserted else {
+                throw LayoutIOError.unsupportedSourcePin("Ambiguous source-bound terminal in cell '\(cell.name)'")
+            }
+            let pins = cell.pins.filter { $0.name == name }
+            guard pins.count == 1, let pin = pins.first, identities.insert(pin.id).inserted,
+                  cell.pins.filter({ $0.name.uppercased() == name.uppercased() }).count == 1,
+                  !cell.labels.contains(where: { $0.text.uppercased() == name.uppercased() }),
+                  pin.layer == shape.layer, let netID = pin.netID, shape.netID == netID,
+                  cell.nets.filter({ $0.id == netID }).count == 1,
+                  let net = cell.nets.first(where: { $0.id == netID }),
+                  !net.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  pin.size.width.isFinite, pin.size.height.isFinite,
+                  pin.size.width > 0, pin.size.height > 0 else {
+                throw LayoutIOError.unsupportedSourcePin("Terminal '\(name)' requires unique source metal, layer and declared net")
+            }
+            let matches = elements.indices.filter { index in
+                guard case .boundary(let boundary) = elements[index] else { return false }
+                return propertyValue(boundary.properties, for: "def.pin.name") == name
+            }
+            guard matches.count == 1, let index = matches.first,
+                  case .boundary(var boundary) = elements[index], viaDefinitionID(from: boundary.properties) == nil,
+                  let rect = sourcePortRectangle(boundary.points, dbu: dbu) else {
+                throw LayoutIOError.unsupportedSourcePin("Terminal '\(name)' requires one exact rectangular source BOUNDARY")
+            }
+            let sourcePoints: [LayoutPoint]
+            switch shape.geometry {
+            case .rect(let value):
+                sourcePoints = [.init(x: value.minX, y: value.minY), .init(x: value.maxX, y: value.maxY)]
+            case .polygon(let value): sourcePoints = value.points
+            case .path:
+                throw LayoutIOError.unsupportedSourcePin("Terminal '\(name)' does not have a rectangular source boundary")
+            }
+            for point in sourcePoints { try requireSourcePortGrid(point, dbu: dbu) }
+            try requireSourcePortGrid(pin.position, dbu: dbu)
+            try requireSourcePortGrid(.init(x: pin.position.x - pin.size.width / 2,
+                y: pin.position.y - pin.size.height / 2), dbu: dbu)
+            try requireSourcePortGrid(.init(x: pin.position.x + pin.size.width / 2,
+                y: pin.position.y + pin.size.height / 2), dbu: dbu)
+            let center = try micronToDBU(pin.position, dbu: dbu, context: "source terminal center")
+            let pinBounds = try rectBoundaryPoints(.init(origin: .init(x: pin.position.x - pin.size.width / 2,
+                y: pin.position.y - pin.size.height / 2), size: pin.size), dbu: dbu, context: "source terminal bounds")
+            guard sourcePortRectangle(pinBounds, dbu: dbu) == rect,
+                  try micronToDBU(rect.center, dbu: dbu, context: "source metal center") == center,
+                  shape.properties[Self.defRouteNetNamePropertyName].map({ $0 == net.name }) ?? true else {
+                throw LayoutIOError.unsupportedSourcePin("Terminal '\(name)' disagrees with its source geometry or net")
+            }
+            var metadata = ["def.pin.id": pin.id.uuidString, "def.pin.name": name,
+                "def.pin.netName": net.name, "def.pin.role": pin.role.rawValue]
+            if let direction = pin.direction { metadata["def.pin.direction"] = direction.rawValue }
+            var properties = layoutProperties(from: boundary.properties)
+            guard pin.direction != nil || properties["def.pin.direction"] == nil else {
+                throw LayoutIOError.unsupportedSourcePin("Source terminal direction was removed without its annotation")
+            }
+            for (key, value) in metadata {
+                guard properties[key].map({ $0 == value }) ?? true else {
+                    throw LayoutIOError.unsupportedSourcePin("Conflicting source terminal annotation '\(key)'")
+                }
+                properties[key] = value
+            }
+            boundary.properties = irProperties(from: properties)
+            elements[index] = .boundary(boundary)
+            let (layer, texttype) = try exportedLabelLayerPair(pin.layer, reverseLayerMap: reverseLayerMap,
+                context: "source terminal '\(name)'")
+            elements.append(.text(.init(layer: layer, texttype: texttype, position: center,
+                string: name, properties: irProperties(from: metadata))))
+        }
+    }
+
+    private func importedSourceBoundPorts(
+        _ cell: IRCell, dbu: Double, layerMap: LayerMap, netIDByName: [String: UUID]
+    ) throws -> [LayoutPin] {
+        var boundaries: [IRBoundary] = [], texts: [IRText] = []
+        for element in cell.elements {
+            switch element {
+            case .boundary(let boundary) where propertyValue(boundary.properties, for: "def.pin.name") != nil:
+                boundaries.append(boundary)
+            case .text(let text) where propertyValue(text.properties, for: "def.pin.id") != nil:
+                texts.append(text)
+            default: continue
+            }
+        }
+        guard boundaries.count == texts.count else {
+            throw LayoutIOError.unsupportedSourcePin("Unpaired source-bound terminal records in cell '\(cell.name)'")
+        }
+        var pins: [LayoutPin] = [], identities: Set<UUID> = [], names: Set<String> = []
+        for boundary in boundaries {
+            let metadata = try sourcePortMetadata(boundary.properties)
+            guard let id = metadata["def.pin.id"].flatMap(UUID.init(uuidString:)), identities.insert(id).inserted,
+                  let name = metadata["def.pin.name"], names.insert(name.uppercased()).inserted,
+                  let netName = metadata["def.pin.netName"], let netID = netIDByName[netName],
+                  let role = metadata["def.pin.role"].flatMap(LayoutPinRole.init(rawValue:)),
+                  let rect = sourcePortRectangle(boundary.points, dbu: dbu),
+                  viaDefinitionID(from: boundary.properties) == nil,
+                  boundary.properties.filter({ propertyValue($0.value, for: Self.defRouteNetNamePropertyName) != nil }).count <= 1,
+                  propertyValue(boundary.properties, for: Self.defRouteNetNamePropertyName).map({ $0 == netName }) ?? true else {
+                throw LayoutIOError.unsupportedSourcePin("Invalid source-bound terminal BOUNDARY in cell '\(cell.name)'")
+            }
+            let paired = texts.filter { propertyValue($0.properties, for: "def.pin.id") == id.uuidString }
+            guard paired.count == 1, let text = paired.first, text.transform == .identity,
+                  text.string == name, try sourcePortMetadata(text.properties) == metadata,
+                  try micronToDBU(rect.center, dbu: dbu, context: "source port center") == text.position,
+                  layerMap.tech.layers.filter({ $0.gdsLayer == Int(boundary.layer) && $0.gdsDatatype == Int(boundary.datatype) }).count == 1,
+                  layerMap.tech.layers.filter({ $0.gdsLayer == Int(text.layer) && $0.gdsDatatype == Int(text.texttype) }).count == 1,
+                  let layer = layerMap.ids[.init(gdsLayer: Int(boundary.layer), gdsDatatype: Int(boundary.datatype))],
+                  layerMap.textIDs[.init(gdsLayer: Int(text.layer), gdsDatatype: Int(text.texttype))] == layer,
+                  !cell.elements.contains(where: { element in
+                      guard case .text(let other) = element, propertyValue(other.properties, for: "def.pin.id") == nil else { return false }
+                      return other.string.uppercased() == name.uppercased()
+                  }) else {
+                throw LayoutIOError.unsupportedSourcePin("Ambiguous or conflicting source terminal TEXT in cell '\(cell.name)'")
+            }
+            let direction = metadata["def.pin.direction"].flatMap(LayoutPinDirection.init(rawValue:))
+            guard metadata["def.pin.direction"] == nil || direction != nil else {
+                throw LayoutIOError.unsupportedSourcePin("Invalid source terminal direction")
+            }
+            pins.append(.init(id: id, name: name, position: rect.center, size: rect.size,
+                layer: layer, netID: netID, role: role, direction: direction))
+        }
+        return pins
+    }
+
+    private func sourcePortMetadata(_ properties: [IRProperty]) throws -> [String: String] {
+        let required = ["def.pin.id", "def.pin.name", "def.pin.netName", "def.pin.role"]
+        var result: [String: String] = [:]
+        for key in required + ["def.pin.direction"] {
+            let matches = properties.compactMap { propertyValue($0.value, for: key) }
+            guard matches.count <= 1, (!required.contains(key) || matches.count == 1),
+                  matches.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+                throw LayoutIOError.unsupportedSourcePin("Missing or ambiguous source terminal annotation '\(key)'")
+            }
+            result[key] = matches.first
+        }
+        return result
+    }
+
+    private func requireSourcePortGrid(_ point: LayoutPoint, dbu: Double) throws {
+        for value in [point.x, point.y] {
+            let raw = value * dbu
+            guard raw.isFinite, abs(raw - raw.rounded()) <= 4 * raw.ulp else {
+                throw LayoutIOError.unsupportedSourcePin("Source terminal is not on the standard database grid")
+            }
+        }
+    }
+
+    private func sourcePortRectangle(_ source: [IRPoint], dbu: Double) -> LayoutRect? {
+        var points = source
+        if points.first == points.last { points.removeLast() }
+        guard points.count == 4, Set(points).count == 4,
+              Set(points.map(\.x)).count == 2, Set(points.map(\.y)).count == 2,
+              let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max(),
+              minX < maxX, minY < maxY,
+              (Int64(minX) + Int64(maxX)) % 2 == 0,
+              (Int64(minY) + Int64(maxY)) % 2 == 0 else { return nil }
+        for index in points.indices {
+            let a = points[index], b = points[(index + 1) % 4]
+            guard (a.x == b.x) != (a.y == b.y) else { return nil }
+        }
+        return .init(origin: .init(x: Double(minX) / dbu, y: Double(minY) / dbu),
+            size: .init(width: Double(Int64(maxX) - Int64(minX)) / dbu,
+                height: Double(Int64(maxY) - Int64(minY)) / dbu))
+    }
+
     // MARK: - Private: Export helpers
 
     private func convertToIRCell(
@@ -667,6 +844,12 @@ public struct IRLayoutConverter: Sendable {
         includeDEFRouteMetadata: Bool
     ) throws -> IRCell {
         var elements: [IRElement] = []
+        if !includeDEFRouteMetadata, cell.shapes.contains(where: { $0.properties["def.pin.name"] != nil }) {
+            guard Set(cell.nets.map(\.id)).count == cell.nets.count,
+                  Set(cell.nets.map(\.name)).count == cell.nets.count else {
+                throw LayoutIOError.unsupportedSourcePin("Source terminal nets require unique canonical identities and names")
+            }
+        }
         let netNameByID = Dictionary(uniqueKeysWithValues: cell.nets.map { ($0.id, $0.name) })
 
         for shape in cell.shapes {
@@ -772,6 +955,10 @@ public struct IRLayoutConverter: Sendable {
                     )
                 ]
             )))
+        }
+
+        if !includeDEFRouteMetadata {
+            try appendSourceBoundPorts(cell, dbu: dbu, reverseLayerMap: reverseLayerMap, elements: &elements)
         }
 
         for label in cell.labels {
@@ -953,9 +1140,12 @@ public struct IRLayoutConverter: Sendable {
             switch element {
             case .path(let path): routeProperties = path.properties
             case .via(let via): routeProperties = via.properties
+            case .boundary(let boundary): routeProperties = boundary.properties
+            case .text(let text): routeProperties = text.properties
             default: continue
             }
-            if let netName = propertyValue(routeProperties, for: Self.defRouteNetNamePropertyName),
+            if let netName = propertyValue(routeProperties, for: Self.defRouteNetNamePropertyName)
+                ?? propertyValue(routeProperties, for: "def.pin.netName"),
                !names.contains(netName) {
                 names.append(netName)
             }
@@ -979,7 +1169,7 @@ public struct IRLayoutConverter: Sendable {
     }
 
     private func routeNetID(from properties: [String: String], netIDByName: [String: UUID]) -> UUID? {
-        guard let netName = properties[Self.defRouteNetNamePropertyName] else {
+        guard let netName = properties[Self.defRouteNetNamePropertyName] ?? properties["def.pin.netName"] else {
             return nil
         }
         return netIDByName[netName]

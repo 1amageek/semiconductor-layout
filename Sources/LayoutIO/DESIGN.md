@@ -210,3 +210,42 @@ no floating cancellation or widened epsilon changes an admitted source port.
 The optional `standardCellLibraryMask: IRLibrary` source selects the
 [DEFMasterComposition](DEFMasterComposition/DESIGN.md) contract. That component owns exact
 source-view closure and full-body admission; the existing resolver owns pose and terminal binding.
+
+### Source-bound DEF terminals in standard mask output
+
+Canonical DEF terminals retain actual source metal with `def.pin.name` and a
+LayoutPin whose name, layer, rectangle and declared net agree. Standard mask
+export owns preservation of this admitted source-bound terminal contract. It
+reuses that BOUNDARY and emits one name TEXT at its exact center; existing standard
+PROPERTY records pair them by `def.pin.id` and retain `def.pin.netName`,
+`def.pin.role` and optional `def.pin.direction`. GDS has no intrinsic PORT record:
+these are explicit source-binding annotations on standard geometry and text,
+not new conductor geometry or a separate artifact format.
+
+Import restores a canonical LayoutPin only from exactly one paired BOUNDARY and
+TEXT in the same cell. The complete rectangular perimeter, center, physical and
+semantic layer, identity, name, role, direction and net must agree. Missing,
+duplicate or conflicting pairs, transformed TEXT, off-grid or unsupported metal,
+ambiguous names and label collisions fail before publication or atomic output.
+The paired TEXT is consumed as a terminal declaration, not duplicated as a label.
+A pin name may differ from its declared net name; neither is inferred from the
+other. Original DEF source annotations remain on the reused metal. Document-local
+net IDs are reminted; source terminal UUID and resolved net name are preserved.
+
+Ordinary mask TEXT keeps the existing label contract. Generic native editor pins
+without `def.pin.name` source metal retain the existing exchange contract; LEF
+master pins and retained child labels are not converted into extra root ports.
+DEF export continues to emit its native PINS contract. The upper host owns
+composition with full mask masters and actual TOP LVS evidence.
+
+```mermaid
+flowchart LR
+  Source[DEF PINS rectangle and bound terminal] --> Mask[One BOUNDARY and paired TEXT / PROPERTY]
+  Mask --> Admission[Exact geometry / layer / net / identity admission]
+  Admission --> Canonical[Canonical source-bound terminal]
+  Canonical --> Capture[Root conductor and terminal capture]
+```
+
+`SourceBoundPortRoundTripTests` owns the public DEF-to-GDS byte round trip,
+actual four-port conductor capture, orientation/unit preservation and atomic
+rejection of malformed source binding and tampered standard records.

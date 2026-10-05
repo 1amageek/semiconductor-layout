@@ -61,6 +61,9 @@ incompatible full-mask sources before publishing a document. Valid unrepresented
 is bounded by supplied cells/references; bounds use one cached result per selected closure cell.
 DEF export of a full-body master remains explicitly unsupported by the existing abstract-master
 export admission. Standard GDS/OASIS geometry export uses the existing canonical serializer.
+Root DEF terminal preservation is owned by the parent
+[LayoutIO source-bound terminal contract](../DESIGN.md#source-bound-def-terminals-in-standard-mask-output);
+retained child master labels are not promoted into root terminals.
 
 ## Verification and Change Impact
 [DEFMasterCompositionTests](../../../Tests/LayoutIOTests/DEFMasterCompositionTests.swift) uses
