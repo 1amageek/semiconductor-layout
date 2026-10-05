@@ -9,6 +9,13 @@ import LayoutTech
 struct DEFCellPinResolver {
     let tech: LayoutTechDatabase
     let library: LEFDocument?
+    let usesFullMaskMasters: Bool
+
+    init(tech: LayoutTechDatabase, library: LEFDocument?, usesFullMaskMasters: Bool = false) {
+        self.tech = tech
+        self.library = library
+        self.usesFullMaskMasters = usesFullMaskMasters
+    }
 
     private func identity(_ kind: String, _ value: String) -> UUID {
         IRLayoutConverter().stableUUID(namespace: kind, payload: value)
@@ -150,8 +157,19 @@ struct DEFCellPinResolver {
                 cell.pins.append(LayoutPin(id: pinID, name: sourcePin.name, position: rect.center,
                     size: rect.size, layer: pinLayer, netID: net.id,
                     role: try role(sourcePin.use?.rawValue), direction: try direction(sourcePin.direction?.rawValue)))
-                cell.shapes.append(LayoutShape(id: identity("lef-port", pinID.uuidString), layer: pinLayer,
-                    netID: net.id, geometry: .rect(rect), properties: ["lef.pin.name": sourcePin.name]))
+                if usesFullMaskMasters {
+                    let shapeIndex = try DEFMasterMaskComposer.exactPortShape(in: cell, rect: rect,
+                        layer: pinLayer, units: units)
+                    guard cell.shapes[shapeIndex].properties["lef.pin.name"] == nil
+                            || cell.shapes[shapeIndex].properties["lef.pin.name"] == sourcePin.name else {
+                        throw LayoutIOError.unsupportedSourcePin("Conflicting retained source terminal annotation")
+                    }
+                    cell.shapes[shapeIndex].netID = net.id
+                    cell.shapes[shapeIndex].properties["lef.pin.name"] = sourcePin.name
+                } else {
+                    cell.shapes.append(LayoutShape(id: identity("lef-port", pinID.uuidString), layer: pinLayer,
+                        netID: net.id, geometry: .rect(rect), properties: ["lef.pin.name": sourcePin.name]))
+                }
             }
             result.cells[index] = cell
         }
@@ -283,6 +301,12 @@ struct DEFCellPinResolver {
     func prepareExport(_ source: inout DEFDocument, canonical: LayoutDocument) throws {
         guard let root = canonical.topCellID.flatMap({ canonical.cell(withID: $0) }) else {
             throw LayoutIOError.conversionFailed("DEF requires a canonical top cell")
+        }
+        // FIXME(INCOMPLETE_IMPLEMENTATION): DEF export currently rebinds abstract LEF-only masters.
+        // Full-mask imported masters must fail before writing until retained mask-source identity
+        // can authorize their external-master projection without silently discarding the body.
+        guard !usesFullMaskMasters || source.components.isEmpty else {
+            throw LayoutIOError.unsupportedStandardCellMask("Full-body external-master DEF export is not represented")
         }
         let units = canonical.units.scale.databaseUnitsPerMicrometer
         if let raw = root.properties["def.dieArea"] {

@@ -16,11 +16,17 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
     private let converter: IRLayoutConverter
     private let tech: LayoutTechDatabase
     private let standardCellLibrary: LEFDocument?
+    private let standardCellLibraryMask: IRLibrary?
 
-    public init(tech: LayoutTechDatabase, standardCellLibrary: LEFDocument? = nil) {
+    /// Retains selected LEF definitions and an optional caller-verified full mask source.
+    /// Supplying a mask requires exact master/units/layer/RECT-port admission; it never
+    /// falls back to synthetic LEF-only geometry. Source artifact identity belongs to the caller.
+    public init(tech: LayoutTechDatabase, standardCellLibrary: LEFDocument? = nil,
+                standardCellLibraryMask: IRLibrary? = nil) {
         self.converter = IRLayoutConverter()
         self.tech = tech
         self.standardCellLibrary = standardCellLibrary
+        self.standardCellLibraryMask = standardCellLibraryMask
     }
 
     /// Import from raw data with automatic format detection.
@@ -74,7 +80,8 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
         do {
             if format == .def {
                 var source = try DEFIRConverter.toDEFDocument(irLibrary)
-                try DEFCellPinResolver(tech: exportTech, library: standardCellLibrary).prepareExport(&source, canonical: document)
+                try DEFCellPinResolver(tech: exportTech, library: standardCellLibrary,
+                    usesFullMaskMasters: standardCellLibraryMask != nil).prepareExport(&source, canonical: document)
                 data = try DEFLibraryWriter.write(source)
             } else {
                 data = try writeIRLibrary(irLibrary, format: format)
@@ -127,12 +134,20 @@ public struct MaskDataFormatConverter: LayoutFormatConverter, Sendable {
         var geometryDocument = document
         geometryDocument.pins = []
         geometryDocument.dieArea = nil
-        let library = try DEFIRConverter.toIRLibrary(
+        var library = try DEFIRConverter.toIRLibrary(
             geometryDocument,
             layerNumbers: try defLayerNumberMapping(from: importTech)
         )
+        let composer = DEFMasterMaskComposer(tech: importTech)
+        if let mask = standardCellLibraryMask {
+            library = try composer.compose(library, source: document, mask: mask, lef: standardCellLibrary)
+        }
         let canonical = try converter.checkedImportLibrary(library, tech: importTech)
-        return try DEFCellPinResolver(tech: importTech, library: standardCellLibrary).resolve(canonical, source: document)
+        if standardCellLibraryMask != nil {
+            try composer.validateBounds(canonical, source: document, lef: standardCellLibrary)
+        }
+        return try DEFCellPinResolver(tech: importTech, library: standardCellLibrary,
+            usesFullMaskMasters: standardCellLibraryMask != nil).resolve(canonical, source: document)
     }
 
     private func effectiveExportTechnology(

@@ -84,7 +84,7 @@ let package = Package(
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),
             ],
-            exclude: ["DESIGN.md"]
+            exclude: ["DESIGN.md", "DEFMasterComposition/DESIGN.md"]
         ),
         .target(
             name: "LayoutIntegration",
@@ -142,6 +142,7 @@ let package = Package(
                 "LayoutTech",
                 "LayoutVerify",
                 .product(name: "CircuiteFoundation", package: "CircuiteFoundation"),
+                .product(name: "GDSII", package: "swift-mask-data"),
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "TechIR", package: "swift-mask-data"),
                 .product(name: "LEF", package: "swift-mask-data"),

@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 Standard format adapters and canonical JSON persistence. Parent: [package](../../DESIGN.md).
-Children: none introduced for this change.
+Children: [DEFMasterComposition](DEFMasterComposition/DESIGN.md).
 
 ## Responsibilities and Boundaries
 Own coordinate and transform translation between canonical LayoutCore values
@@ -204,3 +204,9 @@ and instance:pin incidence, not UUID identity across independently imported docu
 Top PINS transforms apply the eight standard discrete matrices to source DBU rectangle corners
 before placement addition. Integer overflow and centered-grid admission precede native values;
 no floating cancellation or widened epsilon changes an admitted source port.
+
+### Retained full-mask DEF masters
+
+The optional `standardCellLibraryMask: IRLibrary` source selects the
+[DEFMasterComposition](DEFMasterComposition/DESIGN.md) contract. That component owns exact
+source-view closure and full-body admission; the existing resolver owns pose and terminal binding.
