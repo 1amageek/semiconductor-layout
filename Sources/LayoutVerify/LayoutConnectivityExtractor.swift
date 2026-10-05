@@ -73,8 +73,9 @@ public struct LayoutConnectivityExtractor {
         case .geometric:
             return try captureConductors(document: document, tech: tech,
                 conductiveLayers: Self.productionConductiveLayers(tech, limits: limits), cellID: cellID, limits: limits)
-        case .deviceAwareMOS:
-            return try DeviceExtractor().captureConductors(document: document, tech: tech, cellID: cellID, limits: limits)
+        case .deviceAwareMOS, .deviceAwareMOSAndPolyResistors:
+            return try DeviceExtractor().captureConductors(document: document, tech: tech, cellID: cellID,
+                limits: limits, electricalContext: electricalContext)
         }
     }
 

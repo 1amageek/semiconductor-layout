@@ -11,6 +11,9 @@ import LayoutTech
 /// Uses a fixed sheet resistance to calculate poly strip length.
 /// Generated layers: POLY, RESI (salicide block), CONTACT, M1, pins (pos, neg).
 public struct ResistorCellGenerator: DeviceCellGenerator {
+    /// Material roles owned by this generated device geometry.
+    public static let polyLayerID = LayoutLayerID(name: "POLY", purpose: "drawing")
+    public static let bodyMarkerLayerID = LayoutLayerID(name: "RESI", purpose: "drawing")
     /// Sheet resistance in ohms/square for poly resistor.
     public var sheetResistance: Double
 
@@ -89,8 +92,8 @@ public struct ResistorCellGenerator: DeviceCellGenerator {
             device: instanceName
         )
 
-        let polyID = LayoutLayerID(name: "POLY", purpose: "drawing")
-        let resiID = LayoutLayerID(name: "RESI", purpose: "drawing")
+        let polyID = Self.polyLayerID
+        let resiID = Self.bodyMarkerLayerID
         let contID = LayoutLayerID(name: "CONTACT", purpose: "cut")
         let m1ID   = LayoutLayerID(name: "M1", purpose: "drawing")
 

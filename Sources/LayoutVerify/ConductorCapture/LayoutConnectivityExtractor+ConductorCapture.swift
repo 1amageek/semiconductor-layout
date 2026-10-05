@@ -113,11 +113,7 @@ extension LayoutConnectivityExtractor {
             conductiveLayers: conductiveLayers, cutLayers: Set(adjacency.keys), isCancelled: isCancelled)
         let dbu = coordinateUnits.scale.databaseUnitsPerMicrometer
         func coordinate(_ value: Double, id: UUID) throws -> Int32 {
-            let scaled = value * dbu
-            let rounded = scaled.rounded()
-            guard value.isFinite, scaled.isFinite, abs(scaled - rounded) <= scaled.ulp * 4,
-                  let integer = Int32(exactly: rounded) else { throw Failure.invalidGridGeometry(id) }
-            return integer
+            try Self.integerCoordinate(value, databaseUnitsPerMicrometer: dbu, sourceID: id)
         }
         func appendIntegerPolygon(_ points: [IRPoint], record: GeometryRecord) throws {
             let available = limits.decomposition.maximumInputEntries - inputEntries
@@ -356,6 +352,14 @@ extension LayoutConnectivityExtractor {
             polygonSources: records.map(\.source), contacts: contacts, groups: groups, pins: pins, sourceNets: sourceNets, electricalContext: electricalContext, preparedShapeGeometry: replacements,
             isCancelled: isCancelled)
         return (snapshot, probes)
+    }
+
+    static func integerCoordinate(_ value: Double, databaseUnitsPerMicrometer dbu: Double,
+        sourceID: UUID) throws -> Int32 {
+        let scaled = value * dbu, rounded = scaled.rounded()
+        guard value.isFinite, scaled.isFinite, abs(scaled - rounded) <= scaled.ulp * 4,
+              let integer = Int32(exactly: rounded) else { throw LayoutConductorCaptureError.invalidGridGeometry(sourceID) }
+        return integer
     }
 
     static func captureCoordinateUnits(

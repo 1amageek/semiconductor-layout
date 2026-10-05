@@ -66,7 +66,7 @@ let package = Package(
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
             ],
-            exclude: ["DESIGN.md", "HierarchyCapture/DESIGN.md", "ConductorCapture/DESIGN.md"]
+            exclude: ["DESIGN.md", "HierarchyCapture/DESIGN.md", "ConductorCapture/DESIGN.md", "PassiveDevicePreparation/DESIGN.md"]
         ),
         .target(
             name: "LayoutIO",

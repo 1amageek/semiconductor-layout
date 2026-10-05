@@ -439,23 +439,35 @@ public struct DeviceExtractor: Sendable {
     /// Bounded immutable electrical facts with Device-owned channel separation.
     /// The hierarchy remains the original source generation, not slab geometry.
     public func captureConductors(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
-        limits: LayoutConductorCaptureLimits = .default
+        limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext = .deviceAwareMOS
     ) throws -> LayoutConductorSnapshot {
         let hierarchy = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID, limits: limits.hierarchy)
-        let preparation = try prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits)
-        return try capturePrepared(document: document, tech: tech, hierarchy: hierarchy, preparation: preparation, limits: limits)
+        let preparation = try prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits, electricalContext: electricalContext)
+        return try capturePrepared(document: document, tech: tech, hierarchy: hierarchy, preparation: preparation,
+            limits: limits, electricalContext: electricalContext)
     }
 
     func prepareConductors(hierarchy: LayoutHierarchySnapshot, tech: LayoutTechDatabase,
-        limits: LayoutConductorCaptureLimits
+        limits: LayoutConductorCaptureLimits, electricalContext: LayoutElectricalContext = .deviceAwareMOS
     ) throws -> ConductorPreparation {
         guard limits.maximumContactProbes >= 0 else { throw LayoutConductorCaptureError.invalidLimits }
         var issues: [DeviceExtractionIssue] = []
         let actives = recognizeActives(shapes: hierarchy.shapes, issues: &issues)
         let channels = try discoverChannels(shapes: hierarchy.shapes, actives: actives, issues: &issues, limits: limits)
         guard issues.isEmpty else { throw LayoutConductorCaptureError.unsupportedDevicePreparation }
-        return try prepareConductors(shapes: hierarchy.shapes, actives: actives, channelsByActive: channels,
+        let preparation = try prepareConductors(shapes: hierarchy.shapes, actives: actives, channelsByActive: channels,
             tech: tech, limits: limits)
+        switch electricalContext {
+        case .geometric: throw LayoutConductorCaptureError.unsupportedDevicePreparation
+        case .deviceAwareMOS: return preparation
+        case .deviceAwareMOSAndPolyResistors(let poly, let marker):
+            let polyCount = hierarchy.shapes.reduce(0) { $0 + ($1.layer == polyLayer && rectLike($1.geometry) != nil ? 1 : 0) }
+            let (mosProbes, overflow) = actives.count.multipliedReportingOverflow(by: polyCount)
+            guard !overflow, mosProbes <= limits.maximumContactProbes else { throw LayoutConductorCaptureError.limitExceeded(.contactProbes) }
+            return try PolyResistorConductorPreparation.apply(hierarchy: hierarchy, tech: tech,
+                polyLayer: poly, bodyMarkerLayer: marker, preparation: preparation, limits: limits,
+                remainingProbes: limits.maximumContactProbes - mosProbes)
+        }
     }
 
     private func prepareConductors(shapes: [LayoutShape], actives: [Active], channelsByActive: [Int: [Channel]?],
@@ -513,7 +525,8 @@ public struct DeviceExtractor: Sendable {
     }
 
     private func capturePrepared(document: LayoutDocument, tech: LayoutTechDatabase, hierarchy: LayoutHierarchySnapshot,
-        preparation: ConductorPreparation, limits: LayoutConductorCaptureLimits
+        preparation: ConductorPreparation, limits: LayoutConductorCaptureLimits,
+        electricalContext: LayoutElectricalContext = .deviceAwareMOS
     ) throws -> LayoutConductorSnapshot {
         var selected = Set(hierarchy.shapes.indices.map { LayoutConductorSnapshot.Source.shape($0) })
         selected.formUnion(hierarchy.vias.indices.map { .via($0) })
@@ -522,7 +535,7 @@ public struct DeviceExtractor: Sendable {
         }
         return try LayoutConnectivityExtractor().captureNativeConductors(document: document, tech: tech,
             conductiveLayers: preparation.layers, cellID: hierarchy.rootCellID, limits: limits, hierarchy: hierarchy,
-            selectingSources: selected, replacingShapeGeometry: preparation.replacements, electricalContext: .deviceAwareMOS).snapshot
+            selectingSources: selected, replacingShapeGeometry: preparation.replacements, electricalContext: electricalContext).snapshot
     }
 
     private func occurrencePrefix(_ occurrence: LayoutHierarchySnapshot.Occurrence) -> String {

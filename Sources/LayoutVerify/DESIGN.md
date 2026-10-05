@@ -189,3 +189,10 @@ Prepared Device slab footprints retain the recognized low/high channel and
 active boundaries as four explicit polygon endpoints. Derived high-minus-low
 span subtraction is display/recognition metadata, not a new source coordinate
 for native grid admission. This preserves repeated translated occurrences.
+
+## Explicit Poly-Resistor Electrical Context
+[PassiveDevicePreparation](PassiveDevicePreparation/DESIGN.md) owns the finite-
+resistance body interpretation. The explicit combined context carries actual
+poly/body-marker layer roles, composes MOS and passive preparation, and retains
+those roles in native snapshots and reports. Geometric and MOS-only profiles
+retain their existing meaning. Callers must select this context explicitly.

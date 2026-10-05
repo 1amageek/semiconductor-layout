@@ -230,3 +230,9 @@ individually to the admitted integer lattice, then adds endpoints with checked
 Int32 arithmetic. Endpoint cancellation in a floating origin-plus-span operation
 does not authorize expanding tolerance or rounding an off-grid source. Original
 source geometry remains retained; overflow is a typed capture failure.
+
+The explicit combined MOS/poly-resistor context consumes the Device owner's
+[passive overlay](../PassiveDevicePreparation/DESIGN.md). Its role identities
+participate in snapshot equality and serialization. Original marker/poly source
+geometry and occurrence remain in the hierarchy; replacement pieces retain the
+original poly source index. Raw geometric capture remains unchanged.

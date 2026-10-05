@@ -124,8 +124,8 @@ public final class LiveConnectivitySession {
         var editedShapeIDs = Set((delta.updatedShapes + delta.addedShapes).map(\.id))
         let editedViaIDs = Set((delta.updatedVias + delta.addedVias).map(\.id))
         let preparedGeometry: [Int: [LayoutGeometry]]
-        if electricalContext == .deviceAwareMOS {
-            let preparation = try DeviceExtractor().prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits)
+        if electricalContext.requiresDevicePreparation {
+            let preparation = try DeviceExtractor().prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits, electricalContext: electricalContext)
             guard preparation.layers == state.snapshot.conductiveLayers else { throw LayoutConductorCaptureError.invalidComposition }
             preparedGeometry = preparation.replacements
             // An edited gate can change unedited ACTIVE slabs. Source identity
