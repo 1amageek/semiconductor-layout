@@ -16,7 +16,7 @@ policy, or the cross-engine workflow.
 | `LayoutVerify` | DRC/connectivity/extraction calculations and typed findings | UI presentation or release policy |
 | `LayoutIO` | Serialization and standard-format conversion | Canonical project directory layout |
 | `LayoutLVSExtraction` | Layout extraction deck/IR preparation and audit | Netlist comparison policy owned by verification consumers |
-| `LayoutAutoGen` | Placement/routing/generation algorithms | Tool trust or human approval |
+| [LayoutAutoGen](Sources/LayoutAutoGen/DESIGN.md) | Placement/routing/generation algorithms | Tool trust or human approval |
 | [LayoutEditor](Sources/LayoutEditor/DESIGN.md) | Interactive command application and live feedback | Persistence workflow |
 | [LayoutCommands](Sources/LayoutCommands/DESIGN.md) | Replayable commands plus Foundation-native artifact references and evidence manifests | Long-running orchestration |
 

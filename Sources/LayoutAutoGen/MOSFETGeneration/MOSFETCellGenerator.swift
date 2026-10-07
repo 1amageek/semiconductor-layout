@@ -95,7 +95,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         let polyRules: LayoutLayerRuleSet
         let m1Rules: LayoutLayerRuleSet
         let contDef: LayoutContactDefinition
-        let polyContDef: LayoutContactDefinition?
+        let polyContDef: LayoutContactDefinition
         let impEnclosure: Double
         let tech: LayoutTechDatabase
 
@@ -112,6 +112,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
 
         init(isPMOS: Bool, w: Double, l: Double, nf: Int, tech: LayoutTechDatabase) throws {
             let layerContext = try Self.makeLayerContext(isPMOS: isPMOS, tech: tech)
+            try Self.admitGateRules(layerContext, tech: tech)
             self.isPMOS = isPMOS
             self.w = w
             self.l = l
@@ -136,14 +137,14 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             contEnc = layerContext.contDef.enclosure.bottom
             m1Enc = layerContext.contDef.enclosure.top
             contSpacing = layerContext.contDef.cutSpacing
-            polyContEnc = layerContext.polyContDef?.enclosure.bottom ?? 0.08
-            polyExtension = ContactArrayHelper.snap(
+            polyContEnc = layerContext.polyContDef.enclosure.bottom
+            polyExtension = ContactArrayHelper.snapUp(
                 max(
                     layerContext.polyRules.minWidth,
                     0.20,
-                    (layerContext.polyContDef?.enclosure.bottom ?? 0.08)
-                        + layerContext.contDef.cutSize.width
-                        + (layerContext.polyContDef?.enclosure.bottom ?? 0.08)
+                    layerContext.polyContDef.enclosure.bottom
+                        + layerContext.polyContDef.cutSize.height
+                        + layerContext.polyContDef.enclosure.bottom
                 ),
                 grid: tech.grid
             )
@@ -163,7 +164,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             let polyRules: LayoutLayerRuleSet
             let contDef: LayoutContactDefinition
             let m1Rules: LayoutLayerRuleSet
-            let polyContDef: LayoutContactDefinition?
+            let polyContDef: LayoutContactDefinition
             let impEnclosure: Double
         }
 
@@ -189,9 +190,37 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
                 polyRules: try requireLayerRule(tech, polyID, name: "POLY"),
                 contDef: try requireContactDefinition(tech, "CONT_ACTIVE"),
                 m1Rules: try requireLayerRule(tech, m1ID, name: "M1"),
-                polyContDef: tech.contactDefinition(for: "CONT_POLY"),
+                polyContDef: try requireContactDefinition(tech, "CONT_POLY"),
                 impEnclosure: try tech.requiredEnclosureRule(outer: impID, inner: activeID).minEnclosure
             )
+        }
+
+        private static func admitGateRules(_ context: LayerContext, tech: LayoutTechDatabase) throws {
+            let contact = context.polyContDef
+            guard contact.cutLayer == context.contID, contact.bottomLayer == context.polyID,
+                  contact.topLayer == context.m1ID else {
+                throw AutoGenError.placementFailed("CONT_POLY must name CONTACT, POLY and M1 materials")
+            }
+            for (field, value) in [("grid", tech.grid), ("CONT_POLY.cutWidth", contact.cutSize.width),
+                                  ("CONT_POLY.cutHeight", contact.cutSize.height),
+                                  ("POLY.minWidth", context.polyRules.minWidth), ("M1.minWidth", context.m1Rules.minWidth)] {
+                guard value.isFinite, value > 0 else {
+                    throw AutoGenError.placementFailed("Invalid positive gate rule " + field)
+                }
+            }
+            for (field, value) in [("CONT_POLY.bottomEnclosure", contact.enclosure.bottom),
+                                  ("CONT_POLY.topEnclosure", contact.enclosure.top),
+                                  ("M1.minSpacing", context.m1Rules.minSpacing)] {
+                guard value.isFinite, value >= 0 else {
+                    throw AutoGenError.placementFailed("Invalid nonnegative gate rule " + field)
+                }
+            }
+            for dimension in [contact.cutSize.width, contact.cutSize.height] {
+                let steps = dimension / tech.grid
+                guard steps.isFinite, abs(steps - steps.rounded()) <= steps.ulp * 4 else {
+                    throw AutoGenError.placementFailed("CONT_POLY cut dimensions must be exact on the manufacturing grid")
+                }
+            }
         }
 
         private static func requireLayerRule(
@@ -229,10 +258,11 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             activeL: base.activeL,
             activeW: base.activeW
         )
-        let gate = makeSingleFingerGateLayout(
+        let gate = try makeSingleFingerGateLayout(
             context: c,
             polyRect: base.polyRect,
-            gateContY: base.gateContY
+            gateContY: base.gateContY,
+            activeW: base.activeW
         )
         let tap = makeSingleFingerTapLayout(
             context: c,
@@ -346,30 +376,35 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         return (polyRect, vertical.gateContactY)
     }
 
-    private func makeGateVerticalLayout(context c: MOSFETContext, activeW: Double) -> GateVerticalLayout {
+    private func gateMetalHeight(_ c: MOSFETContext) -> Double {
+        ContactArrayHelper.snapUp(max(c.m1Rules.minWidth,
+            c.polyContDef.cutSize.height + 2 * c.polyContDef.enclosure.top), grid: c.grid)
+    }
+
+    private func makeGateVerticalLayout(context c: MOSFETContext, activeW: Double, terminalSpineWidth: Double = 0) -> GateVerticalLayout {
+        let height = gateMetalHeight(c)
+        let cutHeight = c.polyContDef.cutSize.height
+        let spineClearance = terminalSpineWidth > 0 ? terminalSpineWidth + c.m1Rules.minSpacing : 0
         if c.isPMOS {
             let base = snap(-c.polyExtension + c.polyContEnc, grid: c.grid)
-            var bound = snap(-(c.m1Rules.minSpacing + c.m1Width), grid: c.grid)
-            if bound > -(c.m1Rules.minSpacing + c.m1Width) { bound -= c.grid }
-            let gateContactY = min(base, bound)
+            let metalBound = (-(c.m1Rules.minSpacing + spineClearance + height) / c.grid).rounded(.down) * c.grid
+            let polyBound = (-(c.polyContEnc + (height + cutHeight) / 2 + c.grid) / c.grid).rounded(.down) * c.grid
+            let gateContactY = min(base, metalBound, polyBound)
             let shift = base - gateContactY
             return GateVerticalLayout(
                 polyOriginY: snap(-c.polyExtension - shift, grid: c.grid),
                 polyHeight: snap(activeW + c.polyExtension + c.polyRules.minWidth + shift, grid: c.grid),
-                gateContactY: gateContactY
-            )
+                gateContactY: gateContactY)
         }
-
-        let base = snap(activeW + c.polyExtension - c.polyContEnc - c.contSize, grid: c.grid)
-        var bound = snap(activeW + c.m1Rules.minSpacing, grid: c.grid)
-        if bound < activeW + c.m1Rules.minSpacing { bound += c.grid }
-        let gateContactY = max(base, bound)
+        let base = snap(activeW + c.polyExtension - c.polyContEnc - cutHeight, grid: c.grid)
+        let metalBound = ((activeW + c.m1Rules.minSpacing + spineClearance) / c.grid).rounded(.up) * c.grid
+        let polyBound = ((activeW + c.polyContEnc - (height - cutHeight) / 2 + c.grid) / c.grid).rounded(.up) * c.grid
+        let gateContactY = max(base, metalBound, polyBound)
         let shift = gateContactY - base
         return GateVerticalLayout(
             polyOriginY: snap(-c.polyRules.minWidth, grid: c.grid),
             polyHeight: snap(activeW + c.polyExtension + c.polyRules.minWidth + shift, grid: c.grid),
-            gateContactY: gateContactY
-        )
+            gateContactY: gateContactY)
     }
 
     private func makeSingleFingerTerminalLayout(
@@ -411,31 +446,55 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         return SingleFingerTerminalLayout(shapes: shapes, sourceM1Rect: sourceM1Rect, drainM1Rect: drainM1Rect)
     }
 
-    private func makeSingleFingerGateLayout(
-        context c: MOSFETContext,
-        polyRect: LayoutRect,
-        gateContY: Double
-    ) -> SingleFingerGateLayout {
-        let gateM1Width = snap(max(polyRect.size.width, c.m1Width), grid: c.grid)
-        let gateM1Rect = LayoutRect(
-            origin: LayoutPoint(
-                x: snap(polyRect.origin.x + (polyRect.size.width - gateM1Width) / 2, grid: c.grid),
-                y: gateContY
-            ),
-            size: LayoutSize(width: gateM1Width, height: snap(c.m1Width, grid: c.grid))
-        )
-        var shapes = [LayoutShape(layer: c.m1ID, geometry: .rect(gateM1Rect))]
-        if let pcd = c.polyContDef {
-            let gateContRect = LayoutRect(
-                origin: LayoutPoint(
-                    x: snap(polyRect.origin.x + (polyRect.size.width - pcd.cutSize.width) / 2, grid: c.grid),
-                    y: snap(gateContY + (c.m1Width - pcd.cutSize.height) / 2, grid: c.grid)
-                ),
-                size: pcd.cutSize
-            )
-            shapes.append(LayoutShape(layer: c.contID, geometry: .rect(gateContRect)))
+    private struct GateContactLanding {
+        let cut: LayoutRect
+        let poly: LayoutRect
+        let metal: LayoutRect
+    }
+
+    private func gateLanding(context c: MOSFETContext, polyRect: LayoutRect,
+                             metalY: Double, activeW: Double) throws -> GateContactLanding {
+        let contact = c.polyContDef
+        let height = gateMetalHeight(c)
+        let cut = LayoutRect(origin: .init(
+            x: snap(polyRect.minX + (polyRect.size.width - contact.cutSize.width) / 2, grid: c.grid),
+            y: snap(metalY + (height - contact.cutSize.height) / 2, grid: c.grid)), size: contact.cutSize)
+        func enclosing(_ margin: Double) throws -> LayoutRect {
+            let steps = (margin / c.grid).rounded(.up)
+            let minX = (cut.minX / c.grid).rounded() - steps
+            let minY = (cut.minY / c.grid).rounded() - steps
+            let maxX = (cut.maxX / c.grid).rounded() + steps
+            let maxY = (cut.maxY / c.grid).rounded() + steps
+            guard [minX, minY, maxX, maxY].allSatisfy(\.isFinite), maxX > minX, maxY > minY else {
+                throw AutoGenError.placementFailed("Gate contact landing is not representable")
+            }
+            return LayoutRect(origin: .init(x: minX * c.grid, y: minY * c.grid),
+                              size: .init(width: (maxX - minX) * c.grid, height: (maxY - minY) * c.grid))
         }
-        return SingleFingerGateLayout(shapes: shapes, gateM1Rect: gateM1Rect)
+        let poly = try enclosing(contact.enclosure.bottom)
+        let metal = try enclosing(contact.enclosure.top)
+        guard [poly.minX, poly.minY, poly.maxX, poly.maxY, metal.minX, metal.minY, metal.maxX, metal.maxY].allSatisfy(\.isFinite),
+              max(poly.minX, polyRect.minX) < min(poly.maxX, polyRect.maxX),
+              max(poly.minY, polyRect.minY) < min(poly.maxY, polyRect.maxY),
+              c.isPMOS ? poly.maxY < 0 : poly.minY > activeW else {
+            throw AutoGenError.placementFailed("Gate landing must contact its POLY extension outside ACTIVE")
+        }
+        return GateContactLanding(cut: cut, poly: poly, metal: metal)
+    }
+
+    private func makeSingleFingerGateLayout(context c: MOSFETContext, polyRect: LayoutRect,
+                                            gateContY: Double, activeW: Double) throws -> SingleFingerGateLayout {
+        let landing = try gateLanding(context: c, polyRect: polyRect, metalY: gateContY, activeW: activeW)
+        let width = snap(max(polyRect.size.width, c.m1Width), grid: c.grid)
+        let originalMetal = LayoutRect(origin: .init(
+            x: snap(polyRect.minX + (polyRect.size.width - width) / 2, grid: c.grid), y: gateContY),
+            size: .init(width: width, height: gateMetalHeight(c)))
+        let metal = originalMetal.union(landing.metal)
+        return SingleFingerGateLayout(shapes: [
+            LayoutShape(layer: c.m1ID, geometry: .rect(metal)),
+            LayoutShape(layer: c.contID, geometry: .rect(landing.cut)),
+            LayoutShape(layer: c.polyID, geometry: .rect(landing.poly))
+        ], gateM1Rect: metal)
     }
 
     private func makeSingleFingerTapLayout(
@@ -594,7 +653,8 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         //   gate0_x = contactRegionLength + sdSpacing
         //   gate_i_x = gate0_x + i * fingerPitch
         let gate0X = snap(c.contactRegionLength + c.sdSpacing, grid: c.grid)
-        let gateVertical = makeGateVerticalLayout(context: c, activeW: activeW)
+        let gateVertical = makeGateVerticalLayout(context: c, activeW: activeW,
+            terminalSpineWidth: snap(c.m1Width, grid: c.grid))
         var polyXPositions: [Double] = []
         for i in 0..<nf {
             polyXPositions.append(snap(gate0X + Double(i) * fingerPitch, grid: c.grid))
@@ -651,8 +711,6 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
                 origin: LayoutPoint(x: m1X, y: 0),
                 size: LayoutSize(width: snappedM1Width, height: activeW)
             )
-            shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(m1Rect)))
-
             // Classify: even indices are source, odd indices are drain
             // (index 0 = source edge, index 1 = drain, index 2 = source, ...)
             if i % 2 == 0 {
@@ -662,46 +720,28 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
             }
         }
 
-        // 5. Source M1 bus bar connecting all source M1 fingers
-        let sourceM1Bus: LayoutRect
-        if sourceM1Rects.count == 1 {
-            sourceM1Bus = sourceM1Rects[0]
-        } else {
-            guard let leftmostX = sourceM1Rects.map(\.origin.x).min(),
-                  let rightmostMaxX = sourceM1Rects.map(\.maxX).max() else {
-                throw AutoGenError.placementFailed("MOSFET source terminal has no metal rectangles")
+        // 5-6. Exterior spines cannot intersect opposite-terminal fingers.
+        let sourceSpineY = ((-c.m1Rules.minSpacing - snappedM1Width) / c.grid).rounded(.down) * c.grid
+        let drainSpineY = ContactArrayHelper.snapUp(activeW + c.m1Rules.minSpacing, grid: c.grid)
+        func terminalSpine(_ fingers: [LayoutRect], below: Bool) throws -> LayoutRect {
+            guard let minX = fingers.map(\.minX).min(), let maxX = fingers.map(\.maxX).max() else {
+                throw AutoGenError.placementFailed("MOSFET terminal has no metal fingers")
             }
-            sourceM1Bus = LayoutRect(
-                origin: LayoutPoint(x: snap(leftmostX, grid: c.grid), y: 0),
-                size: LayoutSize(
-                    width: snap(rightmostMaxX - leftmostX, grid: c.grid),
-                    height: snap(c.m1Width, grid: c.grid)
-                )
-            )
-            shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(sourceM1Bus)))
-        }
-
-        // 6. Drain M1 bus bar connecting all drain M1 fingers
-        let drainM1Bus: LayoutRect
-        if drainM1Rects.count == 1 {
-            drainM1Bus = drainM1Rects[0]
-        } else {
-            guard let leftmostX = drainM1Rects.map(\.origin.x).min(),
-                  let rightmostMaxX = drainM1Rects.map(\.maxX).max() else {
-                throw AutoGenError.placementFailed("MOSFET drain terminal has no metal rectangles")
+            let y = below ? sourceSpineY : drainSpineY
+            let spine = LayoutRect(origin: .init(x: minX, y: y),
+                size: .init(width: maxX - minX, height: snappedM1Width))
+            for finger in fingers {
+                let minY = below ? y : finger.minY
+                let maxY = below ? finger.maxY : spine.maxY
+                shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(LayoutRect(
+                    origin: .init(x: finger.minX, y: minY),
+                    size: .init(width: finger.size.width, height: maxY - minY)))))
             }
-            drainM1Bus = LayoutRect(
-                origin: LayoutPoint(
-                    x: snap(leftmostX, grid: c.grid),
-                    y: snap(activeW - c.m1Width, grid: c.grid)
-                ),
-                size: LayoutSize(
-                    width: snap(rightmostMaxX - leftmostX, grid: c.grid),
-                    height: snap(c.m1Width, grid: c.grid)
-                )
-            )
-            shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(drainM1Bus)))
+            shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(spine)))
+            return spine
         }
+        let sourceM1Bus = try terminalSpine(sourceM1Rects, below: true)
+        let drainM1Bus = try terminalSpine(drainM1Rects, below: false)
 
         // 7. Gate contacts and gate bus bar
         //    Position: outside ACTIVE, on the side away from the tap.
@@ -716,39 +756,33 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         }
         let gateBusLeftX = snap(firstPolyX, grid: c.grid)
         let gateBusRightX = snap(lastPolyX + snappedL, grid: c.grid)
-        let gateBusM1Rect = LayoutRect(
+        let originalGateBus = LayoutRect(
             origin: LayoutPoint(x: gateBusLeftX, y: gateContY),
-            size: LayoutSize(
-                width: snap(gateBusRightX - gateBusLeftX, grid: c.grid),
-                height: snap(c.m1Width, grid: c.grid)
-            )
-        )
+            size: LayoutSize(width: snap(gateBusRightX - gateBusLeftX, grid: c.grid),
+                             height: gateMetalHeight(c)))
+        let gateLandings = try polyXPositions.map { x in
+            try gateLanding(context: c, polyRect: LayoutRect(
+                origin: .init(x: x, y: gateVertical.polyOriginY),
+                size: .init(width: snappedL, height: gateVertical.polyHeight)),
+                metalY: gateContY, activeW: activeW)
+        }
+        let gateBusM1Rect = gateLandings.reduce(originalGateBus) { $0.union($1.metal) }
         shapes.append(LayoutShape(layer: c.m1ID, geometry: .rect(gateBusM1Rect)))
-
-        // One contact per poly finger on the bus bar
-        if let pcd = c.polyContDef {
-            for i in 0..<nf {
-                let px = polyXPositions[i]
-                let gateContRect = LayoutRect(
-                    origin: LayoutPoint(
-                        x: snap(px + (snappedL - pcd.cutSize.width) / 2, grid: c.grid),
-                        y: snap(gateContY + (c.m1Width - pcd.cutSize.height) / 2, grid: c.grid)
-                    ),
-                    size: pcd.cutSize
-                )
-                shapes.append(LayoutShape(layer: c.contID, geometry: .rect(gateContRect)))
-            }
+        for landing in gateLandings {
+            shapes.append(LayoutShape(layer: c.contID, geometry: .rect(landing.cut)))
+            shapes.append(LayoutShape(layer: c.polyID, geometry: .rect(landing.poly)))
         }
 
         // 8. Well/Substrate tap
-        let tapSpacing = snap(max(c.activeRules.minSpacing, 2 * c.impEnclosure + c.grid), grid: c.grid)
+        let tapSpacing = ContactArrayHelper.snapUp(
+            max(c.activeRules.minSpacing, 2 * c.impEnclosure + c.grid, c.m1Rules.minSpacing), grid: c.grid)
         let tapHeight = snap(c.contSize + 2 * c.contEnc, grid: c.grid)
 
         let tapY: Double
         if c.isPMOS {
-            tapY = snap(activeW + tapSpacing, grid: c.grid)
+            tapY = ContactArrayHelper.snapUp(drainM1Bus.maxY + tapSpacing, grid: c.grid)
         } else {
-            tapY = snap(-tapSpacing - tapHeight, grid: c.grid)
+            tapY = ((sourceM1Bus.minY - tapSpacing - tapHeight) / c.grid).rounded(.down) * c.grid
         }
 
         let tapActiveRect = LayoutRect(
@@ -789,7 +823,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
 
         // 10. Pins
         // Source pin: center of the source bus bar (or the single source M1 bar)
-        let sourcePinRect = sourceM1Rects.count > 1 ? sourceM1Bus : sourceM1Rects[0]
+        let sourcePinRect = sourceM1Bus
         pins.append(LayoutPin(
             name: "source",
             position: sourcePinRect.center,
@@ -799,7 +833,7 @@ public struct MOSFETCellGenerator: DeviceCellGenerator {
         ))
 
         // Drain pin: center of the drain bus bar (or the single drain M1 bar)
-        let drainPinRect = drainM1Rects.count > 1 ? drainM1Bus : drainM1Rects[0]
+        let drainPinRect = drainM1Bus
         pins.append(LayoutPin(
             name: "drain",
             position: drainPinRect.center,

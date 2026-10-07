@@ -108,7 +108,8 @@ let package = Package(
         ),
         .target(
             name: "LayoutAutoGen",
-            dependencies: ["LayoutCore", "LayoutTech"]
+            dependencies: ["LayoutCore", "LayoutTech"],
+            exclude: ["DESIGN.md", "MOSFETGeneration/DESIGN.md"]
         ),
         .target(
             name: "LayoutEngine",
@@ -173,6 +174,11 @@ let package = Package(
                 "LayoutIO",
                 "LayoutTech",
             ]
+        ),
+        .testTarget(
+            name: "MOSFETGenerationTests",
+            dependencies: ["LayoutAutoGen", "LayoutCore", "LayoutTech", "LayoutIO", "LayoutVerify"],
+            exclude: ["DESIGN.md"]
         ),
         .testTarget(
             name: "LayoutAutoGenTests",
