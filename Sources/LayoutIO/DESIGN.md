@@ -154,6 +154,23 @@ LayoutPin with the same unique local net. Master SIZE is metadata only:
 micrometer decimal values. It is never emitted as a conductor. Component poses
 normalize all eight standard orientations against the transformed declared SIZE
 bounds; canonical instance names/IDs and terminalNetIDs retain source incidence.
+Original decoded LEF SIZE and RECT values are admitted only when an Int32 DBU
+candidate divided by the relevant units reconstructs that same Double exactly,
+on both the selected LEF source grid and canonical DEF grid. Candidate search is
+not rounding authority; near-grid decoded values fail. Token spelling is not
+retained by the LEF reader and is not an additional numeric authority.
+SIZE-normalized component translation is computed from source integer placement
+and the discrete orientation offset, with Int64 intermediate arithmetic and
+checked Int32 output. Micrometer translation is emitted by one final division.
+World master PORT checks transform admitted original RECT corners with that same
+integer pose, requiring Int32 bounds and integer centers; derived Float pin
+envelopes do not supply admission coordinates. The inverse DEF projection first
+verifies the canonical instance translation's strict grid identity against its
+exported integer origin, then subtracts the same integer SIZE offset and checks
+the source Int32 range. No floating-point offset subtraction supplies source pose.
+These rules belong to private invocation-local resolver helpers; no shared state
+or public geometry projector is introduced. Unrelated top PINS and the generic
+coordinate codec retain their existing contracts.
 
 Top DEF PINS require actual layer rectangles, placement, direction and net authority;
 labels cannot substitute for them. Net connections must resolve declared top pins
@@ -185,6 +202,11 @@ LayoutIO ownership.
 `DEFBoundPinTests` verifies the actual selected native source master and route
 endpoints, all eight SIZE-normalized poses, top PINS, exact JSON direction,
 source-derived contact incidence and rejected incomplete/ambiguous bindings.
+Decimal SIZE normalization and inverse export require public converter evidence
+with an independent integer eight-orientation oracle, strict original source and
+canonical translation refusals, and Int32 pose/world-PORT overflow failures.
+Existing pin, full-mask, route and export-atomicity tests remain affected consumers;
+the full-mask external-master DEF export refusal is unchanged.
 Existing route/via fixtures migrate dangling terminal references to real declared
 PINS while retaining route geometry assertions.
 

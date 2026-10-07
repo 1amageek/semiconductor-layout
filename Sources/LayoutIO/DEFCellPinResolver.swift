@@ -30,6 +30,15 @@ struct DEFCellPinResolver {
         return result
     }
 
+    private func sourceGrid(_ value: Double, units: Double) throws -> Int32 {
+        guard units.isFinite, units > 0, value.isFinite,
+              let result = Int32(exactly: (value * units).rounded()),
+              Double(result) / units == value else {
+            throw LayoutIOError.unsupportedSourcePin("Nonfinite, off-grid or overflowing original source coordinate")
+        }
+        return result
+    }
+
     private func layer(_ name: String) throws -> LayoutLayerID {
         let matches = tech.layers.filter {
             $0.id.name.caseInsensitiveCompare(name) == .orderedSame
@@ -72,7 +81,7 @@ struct DEFCellPinResolver {
               library.dbuPerMicron.isFinite, library.dbuPerMicron > 0 else {
             throw LayoutIOError.unresolvedCellMaster(name)
         }
-        _ = try grid(width, units: library.dbuPerMicron); _ = try grid(height, units: library.dbuPerMicron)
+        _ = try sourceGrid(width, units: library.dbuPerMicron); _ = try sourceGrid(height, units: library.dbuPerMicron)
         // FIXME(INCOMPLETE_IMPLEMENTATION): This master profile proves origin-zero placement frames.
         // Canonical electrical import/export must reject nonzero LEF ORIGIN until the source
         // origin convention and every transformed port are verified against standard geometry.
@@ -85,20 +94,37 @@ struct DEFCellPinResolver {
         return macro
     }
 
-    private func rectangle(_ rect: LEFRect, sourceUnits: Double, units: Double) throws -> LayoutRect {
+    private struct SourceRectangle {
+        let x1: Int32
+        let y1: Int32
+        let x2: Int32
+        let y2: Int32
+
+        func layoutRectangle(units: Double) -> LayoutRect {
+            .init(origin: .init(x: Double(x1) / units, y: Double(y1) / units),
+                  size: .init(width: Double(Int64(x2) - Int64(x1)) / units,
+                              height: Double(Int64(y2) - Int64(y1)) / units))
+        }
+    }
+
+    private func rectangle(_ rect: LEFRect, sourceUnits: Double, units: Double) throws -> SourceRectangle {
         let values = [rect.x1, rect.y1, rect.x2, rect.y2]
-        for value in values { _ = try grid(value, units: sourceUnits) }
-        let x1 = try grid(rect.x1, units: units), y1 = try grid(rect.y1, units: units)
-        let x2 = try grid(rect.x2, units: units), y2 = try grid(rect.y2, units: units)
+        for value in values { _ = try sourceGrid(value, units: sourceUnits) }
+        let x1 = try sourceGrid(rect.x1, units: units), y1 = try sourceGrid(rect.y1, units: units)
+        let x2 = try sourceGrid(rect.x2, units: units), y2 = try sourceGrid(rect.y2, units: units)
         let width = Int64(x2) - Int64(x1), height = Int64(y2) - Int64(y1)
         guard width > 0, height > 0, width % 2 == 0, height % 2 == 0 else {
             throw LayoutIOError.unsupportedSourcePin("Source rectangle cannot retain a centered pin on the native grid")
         }
-        return LayoutRect(origin: .init(x: Double(x1) / units, y: Double(y1) / units),
-            size: .init(width: Double(width) / units, height: Double(height) / units))
+        return .init(x1: x1, y1: y1, x2: x2, y2: y2)
     }
 
     private func port(_ pin: LEFPinDef, units: Double) throws -> (LayoutRect, LayoutLayerID) {
+        let (rect, layer) = try admittedPort(pin, units: units)
+        return (rect.layoutRectangle(units: units), layer)
+    }
+
+    private func admittedPort(_ pin: LEFPinDef, units: Double) throws -> (SourceRectangle, LayoutLayerID) {
         // FIXME(INCOMPLETE_IMPLEMENTATION): LayoutPin has one single-layer rectangular surface.
         // Bound master import must reject multiple rectangles/layers, polygons and named vias
         // until their full port geometry can be retained and captured without envelopes.
@@ -110,14 +136,35 @@ struct DEFCellPinResolver {
         return (try rectangle(rect, sourceUnits: library.dbuPerMicron, units: units), try layer(port.layerName))
     }
 
-    private func normalized(_ orientation: DEFOrientation, width: Double, height: Double,
-                            position: LayoutPoint) -> LayoutTransform {
+    private func normalizationOffset(_ orientation: DEFOrientation, width: Int32, height: Int32) -> IRPoint {
+        switch orientation {
+        case .n, .fw: return .init(x: 0, y: 0)
+        case .s: return .init(x: width, y: height)
+        case .e: return .init(x: 0, y: width)
+        case .w: return .init(x: height, y: 0)
+        case .fn: return .init(x: width, y: 0)
+        case .fs: return .init(x: 0, y: height)
+        case .fe: return .init(x: height, y: width)
+        }
+    }
+
+    private func poseCoordinate(_ value: Int32, offset: Int32, subtracting: Bool = false) throws -> Int32 {
+        let delta = subtracting ? -Int64(offset) : Int64(offset)
+        let (sum, overflow) = Int64(value).addingReportingOverflow(delta)
+        guard !overflow, let coordinate = Int32(exactly: sum) else {
+            throw LayoutIOError.unsupportedSourcePin("SIZE-normalized component pose overflows")
+        }
+        return coordinate
+    }
+
+    private func normalized(_ orientation: DEFOrientation, width: Int32, height: Int32,
+                            position: IRPoint, units: Double) throws -> (transform: LayoutTransform, position: IRPoint) {
+        let offset = normalizationOffset(orientation, width: width, height: height)
+        let translation = try IRPoint(x: poseCoordinate(position.x, offset: offset.x),
+                                      y: poseCoordinate(position.y, offset: offset.y))
         let ir = DEFIRConverter.orientationToTransform(orientation)
-        var transform = LayoutTransform(rotationDegrees: ir.angle, mirrorY: ir.mirrorX)
-        let corners = [LayoutPoint.zero, .init(x: width, y: 0), .init(x: 0, y: height), .init(x: width, y: height)].map { transform.apply(to: $0) }
-        let minX = corners.map(\.x).min() ?? 0, minY = corners.map(\.y).min() ?? 0
-        transform.translation = .init(x: position.x - minX, y: position.y - minY)
-        return transform
+        return (.init(translation: .init(x: Double(translation.x) / units, y: Double(translation.y) / units),
+                      rotationDegrees: ir.angle, mirrorY: ir.mirrorX), translation)
     }
 
     func resolve(_ canonical: LayoutDocument, source: DEFDocument) throws -> LayoutDocument {
@@ -145,7 +192,7 @@ struct DEFCellPinResolver {
         for (name, macro) in definitions {
             guard let index = result.cells.firstIndex(where: { $0.name == name && $0.id != result.topCellID }),
                   let width = macro.width, let height = macro.height else { throw LayoutIOError.unresolvedCellMaster(name) }
-            _ = try grid(width, units: units); _ = try grid(height, units: units)
+            _ = try sourceGrid(width, units: units); _ = try sourceGrid(height, units: units)
             var cell = result.cells[index]
             cell.properties["lef.macro.widthMicrometers"] = String(width)
             cell.properties["lef.macro.heightMicrometers"] = String(height)
@@ -220,18 +267,14 @@ struct DEFCellPinResolver {
                   let macro = definitions[component.macro], let width = macro.width, let height = macro.height else {
                 throw LayoutIOError.unresolvedCellMaster(component.macro)
             }
-            let transform = normalized(component.orientation, width: width, height: height,
-                position: .init(x: Double(component.x) / units, y: Double(component.y) / units))
-            root.instances[index].transform = transform
+            let pose = try normalized(component.orientation,
+                width: sourceGrid(width, units: units), height: sourceGrid(height, units: units),
+                position: .init(x: component.x, y: component.y), units: units)
+            root.instances[index].transform = pose.transform
             root.instances[index].terminalNetIDs = terminalBindings[component.name] ?? [:]
-            let cell = try requireCell(root.instances[index].cellID, in: result)
-            for pin in cell.pins {
-                let world = pin.transformed(by: [transform])
-                _ = try grid(world.position.x, units: units); _ = try grid(world.position.y, units: units)
-                _ = try grid(world.position.x - world.size.width / 2, units: units)
-                _ = try grid(world.position.x + world.size.width / 2, units: units)
-                _ = try grid(world.position.y - world.size.height / 2, units: units)
-                _ = try grid(world.position.y + world.size.height / 2, units: units)
+            for pin in macro.pins {
+                let (rect, _) = try admittedPort(pin, units: units)
+                try validateWorldPort(rect, orientation: component.orientation, position: pose.position)
             }
         }
         root.labels = []
@@ -262,35 +305,51 @@ struct DEFCellPinResolver {
         return result
     }
 
+    private func orientationMatrix(_ orientation: DEFOrientation) -> (Int64, Int64, Int64, Int64) {
+        switch orientation {
+        case .n: return (1, 0, 0, 1)
+        case .s: return (-1, 0, 0, -1)
+        case .e: return (0, 1, -1, 0)
+        case .w: return (0, -1, 1, 0)
+        case .fn: return (-1, 0, 0, 1)
+        case .fs: return (1, 0, 0, -1)
+        case .fe: return (0, -1, -1, 0)
+        case .fw: return (0, 1, 1, 0)
+        }
+    }
+
+    private func validateWorldPort(_ rect: SourceRectangle, orientation: DEFOrientation, position: IRPoint) throws {
+        _ = try worldRectangle(rect, orientation: orientation, position: position,
+            failure: "Source master PORT pose overflows or has an off-grid center")
+    }
+
+    private func worldRectangle(_ rect: SourceRectangle, orientation: DEFOrientation, position: IRPoint,
+                                failure: String) throws -> SourceRectangle {
+        let matrix = orientationMatrix(orientation)
+        let corners = [(rect.x1, rect.y1), (rect.x2, rect.y1), (rect.x1, rect.y2), (rect.x2, rect.y2)]
+        // Int32 corners and translation with +/-1 matrix entries fit in Int64.
+        let xs = corners.map { matrix.0 * Int64($0.0) + matrix.1 * Int64($0.1) + Int64(position.x) }
+        let ys = corners.map { matrix.2 * Int64($0.0) + matrix.3 * Int64($0.1) + Int64(position.y) }
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max(),
+              let x1 = Int32(exactly: minX), let x2 = Int32(exactly: maxX),
+              let y1 = Int32(exactly: minY), let y2 = Int32(exactly: maxY),
+              (minX + maxX) % 2 == 0, (minY + maxY) % 2 == 0 else {
+            throw LayoutIOError.unsupportedSourcePin(failure)
+        }
+        return .init(x1: x1, y1: y1, x2: x2, y2: y2)
+    }
+
     private func topPinRectangle(_ rect: DEFRect, orientation: DEFOrientation, x: Int32, y: Int32,
                                  units: Double) throws -> (rect: LayoutRect, center: LayoutPoint) {
         guard rect.x2 > rect.x1, rect.y2 > rect.y1 else {
             throw LayoutIOError.unsupportedSourcePin("Source PIN rectangle must have positive area")
         }
-        let matrix: (Int64, Int64, Int64, Int64)
-        switch orientation {
-        case .n: matrix = (1, 0, 0, 1)
-        case .s: matrix = (-1, 0, 0, -1)
-        case .e: matrix = (0, 1, -1, 0)
-        case .w: matrix = (0, -1, 1, 0)
-        case .fn: matrix = (-1, 0, 0, 1)
-        case .fs: matrix = (1, 0, 0, -1)
-        case .fe: matrix = (0, -1, -1, 0)
-        case .fw: matrix = (0, 1, 1, 0)
-        }
-        let corners = [(rect.x1, rect.y1), (rect.x2, rect.y1), (rect.x1, rect.y2), (rect.x2, rect.y2)]
-        // Int32 coordinates and +/-1 matrices have sums within Int64; reject Int32 output overflow.
-        let xs = corners.map { matrix.0 * Int64($0.0) + matrix.1 * Int64($0.1) + Int64(x) }
-        let ys = corners.map { matrix.2 * Int64($0.0) + matrix.3 * Int64($0.1) + Int64(y) }
-        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max(),
-              Int32(exactly: minX) != nil, Int32(exactly: maxX) != nil,
-              Int32(exactly: minY) != nil, Int32(exactly: maxY) != nil,
-              (minX + maxX) % 2 == 0, (minY + maxY) % 2 == 0 else {
-            throw LayoutIOError.unsupportedSourcePin("Source PIN pose overflows or has an off-grid center")
-        }
-        return (.init(origin: .init(x: Double(minX) / units, y: Double(minY) / units),
-            size: .init(width: Double(maxX - minX) / units, height: Double(maxY - minY) / units)),
-            .init(x: Double((minX + maxX) / 2) / units, y: Double((minY + maxY) / 2) / units))
+        let world = try worldRectangle(.init(x1: rect.x1, y1: rect.y1, x2: rect.x2, y2: rect.y2),
+            orientation: orientation, position: .init(x: x, y: y),
+            failure: "Source PIN pose overflows or has an off-grid center")
+        return (world.layoutRectangle(units: units),
+            .init(x: Double((Int64(world.x1) + Int64(world.x2)) / 2) / units,
+                  y: Double((Int64(world.y1) + Int64(world.y2)) / 2) / units))
     }
 
     private func requireCell(_ id: UUID, in document: LayoutDocument) throws -> LayoutCell {
@@ -341,9 +400,15 @@ struct DEFCellPinResolver {
                   instance.terminalNetIDs.values.allSatisfy({ value in root.nets.contains(where: { $0.id == value }) }) else {
                 throw LayoutIOError.unresolvedCellMaster(component.macro)
             }
-            let offset = normalized(component.orientation, width: width, height: height, position: .zero).translation
-            source.components[index].x = try grid(instance.transform.translation.x - offset.x, units: units)
-            source.components[index].y = try grid(instance.transform.translation.y - offset.y, units: units)
+            let canonicalX = try sourceGrid(instance.transform.translation.x, units: units)
+            let canonicalY = try sourceGrid(instance.transform.translation.y, units: units)
+            guard canonicalX == component.x, canonicalY == component.y else {
+                throw LayoutIOError.unsupportedSourcePin("Exported component origin differs from canonical translation")
+            }
+            let offset = try normalizationOffset(component.orientation,
+                width: sourceGrid(width, units: units), height: sourceGrid(height, units: units))
+            source.components[index].x = try poseCoordinate(component.x, offset: offset.x, subtracting: true)
+            source.components[index].y = try poseCoordinate(component.y, offset: offset.y, subtracting: true)
         }
 
         var connections: [String: [DEFConnection]] = [:]
