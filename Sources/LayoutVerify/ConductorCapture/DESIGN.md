@@ -35,6 +35,15 @@ flowchart LR
 ```
 
 ## Contracts and Invariants
+
+PATH integer stroke arithmetic is owned by the shared
+[RectilinearPathProjection](../RectilinearPathProjection/DESIGN.md) component.
+Capture supplies its existing coordinate predicate, budgets and cancellation,
+and maps neutral projection failures to its unchanged public Capture errors.
+The caller's cancellation predicate is forwarded unchanged through electrical
+profile dispatch, hierarchy capture, device preparation and native band/contact
+capture. Each owner evaluates that predicate at its existing checkpoints;
+omission retains the public Task cancellation default, never a new predicate.
 `captureConductors` returns owned integer geometry and occurrence-exact source
 references. Selected conductor layers must be declared technology layers and
 must not be cut layers. Via definitions sharing a cut layer must retain one unambiguous bottom/top

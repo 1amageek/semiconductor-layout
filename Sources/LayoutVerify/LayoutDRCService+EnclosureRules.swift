@@ -12,7 +12,7 @@ extension LayoutDRCService {
     ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         guard !vias.isEmpty else { return violations }
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
 
         // Group shapes and build spatial indices per layer once; each via
         // then only merges the geometry near its own cut. Shapes outside the
@@ -84,7 +84,7 @@ extension LayoutDRCService {
         tech: LayoutTechDatabase
     ) throws -> LayoutViolation? {
         guard let def = tech.viaDefinition(for: via.viaDefinitionID) else { return nil }
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
         let effectiveTopCandidates = topCandidates
             + explicitViaLayerShapes(for: via, layer: def.topLayer, tech: tech)
         let effectiveBottomCandidates = bottomCandidates
@@ -131,14 +131,14 @@ extension LayoutDRCService {
         rules: [LayoutEnclosureRule]? = nil
     ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
 
         for rule in rules ?? tech.enclosureRules {
             guard let outerShapes = grouped[rule.outerLayer], !outerShapes.isEmpty else { continue }
             guard let innerShapes = grouped[rule.innerLayer], !innerShapes.isEmpty else { continue }
 
-            let minEncDBU = Int32((rule.minEnclosure * dbu).rounded())
+            let minEncDBU = try ruleCoordinate(rule.minEnclosure, dbu: dbu)
             if minEncDBU <= 0 { continue }
 
             let outerRegion = try mergedRegion(of: outerShapes, dbu: dbu)
@@ -153,9 +153,10 @@ extension LayoutDRCService {
                     for part in protrusion.connectedComponents() {
                         guard let bb = part.boundingBox else { continue }
                         let rect = irBoundingBoxToRect(bb, dbu: dbu)
-                        violations.append(enclosureRuleViolation(
+                        violations.append(try enclosureRuleViolation(
                             rule: rule,
                             rect: rect,
+                            integerBounds: bb,
                             measured: 0,
                             message: "Enclosure violation: \(rule.innerLayer.name) extends outside \(rule.outerLayer.name), which must enclose it by at least \(rule.minEnclosure)µm",
                             innerShapes: innerShapes,
@@ -177,9 +178,10 @@ extension LayoutDRCService {
                     guard let bb = deficit.boundingBox else { continue }
                     let rect = irBoundingBoxToRect(bb, dbu: dbu)
                     let measured = max(0, rule.minEnclosure - deficitThickness(deficit, dbu: dbu))
-                    violations.append(enclosureRuleViolation(
+                    violations.append(try enclosureRuleViolation(
                         rule: rule,
                         rect: rect,
+                        integerBounds: bb,
                         measured: measured,
                         message: "Enclosure violation: \(rule.innerLayer.name) must be enclosed by \(rule.outerLayer.name) by at least \(rule.minEnclosure)µm, measured \(String(format: "%.3f", measured))µm",
                         innerShapes: innerShapes,
@@ -206,13 +208,14 @@ extension LayoutDRCService {
     private func enclosureRuleViolation(
         rule: LayoutEnclosureRule,
         rect: LayoutRect,
+        integerBounds: (minX: Int32, minY: Int32, maxX: Int32, maxY: Int32),
         measured: Double,
         message: String,
         innerShapes: [LayoutShape],
         outerShapes: [LayoutShape]
-    ) -> LayoutViolation {
-        let innerContributors = contributingShapes(innerShapes, around: rect)
-        let outerContributors = contributingShapes(outerShapes, around: rect)
+    ) throws -> LayoutViolation {
+        let innerContributors = try contributingShapes(innerShapes, around: rect, integerBounds: integerBounds)
+        let outerContributors = try contributingShapes(outerShapes, around: rect, integerBounds: integerBounds)
         return LayoutViolation(
             kind: .enclosure,
             ruleID: enclosureRuleID(rule),
@@ -232,7 +235,7 @@ extension LayoutDRCService {
         shapes: [LayoutShape],
         tech: LayoutTechDatabase,
         rules: [LayoutExtensionRule]? = nil
-    ) -> [LayoutViolation] {
+    ) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
 
@@ -243,13 +246,13 @@ extension LayoutDRCService {
 
             for enclosedShape in enclosedShapes {
                 let enclosedBox = LayoutGeometryAnalysis.boundingBox(for: enclosedShape.geometry)
-                let bestCandidate = extendingShapes
+                let bestCandidate = try extendingShapes
                     .compactMap { extendingShape -> (shape: LayoutShape, box: LayoutRect, measurement: Double)? in
                         let extendingBox = LayoutGeometryAnalysis.boundingBox(for: extendingShape.geometry)
                         if rule.coveragePolicy == .whenPresent,
-                           !LayoutGeometryAnalysis.intersects(
+                           try !geometriesTouch(
                                extendingShape.geometry,
-                               enclosedShape.geometry
+                               enclosedShape.geometry, dbu: evaluationScale(for: tech)
                            ) {
                             return nil
                         }
@@ -356,6 +359,10 @@ extension LayoutDRCService {
             return ViaEnclosureCheck(passed: false, measured: 0)
         }
         let requiredRect = cutRect.expanded(by: enclosure, enclosure)
+        if exactGeometry != nil {
+            _ = try ruleCoordinate(enclosure, dbu: dbu)
+            _ = try rectToRegion(requiredRect, dbu: dbu)
+        }
         if let fastCheck = rectangularViaEnclosureCheck(
             cutRect: cutRect,
             requiredRect: requiredRect,
@@ -364,11 +371,16 @@ extension LayoutDRCService {
             return fastCheck
         }
 
-        let pointCoverage = requiredEnclosurePoints(
+        let pointCoverage = try requiredEnclosurePoints(
             cutRect: cutRect,
             enclosure: enclosure
         ).allSatisfy { point in
-            candidates.contains { LayoutGeometryAnalysis.contains(point, in: $0.geometry) }
+            if exactGeometry != nil {
+                let probe = try IRPoint(x: ExactDRCGeometry.coordinate(point.x, dbu: dbu),
+                    y: ExactDRCGeometry.coordinate(point.y, dbu: dbu))
+                return try candidates.contains { try geometryToRegion($0.geometry, dbu: dbu).contains(probe) }
+            }
+            return candidates.contains { LayoutGeometryAnalysis.contains(point, in: $0.geometry) }
         }
         let measured = measuredEnclosure(cutRect: cutRect, shapes: candidates)
         guard pointCoverage else {
@@ -379,8 +391,8 @@ extension LayoutDRCService {
         // authoritative test: several abutting shapes may jointly enclose the
         // cut even when no single shape does. The single-shape `measured`
         // value is kept for reporting only.
-        let outerRegion = shapesToRegion(candidates, dbu: dbu)
-        let requiredRegion = rectToRegion(requiredRect, dbu: dbu)
+        let outerRegion = try shapesToRegion(candidates, dbu: dbu)
+        let requiredRegion = try rectToRegion(requiredRect, dbu: dbu)
         let missingCoverage = try requiredRegion.subtracting(outerRegion)
         return ViaEnclosureCheck(
             passed: missingCoverage.isEmpty && pointCoverage,

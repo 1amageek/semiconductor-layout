@@ -208,7 +208,7 @@ extension IncrementalDRCSession {
     private func refreshLayerBuckets(using analysis: IncrementalDRCApplyAnalysis) throws {
         for layer in analysis.dirtyLayers {
             refreshCoverageBucket(layer: layer)
-            refreshShapeRuleBuckets(layer: layer)
+            try refreshShapeRuleBuckets(layer: layer)
             try updateLayerClusters(
                 layer: layer,
                 editedKeys: analysis.editedKeysByLayer[layer] ?? [],
@@ -231,7 +231,7 @@ extension IncrementalDRCSession {
         }
     }
 
-    private func refreshShapeRuleBuckets(layer: LayoutLayerID) {
+    private func refreshShapeRuleBuckets(layer: LayoutLayerID) throws {
         let layerRule = tech.ruleSet(for: layer)
         guard layerRule?.requiresRectangular == true
                 || layerRule?.allowedAngleStepDegrees != nil else {
@@ -244,7 +244,7 @@ extension IncrementalDRCSession {
         if layerRule?.requiresRectangular == true {
             setBucket(
                 &rectOnlyByLayer, layer,
-                service.checkRectangularGeometry(shapes: layerShapes, tech: tech)
+                try service.checkRectangularGeometry(shapes: layerShapes, tech: tech)
             )
         } else {
             setBucket(&rectOnlyByLayer, layer, [])
@@ -252,7 +252,7 @@ extension IncrementalDRCSession {
         if layerRule?.allowedAngleStepDegrees != nil {
             setBucket(
                 &angleByLayer, layer,
-                service.checkAngleRules(shapes: layerShapes, tech: tech)
+                try service.checkAngleRules(shapes: layerShapes, tech: tech)
             )
         } else {
             setBucket(&angleByLayer, layer, [])

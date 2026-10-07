@@ -8,7 +8,7 @@ let circuiteFoundationDependency: Package.Dependency = .package(
 
 let swiftMaskDataDependency: Package.Dependency = .package(
     url: "https://github.com/1amageek/swift-mask-data.git",
-    revision: "41f72fe3ca7a35b1cda53f59e780b029faf1b718"
+    revision: "75df136f942220379f6eeec5406c5270ffdbb31b"
 )
 
 let signoffToolSupportDependency: Package.Dependency = .package(
@@ -66,7 +66,7 @@ let package = Package(
                 .product(name: "LayoutIR", package: "swift-mask-data"),
                 .product(name: "MaskGeometry", package: "swift-mask-data"),
             ],
-            exclude: ["DESIGN.md", "HierarchyCapture/DESIGN.md", "ConductorCapture/DESIGN.md", "PassiveDevicePreparation/DESIGN.md"]
+            exclude: ["DESIGN.md", "HierarchyCapture/DESIGN.md", "ConductorCapture/DESIGN.md", "PassiveDevicePreparation/DESIGN.md", "RectilinearPathProjection/DESIGN.md", "ExactDRCGeometry/DESIGN.md"]
         ),
         .target(
             name: "LayoutIO",
@@ -189,7 +189,8 @@ let package = Package(
                 "LayoutTech",
                 "LayoutVerify",
                 "LayoutEditor",
-            ]
+            ],
+            exclude: ["ExactDRCPath/DESIGN.md"]
         ),
         .testTarget(
             name: "LayoutEditorTests",

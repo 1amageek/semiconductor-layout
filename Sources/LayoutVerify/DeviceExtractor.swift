@@ -246,12 +246,13 @@ public struct DeviceExtractor: Sendable {
         shapes: [LayoutShape],
         actives: [Active],
         issues: inout [DeviceExtractionIssue],
-        limits: LayoutConductorCaptureLimits = .default
+        limits: LayoutConductorCaptureLimits = .default,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> [Int: [Channel]?] {
         var probes = 0
         var polys: [(index: Int, shape: LayoutShape, rect: LayoutRect)] = []
         for (index, shape) in shapes.enumerated() {
-            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            if isCancelled() { throw LayoutConductorCaptureError.cancelled }
             if shape.layer == polyLayer, let rect = rectLike(shape.geometry) { polys.append((index, shape, rect)) }
         }
         var result: [Int: [Channel]?] = [:]
@@ -259,7 +260,7 @@ public struct DeviceExtractor: Sendable {
             var channels: [Channel] = []
             var invalid = false
             for (index, shape, polyRect) in polys {
-                if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+                if isCancelled() { throw LayoutConductorCaptureError.cancelled }
                 guard probes < limits.maximumContactProbes else { throw LayoutConductorCaptureError.limitExceeded(.contactProbes) }
                 probes += 1
                 guard let channel = positiveIntersection(active.rect, polyRect) else { continue }
@@ -439,24 +440,29 @@ public struct DeviceExtractor: Sendable {
     /// Bounded immutable electrical facts with Device-owned channel separation.
     /// The hierarchy remains the original source generation, not slab geometry.
     public func captureConductors(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
-        limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext = .deviceAwareMOS
+        limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext = .deviceAwareMOS,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> LayoutConductorSnapshot {
-        let hierarchy = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID, limits: limits.hierarchy)
-        let preparation = try prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits, electricalContext: electricalContext)
+        let hierarchy = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID,
+            limits: limits.hierarchy, isCancelled: isCancelled)
+        let preparation = try prepareConductors(hierarchy: hierarchy, tech: tech, limits: limits,
+            electricalContext: electricalContext, isCancelled: isCancelled)
         return try capturePrepared(document: document, tech: tech, hierarchy: hierarchy, preparation: preparation,
-            limits: limits, electricalContext: electricalContext)
+            limits: limits, electricalContext: electricalContext, isCancelled: isCancelled)
     }
 
     func prepareConductors(hierarchy: LayoutHierarchySnapshot, tech: LayoutTechDatabase,
-        limits: LayoutConductorCaptureLimits, electricalContext: LayoutElectricalContext = .deviceAwareMOS
+        limits: LayoutConductorCaptureLimits, electricalContext: LayoutElectricalContext = .deviceAwareMOS,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> ConductorPreparation {
         guard limits.maximumContactProbes >= 0 else { throw LayoutConductorCaptureError.invalidLimits }
         var issues: [DeviceExtractionIssue] = []
         let actives = recognizeActives(shapes: hierarchy.shapes, issues: &issues)
-        let channels = try discoverChannels(shapes: hierarchy.shapes, actives: actives, issues: &issues, limits: limits)
+        let channels = try discoverChannels(shapes: hierarchy.shapes, actives: actives, issues: &issues,
+            limits: limits, isCancelled: isCancelled)
         guard issues.isEmpty else { throw LayoutConductorCaptureError.unsupportedDevicePreparation }
         let preparation = try prepareConductors(shapes: hierarchy.shapes, actives: actives, channelsByActive: channels,
-            tech: tech, limits: limits)
+            tech: tech, limits: limits, isCancelled: isCancelled)
         switch electricalContext {
         case .geometric: throw LayoutConductorCaptureError.unsupportedDevicePreparation
         case .deviceAwareMOS: return preparation
@@ -466,12 +472,13 @@ public struct DeviceExtractor: Sendable {
             guard !overflow, mosProbes <= limits.maximumContactProbes else { throw LayoutConductorCaptureError.limitExceeded(.contactProbes) }
             return try PolyResistorConductorPreparation.apply(hierarchy: hierarchy, tech: tech,
                 polyLayer: poly, bodyMarkerLayer: marker, preparation: preparation, limits: limits,
-                remainingProbes: limits.maximumContactProbes - mosProbes)
+                remainingProbes: limits.maximumContactProbes - mosProbes, isCancelled: isCancelled)
         }
     }
 
     private func prepareConductors(shapes: [LayoutShape], actives: [Active], channelsByActive: [Int: [Channel]?],
-        tech: LayoutTechDatabase, limits: LayoutConductorCaptureLimits
+        tech: LayoutTechDatabase, limits: LayoutConductorCaptureLimits,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> ConductorPreparation {
         _ = try LayoutConnectivityExtractor.productionConductiveLayers(tech, limits: limits)
         var selectedLayers: Set<LayoutLayerID> = []
@@ -489,7 +496,7 @@ public struct DeviceExtractor: Sendable {
         var slabRectsByActiveOrdinal: [Int: [LayoutRect?]] = [:]
         var preparedSlabCount = 0
         for (ordinal, active) in actives.enumerated() {
-            if Task.isCancelled { throw LayoutConductorCaptureError.cancelled }
+            if isCancelled() { throw LayoutConductorCaptureError.cancelled }
             guard let wrapped = channelsByActive[ordinal], let channels = wrapped, !channels.isEmpty else { continue }
             let horizontal = channels[0].horizontalCurrent
             var bounds = horizontal ? [active.rect.minX] : [active.rect.minY]
@@ -526,7 +533,8 @@ public struct DeviceExtractor: Sendable {
 
     private func capturePrepared(document: LayoutDocument, tech: LayoutTechDatabase, hierarchy: LayoutHierarchySnapshot,
         preparation: ConductorPreparation, limits: LayoutConductorCaptureLimits,
-        electricalContext: LayoutElectricalContext = .deviceAwareMOS
+        electricalContext: LayoutElectricalContext = .deviceAwareMOS,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> LayoutConductorSnapshot {
         var selected = Set(hierarchy.shapes.indices.map { LayoutConductorSnapshot.Source.shape($0) })
         selected.formUnion(hierarchy.vias.indices.map { .via($0) })
@@ -535,7 +543,8 @@ public struct DeviceExtractor: Sendable {
         }
         return try LayoutConnectivityExtractor().captureNativeConductors(document: document, tech: tech,
             conductiveLayers: preparation.layers, cellID: hierarchy.rootCellID, limits: limits, hierarchy: hierarchy,
-            selectingSources: selected, replacingShapeGeometry: preparation.replacements, electricalContext: electricalContext).snapshot
+            selectingSources: selected, replacingShapeGeometry: preparation.replacements,
+            electricalContext: electricalContext, isCancelled: isCancelled).snapshot
     }
 
     private func occurrencePrefix(_ occurrence: LayoutHierarchySnapshot.Occurrence) -> String {

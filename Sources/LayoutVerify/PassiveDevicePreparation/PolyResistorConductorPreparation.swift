@@ -9,7 +9,7 @@ enum PolyResistorConductorPreparation {
     static func apply(hierarchy: LayoutHierarchySnapshot, tech: LayoutTechDatabase,
         polyLayer: LayoutLayerID, bodyMarkerLayer: LayoutLayerID,
         preparation: DeviceExtractor.ConductorPreparation, limits: LayoutConductorCaptureLimits,
-        remainingProbes: Int
+        remainingProbes: Int, isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> DeviceExtractor.ConductorPreparation {
         typealias Failure = LayoutConductorCaptureError
         let known = Set(tech.layers.map(\.id))
@@ -20,7 +20,8 @@ enum PolyResistorConductorPreparation {
               remainingProbes >= 0 else { throw Failure.unsupportedDevicePreparation }
         guard limits.maximumFootprints >= 0, limits.decomposition.maximumInputEntries >= 0 else { throw Failure.invalidLimits }
         let dbu = try LayoutConnectivityExtractor.captureCoordinateUnits(hierarchy: hierarchy,
-            conductiveLayers: preparation.layers, cutLayers: cuts).scale.databaseUnitsPerMicrometer
+            conductiveLayers: preparation.layers, cutLayers: cuts,
+            isCancelled: isCancelled).scale.databaseUnitsPerMicrometer
         func integer(_ value: Double, id: UUID) throws -> Int32 {
             try LayoutConnectivityExtractor.integerCoordinate(value, databaseUnitsPerMicrometer: dbu, sourceID: id)
         }
@@ -51,7 +52,7 @@ enum PolyResistorConductorPreparation {
         var replacements = preparation.replacements
         var probes = remainingProbes, preparedCount = replacements.values.reduce(0) { $0 + $1.count }
         for occurrence in hierarchy.occurrences {
-            if Task.isCancelled { throw Failure.cancelled }
+            if isCancelled() { throw Failure.cancelled }
             var polys: [(index: Int, region: Region)] = [], markers: [(index: Int, region: Region)] = []
             for index in occurrence.shapeRange {
                 let shape = hierarchy.shapes[index]
@@ -63,7 +64,7 @@ enum PolyResistorConductorPreparation {
                 var matched: (index: Int, region: Region)?
                 guard let body = marker.region.boundingBox else { throw Failure.unsupportedDevicePreparation }
                 for poly in polys {
-                    if Task.isCancelled { throw Failure.cancelled }
+                    if isCancelled() { throw Failure.cancelled }
                     guard probes > 0 else { throw Failure.limitExceeded(.contactProbes) }
                     probes -= 1
                     guard let bounds = poly.region.boundingBox else { throw Failure.unsupportedDevicePreparation }

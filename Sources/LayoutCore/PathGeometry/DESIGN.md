@@ -16,6 +16,7 @@ grid admission, union, resource budgets and qualification.
 | [LayoutCore](../DESIGN.md) | parent | Value-owned geometry | Canonical path state | No compatibility schema required |
 | [LayoutIO](../../LayoutIO/DESIGN.md) | used by | Explicit distances | Standard round trips | Both custom distances must exist |
 | [ConductorCapture](../../LayoutVerify/ConductorCapture/DESIGN.md) | used by | Endpoint distances | Bounded orthogonal union | Circular caps remain unsupported |
+| [RectilinearPathProjection](../../LayoutVerify/RectilinearPathProjection/DESIGN.md) | used by | Original primitive values and cap semantics | Shared exact integer stroke | Verification owns lattice, union and budgets |
 
 ## Architecture
 ```mermaid
@@ -53,8 +54,10 @@ bounded electrical capture streams union pieces without materializing it.
 ## Failure, Concurrency, and Constraints
 `LayoutPathGeometryError` identifies invalid values, degenerate segments,
 unsupported circular outlines, reversals and invalid retractions. Development
-DRC rejects unsupported paths before running rules. Exact DRC retains its
-existing all-path rejection until its integer-grid/union admission is migrated.
+DRC rejects unsupported paths before running rules. Exact DRC consumes the
+[shared integer projection](../../LayoutVerify/RectilinearPathProjection/DESIGN.md)
+through [checked preparation](../../LayoutVerify/ExactDRCGeometry/DESIGN.md),
+rather than using the development outline as exact grid or union authority.
 
 ## Verification and Change Impact
 `LayoutCoreTests/LayoutPathGeometryTests` owns transforms, serialization, signed

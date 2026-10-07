@@ -67,15 +67,17 @@ public struct LayoutConnectivityExtractor {
     }
 
     func captureElectricalConductors(document: LayoutDocument, tech: LayoutTechDatabase, cellID: UUID? = nil,
-        limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext
+        limits: LayoutConductorCaptureLimits = .default, electricalContext: LayoutElectricalContext,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> LayoutConductorSnapshot {
         switch electricalContext {
         case .geometric:
             return try captureConductors(document: document, tech: tech,
-                conductiveLayers: Self.productionConductiveLayers(tech, limits: limits), cellID: cellID, limits: limits)
+                conductiveLayers: Self.productionConductiveLayers(tech, limits: limits), cellID: cellID,
+                limits: limits, isCancelled: isCancelled)
         case .deviceAwareMOS, .deviceAwareMOSAndPolyResistors:
             return try DeviceExtractor().captureConductors(document: document, tech: tech, cellID: cellID,
-                limits: limits, electricalContext: electricalContext)
+                limits: limits, electricalContext: electricalContext, isCancelled: isCancelled)
         }
     }
 

@@ -3,7 +3,9 @@
 ## Purpose and Scope
 DRC and shared physical contact calculations. Parent: [package](../../DESIGN.md).
 Children: [HierarchyCapture](HierarchyCapture/DESIGN.md),
-[ConductorCapture](ConductorCapture/DESIGN.md).
+[ConductorCapture](ConductorCapture/DESIGN.md),
+[RectilinearPathProjection](RectilinearPathProjection/DESIGN.md),
+[ExactDRCGeometry](ExactDRCGeometry/DESIGN.md).
 
 ## Responsibilities and Boundaries
 Own world-space via footprints, hierarchy flattening and contact predicates.
@@ -17,6 +19,9 @@ Electrical RC models and tool qualification are outside this module.
 |---|---|---|---|---|
 | [ConductorCapture](ConductorCapture/DESIGN.md) | child | Bounded native layer/cut facts | Exact physical contacts and scoped terminal facts | Legacy aggregate-via analysis does not inherit this guarantee |
 | [HierarchyCapture](HierarchyCapture/DESIGN.md) | child | Bounded occurrence geometry | Shared traversal | Electrical contacts remain separately owned |
+| [RectilinearPathProjection](RectilinearPathProjection/DESIGN.md) | child | Shared integer stroke projection | Capture and exact DRC consume one algorithm | Consumers own grid and aggregate budget |
+| [ExactDRCGeometry](ExactDRCGeometry/DESIGN.md) | child | Immutable source regions and explicit evaluation scale | Exact PATH admission and DRC composition | Original metadata and electrical snapshot remain canonical |
+| [Exact DRC PATH tests](../../Tests/LayoutAutoGenTests/ExactDRCPath/DESIGN.md) | verified by | Public exact run and independent RECT union | Focused PATH contract proof | Retained original-GDS integration remains host-owned |
 | [Package](../../DESIGN.md) | parent | Physical verification facts | Package composition | Development bounds are not exact proof |
 | [LayoutCommands](../LayoutCommands/DESIGN.md) | used by | Scoped verdict and snapshot identity | CLI diagnosis serialization | Preserve occurrence/pin interpretation tables |
 | [LayoutCore](../LayoutCore/DESIGN.md) | depends on | Canonical geometry and hierarchy | Read physical values | Preserve each occurrence's transform |

@@ -6,19 +6,27 @@ import MaskGeometry
 
 public struct LayoutDRCService {
     static let numericalTolerance = 1.0e-12
+    let exactGeometry: ExactDRCGeometry?
 
-    public init() {}
+    public init() { exactGeometry = nil }
+
+    init(exactGeometry: ExactDRCGeometry) { self.exactGeometry = exactGeometry }
 
     public func run(
         document: LayoutDocument,
         tech: LayoutTechDatabase,
         cellID: UUID? = nil,
         geometryMode: LayoutDRCGeometryMode = .development,
-        electricalContext: LayoutElectricalContext = .geometric
+        electricalContext: LayoutElectricalContext = .geometric,
+        limits: LayoutConductorCaptureLimits = .default,
+        pathUnionLimits: RectilinearUnionLimits? = nil,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) -> LayoutDRCResult {
         func evaluate() -> LayoutDRCResult {
             do {
-                return try runChecked(document: document, tech: tech, cellID: cellID, geometryMode: geometryMode, electricalContext: electricalContext)
+                return try runChecked(document: document, tech: tech, cellID: cellID,
+                    geometryMode: geometryMode, electricalContext: electricalContext,
+                    limits: limits, pathUnionLimits: pathUnionLimits, isCancelled: isCancelled)
             } catch let error as LayoutDRCServiceError {
                 switch error {
                 case .targetCellNotFound:
@@ -54,7 +62,10 @@ public struct LayoutDRCService {
         tech: LayoutTechDatabase,
         cellID: UUID? = nil,
         geometryMode: LayoutDRCGeometryMode = .exactOnly,
-        electricalContext: LayoutElectricalContext = .geometric
+        electricalContext: LayoutElectricalContext = .geometric,
+        limits: LayoutConductorCaptureLimits = .default,
+        pathUnionLimits: RectilinearUnionLimits? = nil,
+        isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> LayoutDRCResult {
         guard resolveCell(document: document, cellID: cellID) != nil else {
             throw LayoutDRCServiceError.targetCellNotFound(
@@ -64,7 +75,8 @@ public struct LayoutDRCService {
         }
         let captured: LayoutHierarchySnapshot
         do {
-            captured = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID)
+            captured = try LayoutConnectivityExtractor().captureHierarchy(document: document, cellID: cellID,
+                limits: limits.hierarchy, isCancelled: isCancelled)
         } catch let error as LayoutHierarchyCaptureError {
             throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
@@ -80,7 +92,9 @@ public struct LayoutDRCService {
         }
         let context: LayoutDRCRunContext
         do {
-            context = try makeRunContext(document: document, tech: tech, cellID: cellID, captured: captured, electricalContext: electricalContext)
+            context = try makeRunContext(document: document, tech: tech, cellID: cellID,
+                captured: captured, electricalContext: electricalContext, limits: limits,
+                isCancelled: isCancelled)
         } catch let error as LayoutHierarchyCaptureError {
             throw LayoutDRCServiceError.hierarchyCaptureFailed(error)
         }
@@ -109,8 +123,23 @@ public struct LayoutDRCService {
                 throw LayoutDRCServiceError.unsupportedExactGeometry(diagnostics: diagnostics)
             }
         }
+        let evaluator: LayoutDRCService
+        if geometryMode == .exactOnly {
+            do {
+                evaluator = try LayoutDRCService(exactGeometry: ExactDRCGeometry(
+                    snapshot: context.connectivity, limits: limits,
+                    unionLimits: pathUnionLimits, isCancelled: isCancelled))
+            } catch ExactDRCGeometryError.unsupportedGeometry(let sourceID) {
+                guard let shape = context.shapes.first(where: { $0.id == sourceID }) else { throw ExactDRCGeometryError.unsupportedGeometry(sourceID: sourceID) }
+                throw LayoutDRCServiceError.unsupportedExactGeometry(diagnostics: [
+                    exactGeometryDiagnostic(shape: shape, reason: "unsupported integer PATH projection")])
+            }
+            try evaluator.validateActiveThresholds(tech: tech)
+        } else {
+            evaluator = self
+        }
         do {
-            return LayoutDRCResult(violations: try collectViolations(context: context, tech: tech), sourceHierarchy: context.connectivity.hierarchy, electricalContext: context.connectivity.electricalContext)
+            return LayoutDRCResult(violations: try evaluator.collectViolations(context: context, tech: tech), sourceHierarchy: context.connectivity.hierarchy, electricalContext: context.connectivity.electricalContext)
         } catch {
             throw LayoutDRCServiceError.geometryOperationFailed(message: String(describing: error))
         }
@@ -127,10 +156,8 @@ public struct LayoutDRCService {
             case .rect:
                 return nil
             case .path:
-                return exactGeometryDiagnostic(
-                    shape: shape,
-                    reason: "path geometry has no exact rectilinear boolean representation"
-                )
+                // Primitive admission and bounded projection below own PATH support.
+                return nil
             case .polygon(let polygon):
                 guard !polygonEdgesAreRectilinear(polygon.points) else { return nil }
                 return exactGeometryDiagnostic(
@@ -191,7 +218,8 @@ public struct LayoutDRCService {
         document: LayoutDocument,
         tech: LayoutTechDatabase,
         cellID: UUID?,
-        captured: LayoutHierarchySnapshot, electricalContext: LayoutElectricalContext
+        captured: LayoutHierarchySnapshot, electricalContext: LayoutElectricalContext,
+        limits: LayoutConductorCaptureLimits, isCancelled: () -> Bool
     ) throws -> LayoutDRCRunContext {
         let checkedDocument = tech.derivedLayerRules.isEmpty
             ? document : LayoutDerivedLayerMaterializer.materialize(document: document, tech: tech)
@@ -215,7 +243,8 @@ public struct LayoutDRCService {
         )
 
         let connectivity = try LayoutConnectivityExtractor().captureElectricalConductors(document: checkedDocument, tech: tech,
-            cellID: targetCell.id, electricalContext: electricalContext)
+            cellID: targetCell.id, limits: limits, electricalContext: electricalContext,
+            isCancelled: isCancelled)
         return LayoutDRCRunContext(
             connectivity: connectivity,
             shapes: flattenedShapes,
@@ -235,15 +264,15 @@ public struct LayoutDRCService {
         violations.append(contentsOf: checkRuleCoverage(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: checkForbiddenLayers(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkWidthAndArea(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkRectangularGeometry(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkAngleRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkRectangularGeometry(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkAngleRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkSpacing(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkSpacingRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkViaEnclosure(shapes: context.shapes, vias: context.vias, tech: tech))
         violations.append(contentsOf: try checkMinimumCuts(shapes: context.shapes, vias: context.vias, tech: tech, sourceNets: context.connectivity.declaredNetBySource))
         violations.append(contentsOf: checkExactOverlaps(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkEnclosureRules(shapes: context.shapes, tech: tech))
-        violations.append(contentsOf: checkExtensionRules(shapes: context.shapes, tech: tech))
+        violations.append(contentsOf: try checkExtensionRules(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkDensity(shapes: context.shapes, tech: tech))
         violations.append(contentsOf: try checkAntenna(
             shapes: context.shapes,
@@ -332,7 +361,7 @@ public struct LayoutDRCService {
     func checkWidthAndArea(shapes: [LayoutShape], tech: LayoutTechDatabase) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
 
         for (layer, layerShapes) in grouped {
             guard let rules = tech.ruleSet(for: layer) else { continue }
@@ -344,13 +373,14 @@ public struct LayoutDRCService {
             if merged.isEmpty { continue }
 
             if rules.minWidth > 0 {
-                let minWidthDBU = Int32((rules.minWidth * dbu).rounded())
+                let minWidthDBU = try ruleCoordinate(rules.minWidth, dbu: dbu)
                 var reportedRegions: Set<LayoutRect> = []
                 for pair in try merged.widthViolations(minWidth: minWidthDBU) {
                     let rect = edgePairToRect(pair, dbu: dbu)
                     guard reportedRegions.insert(rect).inserted else { continue }
                     let measured = pair.distance / dbu
-                    let contributors = contributingShapes(layerShapes, around: rect)
+                    let contributors = try contributingShapes(layerShapes, around: rect,
+                        integerBounds: edgePairBounds(pair))
                     violations.append(LayoutViolation(
                         kind: .minWidth,
                         ruleID: layerRuleID(layer: layer, rule: "minWidth"),
@@ -376,7 +406,7 @@ public struct LayoutDRCService {
                     guard area > 0, area + Self.numericalTolerance < rules.minArea else { continue }
                     guard let bb = component.boundingBox else { continue }
                     let rect = irBoundingBoxToRect(bb, dbu: dbu)
-                    let contributors = contributingShapes(layerShapes, around: rect)
+                    let contributors = try contributingShapes(layerShapes, around: rect, integerBounds: bb)
                     violations.append(LayoutViolation(
                         kind: .minArea,
                         ruleID: layerRuleID(layer: layer, rule: "minArea"),
@@ -399,7 +429,7 @@ public struct LayoutDRCService {
                     guard area > 0, area + Self.numericalTolerance < minEnclosedArea else { continue }
                     guard let bb = hole.boundingBox else { continue }
                     let rect = irBoundingBoxToRect(bb, dbu: dbu)
-                    let contributors = contributingShapes(layerShapes, around: rect)
+                    let contributors = try contributingShapes(layerShapes, around: rect, integerBounds: bb)
                     violations.append(LayoutViolation(
                         kind: .minEnclosedArea,
                         ruleID: layerRuleID(layer: layer, rule: "minEnclosedArea"),
@@ -419,11 +449,20 @@ public struct LayoutDRCService {
         return violations
     }
 
-    func checkRectangularGeometry(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkRectangularGeometry(shapes: [LayoutShape], tech: LayoutTechDatabase) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         for shape in shapes {
             guard tech.ruleSet(for: shape.layer)?.requiresRectangular == true else { continue }
-            guard !isAxisAlignedRectangle(shape.geometry) else { continue }
+            let rectangular: Bool
+            if let exactGeometry {
+                let region = try exactGeometry.region(for: shape.geometry)
+                if let box = region.boundingBox {
+                    let (boxArea, overflow) = (Int64(box.maxX) - Int64(box.minX))
+                        .multipliedReportingOverflow(by: Int64(box.maxY) - Int64(box.minY))
+                    rectangular = !overflow && abs(region.area) == boxArea
+                } else { rectangular = false }
+            } else { rectangular = isAxisAlignedRectangle(shape.geometry) }
+            guard !rectangular else { continue }
             violations.append(LayoutViolation(
                 kind: .rectOnly,
                 ruleID: layerRuleID(layer: shape.layer, rule: "rectOnly"),
@@ -438,7 +477,7 @@ public struct LayoutDRCService {
         return violations
     }
 
-    func checkAngleRules(shapes: [LayoutShape], tech: LayoutTechDatabase) -> [LayoutViolation] {
+    func checkAngleRules(shapes: [LayoutShape], tech: LayoutTechDatabase) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         for shape in shapes {
             guard let step = tech.ruleSet(for: shape.layer)?.allowedAngleStepDegrees,
@@ -446,7 +485,16 @@ public struct LayoutDRCService {
                   step <= 180 else {
                 continue
             }
-            guard let violatingEdge = firstAngleViolation(in: shape.geometry, allowedStep: step) else {
+            let geometries: [LayoutGeometry]
+            if let exactGeometry {
+                let dbu = evaluationScale(for: tech)
+                geometries = try exactGeometry.region(for: shape.geometry).polygons.map { boundary in
+                    .polygon(LayoutPolygon(points: boundary.points.map {
+                        LayoutPoint(x: Double($0.x) / dbu, y: Double($0.y) / dbu)
+                    }))
+                }
+            } else { geometries = [shape.geometry] }
+            guard let violatingEdge = geometries.compactMap({ firstAngleViolation(in: $0, allowedStep: step) }).first else {
                 continue
             }
             violations.append(LayoutViolation(
@@ -561,7 +609,7 @@ public struct LayoutDRCService {
     func checkSpacing(shapes: [LayoutShape], tech: LayoutTechDatabase) throws -> [LayoutViolation] {
         var violations: [LayoutViolation] = []
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
 
         for (layer, layerShapes) in grouped {
             guard let rules = tech.ruleSet(for: layer) else { continue }
@@ -571,11 +619,12 @@ public struct LayoutDRCService {
             if merged.isEmpty { continue }
 
             if rules.minSpacing > 0 {
-                let minSpacingDBU = Int32((rules.minSpacing * dbu).rounded())
+                let minSpacingDBU = try ruleCoordinate(rules.minSpacing, dbu: dbu)
                 for pair in try merged.selfSpaceViolations(minSpace: minSpacingDBU) {
                     let rect = edgePairToRect(pair, dbu: dbu)
                     let measured = pair.distance / dbu
-                    let contributors = contributingShapes(layerShapes, around: rect)
+                    let contributors = try contributingShapes(layerShapes, around: rect,
+                        integerBounds: edgePairBounds(pair))
                     violations.append(LayoutViolation(
                         kind: .minSpacing,
                         ruleID: layerRuleID(layer: layer, rule: "minSpacing"),
@@ -593,7 +642,7 @@ public struct LayoutDRCService {
             }
 
             if let minNotch = rules.minNotch, minNotch > rules.minSpacing {
-                let minNotchDBU = Int32((minNotch * dbu).rounded())
+                let minNotchDBU = try ruleCoordinate(minNotch, dbu: dbu)
                 let components = merged.connectedComponents()
                 for pair in try merged.selfSpaceViolations(minSpace: minNotchDBU) {
                     let measured = pair.distance / dbu
@@ -601,7 +650,8 @@ public struct LayoutDRCService {
                     guard measured + Self.numericalTolerance >= rules.minSpacing else { continue }
                     guard edgesBelongToSameComponent(pair, components: components) else { continue }
                     let rect = edgePairToRect(pair, dbu: dbu)
-                    let contributors = contributingShapes(layerShapes, around: rect)
+                    let contributors = try contributingShapes(layerShapes, around: rect,
+                        integerBounds: edgePairBounds(pair))
                     violations.append(LayoutViolation(
                         kind: .notch,
                         ruleID: layerRuleID(layer: layer, rule: "minNotch"),
@@ -621,16 +671,17 @@ public struct LayoutDRCService {
             if let wideWidth = rules.wideWidthThreshold,
                let wideSpacing = rules.wideSpacing,
                wideWidth > 0, wideSpacing > rules.minSpacing {
-                let halfWidthDBU = Int32(((wideWidth / 2) * dbu).rounded())
+                let halfWidthDBU = try ruleCoordinate(wideWidth / 2, dbu: dbu)
                 let wide = try merged.sized(by: -halfWidthDBU).sized(by: halfWidthDBU)
                 if !wide.isEmpty {
-                    let wideSpacingDBU = Int32((wideSpacing * dbu).rounded())
+                    let wideSpacingDBU = try ruleCoordinate(wideSpacing, dbu: dbu)
                     for pair in try wide.spaceViolations(to: merged, minSpace: wideSpacingDBU) {
                         let measured = pair.distance / dbu
                         // Gaps below minSpacing are already reported by the base rule.
                         guard measured + Self.numericalTolerance >= rules.minSpacing else { continue }
                         let rect = edgePairToRect(pair, dbu: dbu)
-                        let contributors = contributingShapes(layerShapes, around: rect)
+                        let contributors = try contributingShapes(layerShapes, around: rect,
+                            integerBounds: edgePairBounds(pair))
                         violations.append(LayoutViolation(
                             kind: .minSpacing,
                             ruleID: layerRuleID(layer: layer, rule: "wideSpacing"),
@@ -659,7 +710,7 @@ public struct LayoutDRCService {
         let spacingRules = rules ?? tech.spacingRules
         guard !spacingRules.isEmpty else { return [] }
         let grouped = Dictionary(grouping: shapes, by: { $0.layer })
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
         var violations: [LayoutViolation] = []
 
         for rule in spacingRules {
@@ -675,11 +726,12 @@ public struct LayoutDRCService {
             let secondary = try mergedRegion(of: secondaryShapes, dbu: dbu)
             if primary.isEmpty || secondary.isEmpty { continue }
 
-            let minSpacingDBU = Int32((rule.minSpacing * dbu).rounded())
+            let minSpacingDBU = try ruleCoordinate(rule.minSpacing, dbu: dbu)
             for pair in try primary.spaceViolations(to: secondary, minSpace: minSpacingDBU) {
                 let rect = edgePairToRect(pair, dbu: dbu)
                 let measured = pair.distance / dbu
-                let contributors = contributingShapes(primaryShapes + secondaryShapes, around: rect)
+                let contributors = try contributingShapes(primaryShapes + secondaryShapes, around: rect,
+                    integerBounds: edgePairBounds(pair))
                 violations.append(LayoutViolation(
                     kind: .minSpacing,
                     ruleID: spacingRuleID(rule),
@@ -734,7 +786,7 @@ public struct LayoutDRCService {
             let windows = densityWindows(for: overall, rules: rules)
             for window in windows {
                 let area = try mergedClippedArea(
-                    of: layerShapes, in: window, dbu: tech.units.scale.databaseUnitsPerMicrometer
+                    of: layerShapes, in: window, dbu: evaluationScale(for: tech)
                 )
                 if let violation = densityViolation(
                     layerShapes: layerShapes, layer: layer, rules: rules, window: window, area: area
@@ -900,16 +952,14 @@ public struct LayoutDRCService {
         for shape in shapes {
             let bbox = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             guard bbox.expanded(by: slack, slack).intersects(window) else { continue }
-            if let boundary = geometryToIRBoundary(shape.geometry, dbu: dbu) {
-                boundaries.append(boundary)
-            }
+            boundaries.append(contentsOf: try geometryToRegion(shape.geometry, dbu: dbu).polygons)
         }
         guard !boundaries.isEmpty else { return 0 }
         // OR with the empty region normalizes overlapping input polygons
         // into disjoint ones; the AND of disjoint polygons with the window
         // is disjoint, so the shoelace `area` is the exact union area.
         let merged = try Region(polygons: boundaries).union(Region())
-        let clipped = try merged.intersection(rectToRegion(window, dbu: dbu))
+        let clipped = try merged.intersection(try rectToRegion(window, dbu: dbu))
         return abs(Double(clipped.area)) / (dbu * dbu)
     }
 
@@ -961,14 +1011,29 @@ public struct LayoutDRCService {
     /// Boolean-merged region of the shapes: abutting and overlapping shapes
     /// become single features, matching what lands on the mask.
     func mergedRegion(of shapes: [LayoutShape], dbu: Double) throws -> Region {
-        let region = shapesToRegion(shapes, dbu: dbu)
+        let region = try shapesToRegion(shapes, dbu: dbu)
         return try region.union(Region(layer: region.layer))
     }
 
     /// Shapes whose bounding box touches the violation marker, in document
     /// order — the evidence trail for a merged-geometry violation.
-    func contributingShapes(_ shapes: [LayoutShape], around rect: LayoutRect) -> [LayoutShape] {
-        shapes.filter { LayoutGeometryAnalysis.boundingBox(for: $0.geometry).intersects(rect) }
+    func contributingShapes(_ shapes: [LayoutShape], around rect: LayoutRect,
+        integerBounds: (minX: Int32, minY: Int32, maxX: Int32, maxY: Int32)? = nil
+    ) throws -> [LayoutShape] {
+        guard let exactGeometry else {
+            // Metadata inspection does not admit these shapes to physical region evaluation.
+            return shapes.filter { LayoutGeometryAnalysis.boundingBox(for: $0.geometry).intersects(rect) }
+        }
+        guard let marker = integerBounds else {
+            throw ExactDRCGeometryError.invalidGridGeometry(sourceID: nil)
+        }
+        return try shapes.filter { shape in
+            guard let box = try exactGeometry.region(for: shape.geometry).boundingBox else {
+                throw ExactDRCGeometryError.invalidGridGeometry(sourceID: shape.id)
+            }
+            return box.minX <= marker.maxX && box.maxX >= marker.minX
+                && box.minY <= marker.maxY && box.maxY >= marker.minY
+        }
     }
 
     func uniqueNetIDs(of shapes: [LayoutShape]) -> [UUID] {
@@ -995,23 +1060,19 @@ public struct LayoutDRCService {
         )
     }
 
-    func shapesToRegion(_ shapes: [LayoutShape], dbu: Double) -> Region {
+    func shapesToRegion(_ shapes: [LayoutShape], dbu: Double) throws -> Region {
         var boundaries: [IRBoundary] = []
         for shape in shapes {
-            if let boundary = geometryToIRBoundary(shape.geometry, dbu: dbu) {
-                boundaries.append(boundary)
-            }
+            boundaries.append(contentsOf: try geometryToRegion(shape.geometry, dbu: dbu).polygons)
         }
         return Region(polygons: boundaries)
     }
 
-    func rectToRegion(_ rect: LayoutRect, dbu: Double) -> Region {
-        if let boundary = geometryToIRBoundary(.rect(rect), dbu: dbu) {
-            return Region(polygons: [boundary])
-        }
-        return Region()
+    func rectToRegion(_ rect: LayoutRect, dbu: Double) throws -> Region {
+        try geometryToRegion(.rect(rect), dbu: dbu)
     }
 
+    /// Exploratory single-outline conversion; exact runs use immutable multi-boundary regions.
     func geometryToIRBoundary(_ geometry: LayoutGeometry, dbu: Double) -> IRBoundary? {
         switch geometry {
         case .rect(let rect):
@@ -1052,15 +1113,20 @@ public struct LayoutDRCService {
         } catch { return nil } // runChecked rejects these paths before rule evaluation.
     }
 
-    private func edgePairToRect(_ pair: IREdgePair, dbu: Double) -> LayoutRect {
+    private func edgePairBounds(_ pair: IREdgePair) -> (minX: Int32, minY: Int32, maxX: Int32, maxY: Int32) {
         let minXValue = min(min(pair.edge1.p1.x, pair.edge1.p2.x), min(pair.edge2.p1.x, pair.edge2.p2.x))
         let minYValue = min(min(pair.edge1.p1.y, pair.edge1.p2.y), min(pair.edge2.p1.y, pair.edge2.p2.y))
         let maxXValue = max(max(pair.edge1.p1.x, pair.edge1.p2.x), max(pair.edge2.p1.x, pair.edge2.p2.x))
         let maxYValue = max(max(pair.edge1.p1.y, pair.edge1.p2.y), max(pair.edge2.p1.y, pair.edge2.p2.y))
-        let minX = Double(minXValue) / dbu
-        let minY = Double(minYValue) / dbu
-        let maxX = Double(maxXValue) / dbu
-        let maxY = Double(maxYValue) / dbu
+        return (minXValue, minYValue, maxXValue, maxYValue)
+    }
+
+    private func edgePairToRect(_ pair: IREdgePair, dbu: Double) -> LayoutRect {
+        let bounds = edgePairBounds(pair)
+        let minX = Double(bounds.minX) / dbu
+        let minY = Double(bounds.minY) / dbu
+        let maxX = Double(bounds.maxX) / dbu
+        let maxY = Double(bounds.maxY) / dbu
         return LayoutRect(
             origin: LayoutPoint(x: minX, y: minY),
             size: LayoutSize(width: max(maxX - minX, 0.001), height: max(maxY - minY, 0.001))

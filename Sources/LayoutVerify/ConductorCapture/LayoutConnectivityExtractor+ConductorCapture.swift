@@ -127,11 +127,19 @@ extension LayoutConnectivityExtractor {
         func appendGeometry(_ geometry: LayoutGeometry, record: GeometryRecord) throws {
             try checkCancellation()
             if case .path(let path) = geometry {
-                try RectilinearPathFootprint.emit(path, sourceID: record.sourceID,
-                    coordinate: { try coordinate($0, id: record.sourceID) }, isCancelled: isCancelled) { x, y, maxX, maxY in
-                    try checkCancellation()
-                    try appendIntegerPolygon([IRPoint(x: x, y: y), IRPoint(x: maxX, y: y),
-                        IRPoint(x: maxX, y: maxY), IRPoint(x: x, y: maxY)], record: record)
+                do {
+                    try RectilinearPathProjection.emit(path,
+                        coordinate: { try coordinate($0, id: record.sourceID) }, isCancelled: isCancelled) { x, y, maxX, maxY in
+                        try checkCancellation()
+                        try appendIntegerPolygon([IRPoint(x: x, y: y), IRPoint(x: maxX, y: y),
+                            IRPoint(x: maxX, y: maxY), IRPoint(x: x, y: maxY)], record: record)
+                    }
+                } catch let error as RectilinearPathProjectionError {
+                    switch error {
+                    case .invalidGridGeometry: throw Failure.invalidGridGeometry(record.sourceID)
+                    case .unsupportedGeometry: throw Failure.unsupportedGeometry(record.sourceID)
+                    case .cancelled: throw Failure.cancelled
+                    }
                 }
                 return
             }

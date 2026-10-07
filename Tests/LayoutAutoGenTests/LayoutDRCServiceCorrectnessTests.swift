@@ -322,7 +322,7 @@ struct LayoutDRCServiceCorrectnessTests {
 
     // MARK: - Angle rule
 
-    @Test func angleRuleFlagsNonManhattanEdgeWhenStepIs90Degrees() {
+    @Test func angleRuleFlagsNonManhattanEdgeWhenStepIs90Degrees() throws {
         let angled = LayoutShape(
             layer: m1,
             geometry: .polygon(LayoutPolygon(points: [
@@ -338,14 +338,14 @@ struct LayoutDRCServiceCorrectnessTests {
         )
 
         #expect(result.hasErrors && result.hasDiagnostics)
-        let violation = LayoutDRCService().checkAngleRules(shapes: [angled], tech: tech(allowedAngleStepDegrees: 90)).first
+        let violation = try LayoutDRCService().checkAngleRules(shapes: [angled], tech: tech(allowedAngleStepDegrees: 90)).first
         #expect(violation?.ruleID == "layer.M1.drawing.angle")
         #expect(violation?.shapeIDs == [angled.id])
         #expect(violation?.measured == 45)
         #expect(violation?.required == 90)
     }
 
-    @Test func angleRuleAcceptsFortyFiveDegreeEdgeWhenStepIs45Degrees() {
+    @Test func angleRuleAcceptsFortyFiveDegreeEdgeWhenStepIs45Degrees() throws {
         let angled = LayoutShape(
             layer: m1,
             geometry: .polygon(LayoutPolygon(points: [
@@ -361,7 +361,7 @@ struct LayoutDRCServiceCorrectnessTests {
         )
 
         #expect(result.hasErrors && result.hasDiagnostics)
-        #expect(LayoutDRCService().checkAngleRules(shapes: [angled], tech: tech(allowedAngleStepDegrees: 45)).isEmpty)
+        #expect(try LayoutDRCService().checkAngleRules(shapes: [angled], tech: tech(allowedAngleStepDegrees: 45)).isEmpty)
     }
 
     @Test func incrementalDRCRecomputesAngleAfterShapeUpdate() throws {
@@ -383,7 +383,7 @@ struct LayoutDRCServiceCorrectnessTests {
             try session.apply(LayoutEditDelta(updatedShapes: [edited]))
         }
         #expect(session.currentResult == prior)
-        #expect(LayoutDRCService().checkAngleRules(shapes: [edited], tech: tech(allowedAngleStepDegrees: 90)).contains { $0.kind == .angle && $0.shapeIDs == [original.id] })
+        #expect(try LayoutDRCService().checkAngleRules(shapes: [edited], tech: tech(allowedAngleStepDegrees: 90)).contains { $0.kind == .angle && $0.shapeIDs == [original.id] })
     }
 
     // MARK: - Wide-metal spacing

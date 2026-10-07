@@ -210,8 +210,8 @@ struct ConductorPathCaptureTests {
     @Test func cancellationStopsStrokeEmissionAndPublishesNoPartialSnapshot() throws {
         var emitted = 0, checks = 0
         let value = LayoutPath(points: (0..<10).map { .init(x: Double($0), y: 0) }, width: 1)
-        #expect(throws: LayoutConductorCaptureError.cancelled) {
-            try RectilinearPathFootprint.emit(value, sourceID: UUID(), coordinate: { Int32($0 * 2_000) },
+        #expect(throws: RectilinearPathProjectionError.cancelled) {
+            try RectilinearPathProjection.emit(value, coordinate: { Int32($0 * 2_000) },
                 isCancelled: { checks += 1; return checks == 3 }) { _, _, _, _ in emitted += 1 }
         }
         #expect(emitted == 2)

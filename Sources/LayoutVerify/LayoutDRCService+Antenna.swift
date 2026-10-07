@@ -69,6 +69,25 @@ extension LayoutDRCService {
             bridgeByCutLayer[def.cutLayer] = bridge
         }
 
+        let dbu = evaluationScale(for: tech)
+        func capturedBox(_ region: Region, sourceID: UUID) throws -> LayoutRect {
+            guard let bounds = region.boundingBox else {
+                throw ExactDRCGeometryError.invalidGridGeometry(sourceID: sourceID)
+            }
+            // Outward-only display bounds keep closed-cell broad-phase contact conservative.
+            let minX = (Double(bounds.minX) / dbu).nextDown
+            let minY = (Double(bounds.minY) / dbu).nextDown
+            let maxX = (Double(bounds.maxX) / dbu).nextUp
+            let maxY = (Double(bounds.maxY) / dbu).nextUp
+            let box = LayoutRect(origin: .init(x: minX, y: minY),
+                size: .init(width: (maxX - minX).nextUp, height: (maxY - minY).nextUp))
+            guard minX.isFinite, minY.isFinite, box.maxX.isFinite, box.maxY.isFinite,
+                  box.maxX >= maxX, box.maxY >= maxY else {
+                throw ExactDRCGeometryError.invalidGridGeometry(sourceID: sourceID)
+            }
+            return box
+        }
+
         struct Node {
             var geometry: LayoutGeometry
             var box: LayoutRect
@@ -79,22 +98,26 @@ extension LayoutDRCService {
             var viaIndex: Int?
             var pinIndex: Int?
             var viaContacts: [LayoutLayerID: [LayoutRect]] = [:]
+            var region: Region? = nil
+            var viaContactRegions: [LayoutLayerID: Region] = [:]
         }
         var nodes: [Node] = []
 
         for (index, shape) in shapes.enumerated() {
-            let box = LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
+            let region = try exactGeometry?.shapeRegion(at: index, source: shape)
+            let box = try region.map { try capturedBox($0, sourceID: shape.id) }
+                ?? LayoutGeometryAnalysis.boundingBox(for: shape.geometry)
             if let rank = stack.rank(of: shape.layer) {
                 nodes.append(Node(
                     geometry: shape.geometry, box: box, layer: shape.layer,
                     bridgeLayers: [], activationRank: rank,
-                    shapeIndex: index, viaIndex: nil, pinIndex: nil
+                    shapeIndex: index, viaIndex: nil, pinIndex: nil, region: region
                 ))
             } else if let bridge = bridgeByCutLayer[shape.layer] {
                 nodes.append(Node(
                     geometry: shape.geometry, box: box, layer: nil,
                     bridgeLayers: bridge.layers, activationRank: bridge.activationRank,
-                    shapeIndex: index, viaIndex: nil, pinIndex: nil
+                    shapeIndex: index, viaIndex: nil, pinIndex: nil, region: region
                 ))
             }
             // Wells, implants and markers do not conduct; they stay out.
@@ -114,12 +137,16 @@ extension LayoutDRCService {
                 unknownViaDefinitionIDs.insert(via.viaDefinitionID)
                 continue
             }
-            let bounds = union(rects: viaConductorRects(for: via, tech: tech)) ?? viaCutBoundingBox(for: via, tech: tech)
+            let contactRegions = try exactGeometry?.viaRegions(at: index, source: via)
+            let region = contactRegions.map { Region(polygons: $0.values.flatMap(\.polygons)) }
+            let bounds = try region.map { try capturedBox($0, sourceID: via.id) }
+                ?? (union(rects: viaConductorRects(for: via, tech: tech)) ?? viaCutBoundingBox(for: via, tech: tech))
             nodes.append(Node(
                 geometry: .rect(bounds), box: bounds, layer: nil,
                 bridgeLayers: [cut.bottom, cut.top], activationRank: topRank,
                 shapeIndex: nil, viaIndex: index, pinIndex: nil,
-                viaContacts: viaContactRectsByLayer(for: via, tech: tech)
+                viaContacts: exactGeometry == nil ? viaContactRectsByLayer(for: via, tech: tech) : [:],
+                region: region, viaContactRegions: contactRegions ?? [:]
             ))
         }
         for definitionID in unknownViaDefinitionIDs.sorted() {
@@ -152,10 +179,12 @@ extension LayoutDRCService {
                 ),
                 size: pin.size
             )
+            let region = try exactGeometry?.pinRegion(at: index, source: pin)
+            let box = try region.map { try capturedBox($0, sourceID: pin.id) } ?? rect
             nodes.append(Node(
-                geometry: .rect(rect), box: rect, layer: pin.layer,
+                geometry: .rect(rect), box: box, layer: pin.layer,
                 bridgeLayers: [], activationRank: rank,
-                shapeIndex: nil, viaIndex: nil, pinIndex: index
+                shapeIndex: nil, viaIndex: nil, pinIndex: index, region: region
             ))
         }
 
@@ -176,7 +205,7 @@ extension LayoutDRCService {
         }
         var activationCursor = 0
 
-        func connects(_ a: Int, _ b: Int) -> Bool {
+        func connects(_ a: Int, _ b: Int) throws -> Bool {
             let nodeA = nodes[a]
             let nodeB = nodes[b]
             let aIsBridge = !nodeA.bridgeLayers.isEmpty
@@ -192,17 +221,29 @@ extension LayoutDRCService {
                     return false
                 }
                 if bridge.viaIndex != nil {
-                    return (bridge.viaContacts[layer] ?? []).contains {
-                        LayoutGeometryAnalysis.intersects(.rect($0), conductor.geometry)
+                    if exactGeometry != nil {
+                        guard let landing = bridge.viaContactRegions[layer], let region = conductor.region else {
+                            throw ExactDRCGeometryError.invalidGridGeometry(sourceID: nil)
+                        }
+                        return try regionsTouch(landing, region)
+                    }
+                    return try (bridge.viaContacts[layer] ?? []).contains {
+                        try geometriesTouch(.rect($0), conductor.geometry, dbu: dbu)
                     }
                 }
             } else {
                 guard nodeA.layer == nodeB.layer else { return false }
             }
-            return LayoutGeometryAnalysis.intersects(nodeA.geometry, nodeB.geometry)
+            if exactGeometry != nil {
+                guard let first = nodeA.region, let second = nodeB.region else {
+                    throw ExactDRCGeometryError.invalidGridGeometry(sourceID: nil)
+                }
+                return try regionsTouch(first, second)
+            }
+            return try geometriesTouch(nodeA.geometry, nodeB.geometry, dbu: dbu)
         }
 
-        func activate(upTo rank: Int) {
+        func activate(upTo rank: Int) throws {
             while activationCursor < activationOrder.count,
                   nodes[activationOrder[activationCursor]].activationRank <= rank {
                 let index = activationOrder[activationCursor]
@@ -211,18 +252,17 @@ extension LayoutDRCService {
                 for candidate in grid.candidateIndices(near: nodes[index].box)
                 where candidate != index && active[candidate] {
                     guard unionFind.find(index) != unionFind.find(candidate) else { continue }
-                    if connects(index, candidate) {
+                    if try connects(index, candidate) {
                         unionFind.union(index, candidate)
                     }
                 }
             }
         }
 
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
         let rulesByRank = Dictionary(grouping: stagedRules, by: { $0.rank })
 
         for rank in rulesByRank.keys.sorted() {
-            activate(upTo: rank)
+            try activate(upTo: rank)
 
             var componentMembers: [Int: [Int]] = [:]
             for index in nodes.indices where active[index] {

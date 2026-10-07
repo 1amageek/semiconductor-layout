@@ -14,7 +14,7 @@ extension LayoutDRCService {
         guard !tech.minimumCutRules.isEmpty else { return [] }
 
         let shapesByLayer = Dictionary(grouping: Array(shapes.enumerated()), by: { $0.element.layer })
-        let dbu = tech.units.scale.databaseUnitsPerMicrometer
+        let dbu = evaluationScale(for: tech)
         var violations: [LayoutViolation] = []
 
         for rule in tech.minimumCutRules {
@@ -223,19 +223,14 @@ extension LayoutDRCService {
         second: LayoutGeometry,
         dbu: Double
     ) throws -> (region: Region, bounds: LayoutRect)? {
-        guard let firstBoundary = geometryToIRBoundary(first, dbu: dbu),
-              let secondBoundary = geometryToIRBoundary(second, dbu: dbu) else {
-            return nil
-        }
-        let overlap = try Region(polygons: [firstBoundary]).intersection(Region(polygons: [secondBoundary]))
+        let overlap = try geometryToRegion(first, dbu: dbu).intersection(try geometryToRegion(second, dbu: dbu))
         guard !overlap.isEmpty, let box = overlap.boundingBox else { return nil }
         guard box.maxX > box.minX, box.maxY > box.minY else { return nil }
         return (overlap, irBoundingBoxToRect(box, dbu: dbu))
     }
 
     private func intersectsPositiveArea(_ geometry: LayoutGeometry, region: Region, dbu: Double) throws -> Bool {
-        guard let boundary = geometryToIRBoundary(geometry, dbu: dbu) else { return false }
-        let intersection = try region.intersection(Region(polygons: [boundary]))
+        let intersection = try region.intersection(try geometryToRegion(geometry, dbu: dbu))
         guard !intersection.isEmpty, let bounds = intersection.boundingBox else { return false }
         return bounds.maxX > bounds.minX && bounds.maxY > bounds.minY
     }

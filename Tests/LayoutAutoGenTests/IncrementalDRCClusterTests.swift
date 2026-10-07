@@ -142,7 +142,7 @@ struct IncrementalDRCClusterTests {
     }
 
     /// A two-point polygon is not an electrical conductor. The physical
-    /// contributor oracle still records its marker incidence, while native
+    /// metadata contributor oracle still records its marker incidence, while native
     /// session admission rejects it without replacing the valid generation.
     @Test func degenerateShapeJoinsContributorClusters() throws {
         let fixture = IncrementalDRCEquivalenceHarness.makeRichFixture()
@@ -178,12 +178,18 @@ struct IncrementalDRCClusterTests {
             try harness.session.apply(LayoutEditDelta(addedShapes: [degenerate]))
         }
         #expect(harness.session.currentResult == before)
-        let physical = try LayoutDRCService().checkSpacing(shapes: [left, right, degenerate], tech: fixture.tech)
+        let service = LayoutDRCService()
+        #expect(throws: ExactDRCGeometryError.invalidGridGeometry(sourceID: nil)) {
+            try service.checkSpacing(shapes: [left, right, degenerate], tech: fixture.tech)
+        }
+        let physical = try service.checkSpacing(shapes: [left, right], tech: fixture.tech)
         let spacing = physical.first {
             $0.kind == .minSpacing && $0.shapeIDs.contains(left.id) && $0.shapeIDs.contains(right.id)
         }
-        #expect(spacing?.shapeIDs.contains(degenerate.id) == true,
-                "the physical marker contributor remains independently verified")
+        let marker = try #require(spacing?.region)
+        let contributors = try service.contributingShapes([left, right, degenerate], around: marker)
+        #expect(contributors.map(\.id).contains(degenerate.id),
+                "metadata incidence does not admit the malformed polygon as physical geometry")
     }
 
     /// Removing a shape and later re-adding its UUID elsewhere is a legal

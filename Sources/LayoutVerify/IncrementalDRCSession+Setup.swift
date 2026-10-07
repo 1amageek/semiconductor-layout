@@ -329,13 +329,13 @@ extension IncrementalDRCSession {
                 if layerRule?.requiresRectangular == true {
                     setBucket(
                         &rectOnlyByLayer, layer,
-                        service.checkRectangularGeometry(shapes: layerShapes, tech: tech)
+                        try service.checkRectangularGeometry(shapes: layerShapes, tech: tech)
                     )
                 }
                 if layerRule?.allowedAngleStepDegrees != nil {
                     setBucket(
                         &angleByLayer, layer,
-                        service.checkAngleRules(shapes: layerShapes, tech: tech)
+                        try service.checkAngleRules(shapes: layerShapes, tech: tech)
                     )
                 }
             }

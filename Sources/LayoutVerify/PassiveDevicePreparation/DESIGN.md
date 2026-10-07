@@ -61,6 +61,9 @@ prepared polygons consume existing footprint/decomposition ceilings before
 publication. The rectangular one-marker difference has constant kernel input.
 Cancellation, off-grid/range failures, role ambiguity and unsupported bodies
 publish no snapshot; live sessions preserve the prior generation.
+MOS and passive preparation forward the invocation's same cancellation predicate
+to their existing checkpoints, coordinate-scale admission and final native
+capture. The default remains Task cancellation for callers that omit it.
 
 ## Verification and Change Impact
 [PassiveDeviceConnectivityTests](../../../Tests/LayoutAutoGenTests/PassiveDeviceConnectivityTests.swift)
