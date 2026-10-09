@@ -3,12 +3,12 @@ import PackageDescription
 
 let circuiteFoundationDependency: Package.Dependency = .package(
     url: "https://github.com/1amageek/CircuiteFoundation.git",
-    exact: "26.812.0"
+    revision: "ae88104c556f5802819713ed741f5b2fffffc2d9"
 )
 
 let swiftMaskDataDependency: Package.Dependency = .package(
     url: "https://github.com/1amageek/swift-mask-data.git",
-    revision: "75df136f942220379f6eeec5406c5270ffdbb31b"
+    revision: "b505ffd739b8fd4b8df9695423e9cdd4469b4f92"
 )
 
 let signoffToolSupportDependency: Package.Dependency = .package(
